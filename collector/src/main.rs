@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-// The trace/record CLI handlers (run_trace, build_trace_agent, run_raw_ssl, …)
-// thread many positional arguments through. Collapsing them into a TraceConfig
-// struct is a tracked follow-up refactor; until then, allow the lint crate-wide.
+// The trace/record/exec path now uses the TraceConfig struct instead of ~28
+// positional args. The remaining offenders are the raw `ssl`/`stdio`/`system`
+// CLI handlers and HTTPEvent::new; collapsing those is a follow-up, so the lint
+// stays allowed crate-wide until then.
 #![allow(clippy::too_many_arguments)]
 
 use clap::{Parser, Subcommand};
@@ -14,6 +15,11 @@ use tokio::sync::broadcast;
 
 mod framework;
 mod server;
+mod binary_resolver;
+
+use binary_resolver::{
+    binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
+};
 
 use framework::{
     binary_extractor::BinaryExtractor,
@@ -30,6 +36,47 @@ struct OtelConfig {
     endpoint: Option<String>,
     /// Opt-in: include prompt/completion content in spans.
     capture_content: bool,
+}
+
+/// All options for a trace/record/exec monitoring session.
+///
+/// Collapses what used to be ~28 positional arguments threaded through
+/// `run_trace` and `build_trace_agent`. The `Default` impl is the neutral
+/// "nothing enabled" baseline; the `trace`, `record`, and `exec` handlers each
+/// fill in only the fields they care about.
+#[derive(Default)]
+struct TraceConfig {
+    /// Runner-set name passed to `AgentRunner::new` ("trace" or "exec").
+    name: &'static str,
+    ssl: bool,
+    pid: Option<u32>,
+    ssl_uid: Option<u32>,
+    comm: Option<String>,
+    ssl_filter: Vec<String>,
+    ssl_handshake: bool,
+    ssl_http: bool,
+    ssl_raw_data: bool,
+    process: bool,
+    stdio: bool,
+    stdio_uid: Option<u32>,
+    stdio_comm: Option<String>,
+    stdio_all_fds: bool,
+    stdio_max_bytes: u32,
+    duration: Option<u32>,
+    mode: Option<u32>,
+    system: bool,
+    system_interval: u64,
+    http_filter: Vec<String>,
+    disable_auth_removal: bool,
+    otel: Option<OtelConfig>,
+    /// SSL binary path; may be a `docker://` ref that `run_trace` resolves in place.
+    binary_path: Option<String>,
+    log_file: String,
+    quiet: bool,
+    rotate_logs: bool,
+    max_log_size: u64,
+    server: bool,
+    server_port: u16,
 }
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -375,20 +422,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Commands::Process { quiet, rotate_logs, max_log_size, server, server_port, log_file, args } => run_raw_process(&binary_extractor, *quiet, *rotate_logs, *max_log_size, *server, *server_port, log_file, args).await.map_err(convert_runner_error)?,
         Commands::Stdio { pid, uid, comm, all_fds, max_bytes, quiet, rotate_logs, max_log_size, server, server_port, log_file } => run_raw_stdio(&binary_extractor, *pid, *uid, comm.as_deref(), *all_fds, *max_bytes, *quiet, *rotate_logs, *max_log_size, *server, *server_port, log_file).await.map_err(convert_runner_error)?,
         Commands::Trace { ssl, ssl_uid, pid, comm, ssl_filter, ssl_handshake, ssl_http, ssl_raw_data, process, stdio, stdio_uid, stdio_comm, stdio_all_fds, stdio_max_bytes, duration, mode, system, system_interval, http_filter, disable_auth_removal, otel, otel_endpoint, otel_capture_content, binary_path, log_file, quiet, rotate_logs, max_log_size, server, server_port } => {
-            let otel_config = otel.then(|| OtelConfig { endpoint: otel_endpoint.clone(), capture_content: *otel_capture_content });
-            run_trace(&binary_extractor, *ssl, *pid, *ssl_uid, comm.as_deref(), ssl_filter, *ssl_handshake, *ssl_http, *ssl_raw_data, *process, *stdio, *stdio_uid, stdio_comm.as_deref(), *stdio_all_fds, *stdio_max_bytes, *duration, *mode, *system, *system_interval, http_filter, *disable_auth_removal, otel_config, binary_path.as_deref(), log_file, *quiet, *rotate_logs, *max_log_size, *server, *server_port).await.map_err(convert_runner_error)?
+            let cfg = TraceConfig {
+                name: "trace",
+                ssl: *ssl, pid: *pid, ssl_uid: *ssl_uid, comm: comm.clone(),
+                ssl_filter: ssl_filter.clone(), ssl_handshake: *ssl_handshake,
+                ssl_http: *ssl_http, ssl_raw_data: *ssl_raw_data, process: *process,
+                stdio: *stdio, stdio_uid: *stdio_uid, stdio_comm: stdio_comm.clone(),
+                stdio_all_fds: *stdio_all_fds, stdio_max_bytes: *stdio_max_bytes,
+                duration: *duration, mode: *mode, system: *system, system_interval: *system_interval,
+                http_filter: http_filter.clone(), disable_auth_removal: *disable_auth_removal,
+                otel: otel.then(|| OtelConfig { endpoint: otel_endpoint.clone(), capture_content: *otel_capture_content }),
+                binary_path: binary_path.clone(),
+                log_file: log_file.clone(), quiet: *quiet, rotate_logs: *rotate_logs,
+                max_log_size: *max_log_size, server: *server, server_port: *server_port,
+            };
+            run_trace(&binary_extractor, cfg).await.map_err(convert_runner_error)?
         },
         Commands::Record { comm, binary_path, log_file, rotate_logs, max_log_size, server_port } => {
-            // Predefined filter patterns optimized for agent monitoring
-            let http_filter_patterns = vec![
-                "request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string(),
-            ];
-            let ssl_filter_patterns = vec![
-                "data=0\\r\\n\\r\\n | data.type=binary".to_string(),
-            ];
-
-            // Enable system monitoring by default for record command
-            run_trace(&binary_extractor, true, None, None, Some(comm), &ssl_filter_patterns, false, true, false, true, false, None, None, false, 8192, None, None, true, 2, &http_filter_patterns, false, None, binary_path.as_deref(), log_file, true, *rotate_logs, *max_log_size, true, *server_port).await.map_err(convert_runner_error)?
+            // Predefined filter patterns optimized for agent monitoring. Enables
+            // SSL + process + system monitoring and the web server by default.
+            let cfg = TraceConfig {
+                name: "trace",
+                ssl: true,
+                comm: Some(comm.clone()),
+                ssl_filter: vec!["data=0\\r\\n\\r\\n | data.type=binary".to_string()],
+                ssl_http: true,
+                process: true,
+                stdio_max_bytes: 8192,
+                system: true,
+                system_interval: 2,
+                http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
+                binary_path: binary_path.clone(),
+                log_file: log_file.clone(),
+                quiet: true,
+                rotate_logs: *rotate_logs,
+                max_log_size: *max_log_size,
+                server: true,
+                server_port: *server_port,
+                ..Default::default()
+            };
+            run_trace(&binary_extractor, cfg).await.map_err(convert_runner_error)?
         },
         Commands::Exec { binary_path, log_file, rotate_logs, max_log_size, no_server, server_port, command } => {
             run_exec(&binary_extractor, command, binary_path.as_deref(), log_file, *rotate_logs, *max_log_size, !*no_server, *server_port).await.map_err(convert_runner_error)?
@@ -619,34 +692,37 @@ async fn run_raw_stdio(binary_extractor: &BinaryExtractor, pid: u32, uid: Option
 /// Shared by `run_trace` and `run_exec` so they configure runners identically.
 fn build_trace_agent(
     binary_extractor: &BinaryExtractor,
-    name: &str,
-    ssl_enabled: bool,
-    pid: Option<u32>,
-    ssl_uid: Option<u32>,
-    comm: Option<&str>,
-    ssl_filter: &[String],
-    ssl_handshake: bool,
-    ssl_http: bool,
-    ssl_raw_data: bool,
-    process_enabled: bool,
-    stdio_enabled: bool,
-    stdio_uid: Option<u32>,
-    stdio_comm: Option<&str>,
-    stdio_all_fds: bool,
-    stdio_max_bytes: u32,
-    duration: Option<u32>,
-    mode: Option<u32>,
-    system_enabled: bool,
-    system_interval: u64,
-    http_filter: &[String],
-    disable_auth_removal: bool,
-    otel: Option<OtelConfig>,
-    binary_path: Option<&str>,
-    log_file: &str,
-    quiet: bool,
-    rotate_logs: bool,
-    max_log_size: u64,
+    cfg: &TraceConfig,
 ) -> Result<AgentRunner, RunnerError> {
+    // Bind config fields to the local names the body below uses.
+    let name = cfg.name;
+    let ssl_enabled = cfg.ssl;
+    let pid = cfg.pid;
+    let ssl_uid = cfg.ssl_uid;
+    let comm = cfg.comm.as_deref();
+    let ssl_filter = cfg.ssl_filter.as_slice();
+    let ssl_handshake = cfg.ssl_handshake;
+    let ssl_http = cfg.ssl_http;
+    let ssl_raw_data = cfg.ssl_raw_data;
+    let process_enabled = cfg.process;
+    let stdio_enabled = cfg.stdio;
+    let stdio_uid = cfg.stdio_uid;
+    let stdio_comm = cfg.stdio_comm.as_deref();
+    let stdio_all_fds = cfg.stdio_all_fds;
+    let stdio_max_bytes = cfg.stdio_max_bytes;
+    let duration = cfg.duration;
+    let mode = cfg.mode;
+    let system_enabled = cfg.system;
+    let system_interval = cfg.system_interval;
+    let http_filter = cfg.http_filter.as_slice();
+    let disable_auth_removal = cfg.disable_auth_removal;
+    let otel = &cfg.otel;
+    let binary_path = cfg.binary_path.as_deref();
+    let log_file = cfg.log_file.as_str();
+    let quiet = cfg.quiet;
+    let rotate_logs = cfg.rotate_logs;
+    let max_log_size = cfg.max_log_size;
+
     let mut agent = AgentRunner::new(name);
 
     // Add SSL runner if enabled
@@ -709,7 +785,7 @@ fn build_trace_agent(
 
             // Export GenAI spans to an OpenTelemetry Collector if requested.
             // Placed last so it observes fully-parsed (and auth-scrubbed) events.
-            if let Some(otel_config) = &otel {
+            if let Some(otel_config) = otel {
                 ssl_runner = ssl_runner.add_analyzer(Box::new(OtelExporter::new(
                     otel_config.endpoint.clone(),
                     otel_config.capture_content,
@@ -815,37 +891,20 @@ fn build_trace_agent(
 /// Trace monitoring with configurable runners and analyzers
 async fn run_trace(
     binary_extractor: &BinaryExtractor,
-    ssl_enabled: bool,
-    pid: Option<u32>,
-    ssl_uid: Option<u32>,
-    comm: Option<&str>,
-    ssl_filter: &[String],
-    ssl_handshake: bool,
-    ssl_http: bool,
-    ssl_raw_data: bool,
-    process_enabled: bool,
-    stdio_enabled: bool,
-    stdio_uid: Option<u32>,
-    stdio_comm: Option<&str>,
-    stdio_all_fds: bool,
-    stdio_max_bytes: u32,
-    duration: Option<u32>,
-    mode: Option<u32>,
-    system_enabled: bool,
-    system_interval: u64,
-    http_filter: &[String],
-    disable_auth_removal: bool,
-    otel: Option<OtelConfig>,
-    binary_path: Option<&str>,
-    log_file: &str,
-    quiet: bool,
-    rotate_logs: bool,
-    max_log_size: u64,
-    enable_server: bool,
-    server_port: u16,
+    mut cfg: TraceConfig,
 ) -> Result<(), RunnerError> {
     println!("Trace Monitoring");
     println!("{}", "=".repeat(60));
+
+    // A `--binary-path docker://<container>` (or `docker:<container>`) reference
+    // is translated to the host-side /proc/<host-pid>/exe of the container's
+    // main process. This is the out-of-the-box path for containerized agents
+    // such as OpenClaw, which is Node.js with a statically-linked OpenSSL — so
+    // there is no in-container libssl.so to scan, and sslsniff must attach its
+    // uprobe directly to the node binary via /proc/<pid>/exe.
+    if let Some(reference) = cfg.binary_path.as_deref().and_then(parse_container_ref) {
+        cfg.binary_path = Some(resolve_container_binary_path(reference).map_err(RunnerError::from)?);
+    }
 
     // When the user enabled SSL but didn't pin a --binary-path, try to discover
     // one from --comm. This fixes the common "record -c node" case: Node (and
@@ -853,42 +912,26 @@ async fn run_trace(
     // system libssl.so to hook. Only adopt the resolved binary if it actually
     // embeds SSL, so dynamically-linked runtimes like Python are left to
     // sslsniff's system-libssl path with comm filtering intact.
-    // A `--binary-path docker://<container>` (or `docker:<container>`) reference
-    // is translated to the host-side /proc/<host-pid>/exe of the container's
-    // main process. This is the out-of-the-box path for containerized agents
-    // such as OpenClaw, which is Node.js with a statically-linked OpenSSL — so
-    // there is no in-container libssl.so to scan, and sslsniff must attach its
-    // uprobe directly to the node binary via /proc/<pid>/exe.
-    let container_resolved: Option<String> = match binary_path.and_then(parse_container_ref) {
-        Some(reference) => Some(resolve_container_binary_path(reference).map_err(RunnerError::from)?),
-        None => None,
-    };
-    let binary_path = container_resolved.as_deref().or(binary_path);
-
-    let auto_resolved: Option<String> = if ssl_enabled && binary_path.is_none() {
-        comm.filter(|c| !c.contains(','))
+    if cfg.ssl && cfg.binary_path.is_none() {
+        let resolved = cfg.comm.as_deref()
+            .filter(|c| !c.contains(','))
             .and_then(|c| resolve_binary_path(c).ok())
-            .filter(|p| binary_embeds_ssl(p))
-            .map(|p| {
-                println!("✓ Auto-discovered statically-linked SSL binary for --comm '{}': {}",
-                         comm.unwrap_or(""), p);
-                p
-            })
-    } else {
-        None
-    };
-    let binary_path = binary_path.or(auto_resolved.as_deref());
+            .filter(|p| binary_embeds_ssl(p));
+        if let Some(p) = resolved {
+            println!("✓ Auto-discovered statically-linked SSL binary for --comm '{}': {}",
+                     cfg.comm.as_deref().unwrap_or(""), p);
+            cfg.binary_path = Some(p);
+        }
+    }
+
+    let enable_server = cfg.server;
+    let server_port = cfg.server_port;
+    let log_file = cfg.log_file.clone();
 
     // Set up event broadcasting for server if enabled
     let (event_sender, _event_receiver) = broadcast::channel(1000);
 
-    let mut agent = build_trace_agent(
-        binary_extractor, "trace", ssl_enabled, pid, ssl_uid, comm, ssl_filter,
-        ssl_handshake, ssl_http, ssl_raw_data, process_enabled, stdio_enabled,
-        stdio_uid, stdio_comm, stdio_all_fds, stdio_max_bytes, duration, mode,
-        system_enabled, system_interval, http_filter, disable_auth_removal, otel,
-        binary_path, log_file, quiet, rotate_logs, max_log_size,
-    )?;
+    let mut agent = build_trace_agent(binary_extractor, &cfg)?;
 
     println!("{}", "=".repeat(60));
     println!("Starting flexible trace monitoring with {} runners and {} global analyzers...",
@@ -896,7 +939,7 @@ async fn run_trace(
     println!("Press Ctrl+C to stop");
 
     // Start web server if enabled
-    let _server_handle = start_web_server_if_enabled(enable_server, server_port, Some(log_file), event_sender.clone()).await
+    let _server_handle = start_web_server_if_enabled(enable_server, server_port, Some(&log_file), event_sender.clone()).await
         .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = agent.run().await?;
@@ -910,253 +953,6 @@ async fn run_trace(
     }
 
     Ok(())
-}
-
-
-/// Resolve a command name/path to the real ELF binary that should be passed
-/// to sslsniff as `--binary-path`.
-///
-/// Handles three cases automatically:
-///   1. A command on `$PATH` (e.g. `claude`, `node`) -> located via PATH search.
-///   2. A symlink (e.g. `~/.local/bin/claude` -> `.../versions/2.1.150`) -> followed.
-///   3. A shebang wrapper script (`#!/usr/bin/env node`) -> the interpreter ELF.
-///
-/// Returns the canonical path of the underlying ELF executable, or an error
-/// describing why discovery failed.
-fn resolve_binary_path(command: &str) -> Result<String, String> {
-    // Limit shebang chasing so a pathological wrapper chain cannot loop forever.
-    resolve_binary_path_inner(command, 0)
-}
-
-fn resolve_binary_path_inner(command: &str, depth: u8) -> Result<String, String> {
-    if depth > 5 {
-        return Err(format!("too many nested shebang wrappers resolving '{}'", command));
-    }
-
-    // 1. Locate the file: an explicit path is used as-is, otherwise search $PATH.
-    let candidate = if command.contains('/') {
-        std::path::PathBuf::from(command)
-    } else {
-        find_in_path(command)
-            .ok_or_else(|| format!("'{}' not found in $PATH", command))?
-    };
-
-    // 2. Follow symlinks to the real file (e.g. claude -> versions/2.1.150).
-    let resolved = std::fs::canonicalize(&candidate)
-        .map_err(|e| format!("cannot resolve '{}': {}", candidate.display(), e))?;
-
-    // 3. Inspect the file header: ELF magic vs. shebang.
-    let mut header = [0u8; 256];
-    let n = {
-        use std::io::Read;
-        let mut f = std::fs::File::open(&resolved)
-            .map_err(|e| format!("cannot open '{}': {}", resolved.display(), e))?;
-        f.read(&mut header).map_err(|e| format!("cannot read '{}': {}", resolved.display(), e))?
-    };
-    let header = &header[..n];
-
-    if header.starts_with(b"\x7fELF") {
-        return Ok(resolved.to_string_lossy().into_owned());
-    }
-
-    if header.starts_with(b"#!") {
-        // Parse the shebang line: `#!/usr/bin/env node` or `#!/usr/bin/python3`.
-        let line_end = header.iter().position(|&b| b == b'\n').unwrap_or(header.len());
-        let line = String::from_utf8_lossy(&header[2..line_end]);
-        let mut parts = line.split_whitespace();
-        let interp = parts.next()
-            .ok_or_else(|| format!("'{}' has an empty shebang", resolved.display()))?;
-        // `/usr/bin/env foo` -> resolve `foo` on PATH instead of `env` itself.
-        let next = if interp.ends_with("/env") || interp == "env" {
-            parts.next().ok_or_else(|| format!("'{}' uses env with no interpreter", resolved.display()))?
-        } else {
-            interp
-        };
-        return resolve_binary_path_inner(next, depth + 1);
-    }
-
-    Err(format!(
-        "'{}' is neither an ELF binary nor a shebang script; specify --binary-path explicitly",
-        resolved.display()
-    ))
-}
-
-/// Minimal `which`: find an executable file named `cmd` in the `$PATH` dirs.
-///
-/// When invoked under `sudo`, the inherited `$PATH` is root's secure path, which
-/// usually misses user-local installs like `~/.local/bin/claude`. To make
-/// `sudo agentsight exec -- claude` find the *invoking user's* tools, we search
-/// that user's common bin dirs first (derived from `$SUDO_USER`).
-fn find_in_path(cmd: &str) -> Option<std::path::PathBuf> {
-    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-
-    if let Some(user) = std::env::var_os("SUDO_USER")
-        && let Some(home) = sudo_user_home(&user) {
-            dirs.push(home.join(".local/bin"));
-            dirs.push(home.join("bin"));
-            // NVM keeps node under ~/.nvm/versions/node/<ver>/bin; pick the newest.
-            if let Some(nvm_bin) = newest_nvm_bin(&home) {
-                dirs.push(nvm_bin);
-            }
-        }
-
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
-
-    for dir in dirs {
-        let full = dir.join(cmd);
-        if let Ok(meta) = std::fs::metadata(&full)
-            && meta.is_file() {
-                return Some(full);
-            }
-    }
-    None
-}
-
-/// Resolve the home directory of the `$SUDO_USER` by reading `/etc/passwd`.
-fn sudo_user_home(user: &std::ffi::OsStr) -> Option<std::path::PathBuf> {
-    let user = user.to_str()?;
-    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-    for line in passwd.lines() {
-        let mut fields = line.split(':');
-        if fields.next() == Some(user) {
-            // username:x:uid:gid:gecos:home:shell -> home is field index 5.
-            return fields.nth(4).map(std::path::PathBuf::from);
-        }
-    }
-    None
-}
-
-/// Find the newest NVM-installed node bin dir under a user's home, if any.
-fn newest_nvm_bin(home: &std::path::Path) -> Option<std::path::PathBuf> {
-    let versions = home.join(".nvm/versions/node");
-    let mut entries: Vec<_> = std::fs::read_dir(&versions).ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
-    entries.sort();
-    entries.last().map(|p| p.join("bin"))
-}
-
-/// Heuristic: does this ELF statically embed its own SSL implementation?
-///
-/// Node.js bundles OpenSSL directly into the `node` binary, so there is no
-/// system `libssl.so` for sslsniff to hook — it must attach to the binary
-/// itself. We detect this by scanning for the `SSL_write` symbol-name string
-/// in the file. Dynamically-linked runtimes like CPython call into a separate
-/// `libssl.so` (via `_ssl.so`) and do NOT contain this string, so they keep
-/// using sslsniff's system-libssl attachment with comm filtering intact.
-fn binary_embeds_ssl(path: &str) -> bool {
-    use std::io::Read;
-    const NEEDLE: &[u8] = b"SSL_write";
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    let mut buf = vec![0u8; 1 << 20]; // 1 MiB chunks
-    // Carry the tail of each chunk so a match spanning a boundary isn't missed.
-    let mut carry: Vec<u8> = Vec::new();
-    loop {
-        let n = match f.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(_) => return false,
-        };
-        carry.extend_from_slice(&buf[..n]);
-        if carry.windows(NEEDLE.len()).any(|w| w == NEEDLE) {
-            return true;
-        }
-        let keep = NEEDLE.len() - 1;
-        if carry.len() > keep {
-            carry.drain(..carry.len() - keep);
-        }
-    }
-    false
-}
-
-/// Strip a `docker://<ref>` or `docker:<ref>` scheme from a `--binary-path`
-/// value, returning the container reference (name or id). Returns `None` for
-/// ordinary filesystem paths, which are passed through to sslsniff unchanged.
-fn parse_container_ref(binary_path: &str) -> Option<&str> {
-    binary_path
-        .strip_prefix("docker://")
-        .or_else(|| binary_path.strip_prefix("docker:"))
-        .filter(|r| !r.is_empty())
-}
-
-/// Resolve a Docker container reference to the host path of the executable
-/// that sslsniff should attach its SSL uprobe to (`/proc/<host-pid>/exe`).
-///
-/// This works for containerized runtimes that statically link their TLS
-/// library (Node.js / OpenClaw), where there is no in-container `libssl.so`
-/// to scan for. The host PID comes from `docker inspect`, so this requires the
-/// Docker CLI and (typically) root to read the target's `/proc` entries.
-///
-/// `docker inspect .State.Pid` returns the container's *init* process, which is
-/// often a wrapper such as `tini` (OpenClaw's image uses `tini -s -- node …`).
-/// That wrapper does not embed SSL, so we walk its descendant process tree and
-/// pick the first process whose `/proc/<pid>/exe` actually embeds SSL (the
-/// `node` process). If none is found we fall back to the init PID's executable.
-fn resolve_container_binary_path(reference: &str) -> Result<String, String> {
-    let output = std::process::Command::new("docker")
-        .args(["inspect", "--format", "{{.State.Pid}}", reference])
-        .output()
-        .map_err(|e| format!(
-            "failed to run `docker inspect` for container '{}': {} (is the Docker CLI installed and on $PATH?)",
-            reference, e
-        ))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("`docker inspect {}` failed: {}", reference, stderr.trim()));
-    }
-
-    let init_pid: u32 = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .map_err(|_| format!("could not determine host PID for container '{}'", reference))?;
-
-    if init_pid == 0 {
-        return Err(format!("container '{}' is not running (host PID 0)", reference));
-    }
-
-    let target_pid = find_ssl_pid_in_tree(init_pid).unwrap_or(init_pid);
-    let exe = format!("/proc/{}/exe", target_pid);
-    if target_pid == init_pid {
-        println!("✓ Resolved container '{}' to host PID {} → {}", reference, target_pid, exe);
-    } else {
-        println!("✓ Resolved container '{}' (init PID {}) to SSL-embedding host PID {} → {}",
-                 reference, init_pid, target_pid, exe);
-    }
-    Ok(exe)
-}
-
-/// Breadth-first search the descendant process tree rooted at `root_pid` for the
-/// first process whose `/proc/<pid>/exe` statically embeds SSL. Returns that
-/// PID, or `None` if no descendant (including the root) embeds SSL.
-///
-/// Children are read from `/proc/<pid>/task/<pid>/children`, which lists the
-/// immediate child PIDs of a process. Requires permission to read those entries
-/// (root in practice for containerized processes).
-fn find_ssl_pid_in_tree(root_pid: u32) -> Option<u32> {
-    let mut queue = std::collections::VecDeque::from([root_pid]);
-    let mut seen = std::collections::HashSet::new();
-    while let Some(pid) = queue.pop_front() {
-        if !seen.insert(pid) {
-            continue;
-        }
-        if binary_embeds_ssl(&format!("/proc/{}/exe", pid)) {
-            return Some(pid);
-        }
-        let children_path = format!("/proc/{}/task/{}/children", pid, pid);
-        if let Ok(children) = std::fs::read_to_string(&children_path) {
-            for child in children.split_whitespace().filter_map(|s| s.parse::<u32>().ok()) {
-                queue.push_back(child);
-            }
-        }
-    }
-    None
 }
 
 /// Launch a target command and automatically trace it with eBPF.
@@ -1212,27 +1008,29 @@ async fn run_exec(
     };
     println!("✓ Process filter (--comm): {}", comm);
 
-    // Same optimized filters as the `record` command.
-    let http_filter_patterns = vec![
-        "request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string(),
-    ];
-    let ssl_filter_patterns = vec![
-        "data=0\\r\\n\\r\\n | data.type=binary".to_string(),
-    ];
-
     let (event_sender, _event_receiver) = broadcast::channel(1000);
 
-    let mut agent = build_trace_agent(
-        binary_extractor, "exec",
-        /* ssl */ true, /* pid */ None, /* ssl_uid */ None, Some(&comm),
-        &ssl_filter_patterns, /* ssl_handshake */ false, /* ssl_http */ true,
-        /* ssl_raw_data */ false, /* process */ true, /* stdio */ false,
-        None, None, false, 8192, None, None,
-        /* system */ true, /* system_interval */ 2,
-        &http_filter_patterns, /* disable_auth_removal */ false, /* otel */ None,
-        binary_path.as_deref(), log_file,
-        /* quiet */ true, rotate_logs, max_log_size,
-    )?;
+    // Same optimized filters as the `record` command.
+    let cfg = TraceConfig {
+        name: "exec",
+        ssl: true,
+        comm: Some(comm.clone()),
+        ssl_filter: vec!["data=0\\r\\n\\r\\n | data.type=binary".to_string()],
+        ssl_http: true,
+        process: true,
+        stdio_max_bytes: 8192,
+        system: true,
+        system_interval: 2,
+        http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
+        binary_path,
+        log_file: log_file.to_string(),
+        quiet: true,
+        rotate_logs,
+        max_log_size,
+        ..Default::default()
+    };
+
+    let mut agent = build_trace_agent(binary_extractor, &cfg)?;
 
     // Start web server before launching the child so the UI is ready immediately.
     let _server_handle = start_web_server_if_enabled(enable_server, server_port, Some(log_file), event_sender.clone()).await
@@ -1408,35 +1206,4 @@ async fn start_web_server_if_enabled(
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     Ok(Some(server_handle))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_container_ref;
-
-    #[test]
-    fn parses_docker_double_slash_scheme() {
-        assert_eq!(parse_container_ref("docker://openclaw"), Some("openclaw"));
-        assert_eq!(parse_container_ref("docker://my-agent-1"), Some("my-agent-1"));
-    }
-
-    #[test]
-    fn parses_docker_colon_scheme() {
-        assert_eq!(parse_container_ref("docker:openclaw"), Some("openclaw"));
-        // A 64-char container id is a valid reference too.
-        assert_eq!(parse_container_ref("docker:abc123def456"), Some("abc123def456"));
-    }
-
-    #[test]
-    fn ignores_plain_filesystem_paths() {
-        assert_eq!(parse_container_ref("/proc/1234/exe"), None);
-        assert_eq!(parse_container_ref("/usr/bin/node"), None);
-        assert_eq!(parse_container_ref("~/.nvm/versions/node/v20.0.0/bin/node"), None);
-    }
-
-    #[test]
-    fn rejects_empty_container_reference() {
-        assert_eq!(parse_container_ref("docker://"), None);
-        assert_eq!(parse_container_ref("docker:"), None);
-    }
 }
