@@ -126,17 +126,40 @@ export default function Home() {
     }
   };
 
-  // Load data from localStorage on component mount
+  // Load data from localStorage on component mount; if none, fall back to the
+  // bundled sample trace so the public demo shows real data on first visit.
   useEffect(() => {
     const savedContent = localStorage.getItem('agent-tracer-log');
     const savedEvents = localStorage.getItem('agent-tracer-events');
-    
+
     if (savedContent && savedEvents) {
       setLogContent(savedContent);
       setEvents(JSON.parse(savedEvents));
       setIsParsed(true);
+      return;
     }
-    // Auto-sync disabled - user must manually sync data
+
+    // No saved data: try to auto-load the bundled sample trace so the public
+    // demo isn't empty on first visit. The file is copied into the static
+    // export at build time (see the Pages deploy workflow). basePath-aware so
+    // it works both at the domain root and under a project sub-path.
+    const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${basePath}/sample-trace.log`);
+        if (!res.ok) return; // No sample available (e.g. local dev) - keep empty state.
+        const content = await res.text();
+        if (cancelled || !content.trim()) return;
+        setLogContent(content);
+        parseLogContent(content);
+      } catch {
+        // Network / static-host hiccup: silently keep the empty state.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -203,10 +226,10 @@ export default function Home() {
         <div className="space-y-6">
           {/* Controls */}
           <div className="bg-white rounded-lg shadow-md p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <div className="text-sm text-gray-600">
-                  <span className="font-medium">{events.length}</span> {t('app.eventsLoaded', { count: events.length })}
+                  <span className="font-medium">{t('app.eventsLoaded', { count: events.length })}</span>
                 </div>
                 
                 {file && (
@@ -223,9 +246,9 @@ export default function Home() {
                 )}
               </div>
               
-              <div className="flex items-center space-x-4">
+              <div className="flex flex-wrap items-center gap-2 lg:gap-4">
                 {/* View Mode Toggle */}
-                <div className="flex rounded-lg border border-gray-200 p-1">
+                <div className="flex flex-wrap rounded-lg border border-gray-200 p-1">
                   <button
                     onClick={() => setViewMode('log')}
                     className={`px-3 py-1 text-sm rounded-md transition-colors ${
