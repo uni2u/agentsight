@@ -16,23 +16,17 @@ wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsig
 ./agentsight exec -- claude
 ```
 
-No sudo needed. When the session ends you get:
+That's it. No sudo, no config. When the session ends:
 
 ```
-📊 Session Summary
-  🤖 claude-opus-4-6 — 2 API calls, 50590 tokens
-  🔍 23 processes spawned: bash, git, cat, sed, grep, ...
-  📋 44 system events captured
-  Database: ~/.local/share/agentsight/sessions/20260601-005033.db
+16s session · 3 API calls · 194003 tokens
+  claude-opus-4-6 — 2 calls, 193535 tokens
+  claude-haiku-4-5 — 1 call, 468 tokens
+26 processes spawned: git(6), head(3), cat(2), sed(2), bash(1), ...
+Network: api.anthropic.com
 ```
 
-Not just token counts — **what the agent actually did to your system**. This is what Langfuse and LangSmith can't see.
-
-```bash
-agentsight db summary            # what happened, tokens, processes, network
-agentsight db audit --json       # full event log
-agentsight db list               # all recorded sessions
-```
+Not just token counts — **what the agent actually did to your system**.
 
 <div align="center">
   <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-tree.png" alt="AgentSight Demo - Process Tree Visualization" width="800">
