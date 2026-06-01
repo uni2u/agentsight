@@ -358,6 +358,47 @@ pub(crate) fn run_db_summary(
     Ok(())
 }
 
+pub(crate) fn run_local_audit(json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (source, file, data) = read_latest_local_session()
+        .ok_or("No session data found. Install Claude Code or Codex, or pass --db.")?;
+
+    let tools = data.get("tools").and_then(|v| v.as_object());
+    let models = data.get("models").and_then(|v| v.as_object());
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&data)?);
+        return Ok(());
+    }
+
+    println!("Local {} session: {}", source, file);
+    println!();
+
+    if let Some(models) = models {
+        for (name, usage) in models {
+            if let Some(arr) = usage.as_array() {
+                let (inp, out, total) = (
+                    arr.first().and_then(|v| v.as_u64()).unwrap_or(0),
+                    arr.get(1).and_then(|v| v.as_u64()).unwrap_or(0),
+                    arr.get(2).and_then(|v| v.as_u64()).unwrap_or(0),
+                );
+                println!("  {} — {} tokens (in: {}, out: {})", name, total, inp, out);
+            }
+        }
+        println!();
+    }
+
+    if let Some(tools) = tools {
+        println!("Tool calls:");
+        let mut sorted: Vec<_> = tools.iter().collect();
+        sorted.sort_by(|a, b| b.1.as_u64().cmp(&a.1.as_u64()));
+        for (name, count) in &sorted {
+            println!("  {:<30} {}", name, count);
+        }
+    }
+
+    Ok(())
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();

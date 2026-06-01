@@ -531,8 +531,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     limit,
                     json,
                 } => {
-                    let db = resolve_db_or_latest(db)?;
-                    run_audit_query(&db, audit_type.as_deref(), *limit, *json)?;
+                    if let Ok(db) = resolve_db_or_latest(db) {
+                        run_audit_query(&db, audit_type.as_deref(), *limit, *json)?;
+                    } else {
+                        cli_db::run_local_audit(*json)?;
+                    }
                 }
                 DbCommands::Export {
                     db,
