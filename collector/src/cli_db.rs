@@ -316,7 +316,7 @@ impl SessionSummary {
 
         if !self.processes.is_empty() {
             let mut sorted: Vec<_> = self.processes.iter().collect();
-            sorted.sort_by(|a, b| b.1.cmp(a.1));
+            sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
             let exec_count: usize = sorted.iter().map(|(_, c)| *c).sum();
             let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
             println!("\n{} processes spawned: {}", exec_count, top.join(", "));
@@ -324,7 +324,7 @@ impl SessionSummary {
 
         if !self.tool_calls.is_empty() {
             let mut sorted: Vec<_> = self.tool_calls.iter().collect();
-            sorted.sort_by(|a, b| b.1.cmp(a.1));
+            sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
             let total: usize = sorted.iter().map(|(_, c)| *c).sum();
             let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
             println!("\n{} tool calls: {}", total, top.join(", "));
@@ -390,7 +390,7 @@ pub(crate) fn run_local_audit(json: bool) -> Result<(), Box<dyn std::error::Erro
     if let Some(tools) = tools {
         println!("Tool calls:");
         let mut sorted: Vec<_> = tools.iter().collect();
-        sorted.sort_by(|a, b| b.1.as_u64().cmp(&a.1.as_u64()));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.1.as_u64()));
         for (name, count) in &sorted {
             println!("  {:<30} {}", name, count);
         }
@@ -518,11 +518,10 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
                     models.insert(key.into(), (json_u64(u, "input_tokens"), json_u64(u, "output_tokens"), json_u64(u, "total_tokens")));
                 }
             }
-            ("codex", "response_item") => {
-                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("function_call") {
-                    let n = obj.pointer("/payload/name").and_then(|v| v.as_str()).unwrap_or("?");
-                    *tools.entry(n.into()).or_default() += 1;
-                }
+            ("codex", "response_item")
+                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("function_call") => {
+                let n = obj.pointer("/payload/name").and_then(|v| v.as_str()).unwrap_or("?");
+                *tools.entry(n.into()).or_default() += 1;
             }
             _ => {}
         }
