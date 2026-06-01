@@ -1548,73 +1548,13 @@ fn default_session_db_path() -> Result<String, RunnerError> {
 }
 
 fn print_session_summary(db_path: &str) {
-    let store = match framework::storage::SqliteStore::open(db_path) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let token_rows = store.token_summary("model").unwrap_or_default();
-    let audit_rows = store.audit_rows(None, 10_000).unwrap_or_default();
-
-    if token_rows.is_empty() && audit_rows.is_empty() {
-        return;
+    if let Ok(summary) = cli_db::SessionSummary::from_sqlite(db_path) {
+        println!("\n{}", "─".repeat(60));
+        println!("📊 Session Summary");
+        println!("{}", "─".repeat(60));
+        summary.print();
+        println!("{}", "─".repeat(60));
     }
-
-    println!("\n{}", "─".repeat(60));
-    println!("📊 Session Summary");
-    println!("{}", "─".repeat(60));
-
-    // --- Token usage (LLM calls) ---
-    if !token_rows.is_empty() {
-        let mut total_calls: i64 = 0;
-        let mut total_tokens: i64 = 0;
-        for row in &token_rows {
-            total_calls += row.calls;
-            total_tokens += row.total_tokens;
-            println!(
-                "  🤖 {} — {} calls, {} tokens (in: {}, out: {})",
-                row.group, row.calls, row.total_tokens, row.input_tokens, row.output_tokens
-            );
-        }
-        if token_rows.len() > 1 {
-            println!(
-                "     Total: {} API calls, {} tokens",
-                total_calls, total_tokens
-            );
-        }
-    }
-
-    // --- System behavior (what the agent actually did) ---
-    if !audit_rows.is_empty() {
-        let mut exec_count: usize = 0;
-        let mut programs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for row in &audit_rows {
-            if row.action.as_deref() == Some("exec") {
-                exec_count += 1;
-                if let Some(comm) = &row.comm {
-                    programs.insert(comm.clone());
-                }
-            }
-        }
-        if exec_count > 0 {
-            let progs: Vec<&str> = programs.iter().map(|s| s.as_str()).collect();
-            println!(
-                "  🔍 {} processes spawned: {}",
-                exec_count,
-                if progs.len() <= 8 {
-                    progs.join(", ")
-                } else {
-                    format!("{}, ... ({} total)", progs[..6].join(", "), progs.len())
-                }
-            );
-        }
-        println!("  📋 {} system events captured", audit_rows.len());
-    }
-
-    println!();
-    println!("  Database: {}", db_path);
-    println!("  Token details:  agentsight db token --db {}", db_path);
-    println!("  Full audit:     agentsight db audit --db {}", db_path);
-    println!("{}", "─".repeat(60));
 }
 
 async fn run_exec(

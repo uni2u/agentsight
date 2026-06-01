@@ -238,156 +238,123 @@ fn run_adapters_list(json: bool) -> Result<(), Box<dyn std::error::Error + Send 
     Ok(())
 }
 
+// Unified summary data — produced from SQLite, Claude JSONL, or Codex JSONL.
+pub(crate) struct SessionSummary {
+    pub source: String,
+    pub duration_s: f64,
+    pub models: Vec<(String, i64, i64, i64, i64)>, // (name, input, output, total, calls)
+    pub processes: BTreeMap<String, usize>,
+    pub tool_calls: BTreeMap<String, usize>,
+    pub files: Vec<String>,
+    pub endpoints: Vec<String>,
+    pub db_path: Option<String>,
+}
+
+impl SessionSummary {
+    pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = SqliteStore::open(db)?;
+        let snap = store.export_snapshot(SnapshotOptions { event_limit: 50_000, audit_limit: 50_000 })?;
+        let s = &snap.summary;
+        let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
+            (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
+            _ => 0.0,
+        };
+        let models = snap.token_summary.iter()
+            .map(|r| (r.group.clone(), r.input_tokens, r.output_tokens, r.total_tokens, r.calls))
+            .collect();
+        let mut processes = BTreeMap::new();
+        for row in &snap.audit_events {
+            if row.action.as_deref() == Some("exec") {
+                *processes.entry(row.comm.clone().unwrap_or_default()).or_default() += 1;
+            }
+        }
+        let mut files = Vec::new();
+        for row in &snap.audit_events {
+            if row.audit_type == "file" && row.target.as_ref().is_some_and(|t| !files.contains(t)) {
+                files.push(row.target.clone().unwrap());
+            }
+        }
+        let endpoints: Vec<String> = snap.events.iter()
+            .filter_map(|e| e.host.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter().collect();
+        Ok(Self { source: "agentsight".into(), duration_s, models, processes, tool_calls: BTreeMap::new(), files, endpoints, db_path: Some(db.into()) })
+    }
+
+    pub fn from_local_jsonl(source: &str, file: &str, data: &serde_json::Value) -> Self {
+        let models = data.get("models").and_then(|v| v.as_object()).map(|m| {
+            m.iter().map(|(name, u)| {
+                let arr = u.as_array();
+                let get = |i: usize| arr.and_then(|a| a.get(i)).and_then(|v| v.as_i64()).unwrap_or(0);
+                (name.clone(), get(0), get(1), get(2), 0i64)
+            }).collect()
+        }).unwrap_or_default();
+        let tool_calls = data.get("tools").and_then(|v| v.as_object()).map(|t| {
+            t.iter().map(|(n, c)| (n.clone(), c.as_u64().unwrap_or(0) as usize)).collect()
+        }).unwrap_or_default();
+        let duration_s = json_u64(data, "duration_ms") as f64 / 1000.0;
+        Self { source: source.into(), duration_s, models, processes: BTreeMap::new(), tool_calls, files: vec![], endpoints: vec![], db_path: Some(file.into()) }
+    }
+
+    pub fn print(&self) {
+        // Header
+        let total_tokens: i64 = self.models.iter().map(|m| m.3).sum();
+        let total_calls: i64 = self.models.iter().map(|m| m.4).sum();
+        print!("{} session", self.source);
+        if self.duration_s > 0.0 { print!(" · {:.0}s", self.duration_s); }
+        if total_calls > 0 { print!(" · {} API calls", total_calls); }
+        println!(" · {} tokens", total_tokens);
+        println!();
+
+        for (name, inp, out, total, calls) in &self.models {
+            if *calls > 0 {
+                println!("  {} — {} calls, {} tokens (in: {}, out: {})", name, calls, total, inp, out);
+            } else {
+                println!("  {} — {} tokens (in: {}, out: {})", name, total, inp, out);
+            }
+        }
+
+        if !self.processes.is_empty() {
+            let mut sorted: Vec<_> = self.processes.iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(a.1));
+            let exec_count: usize = sorted.iter().map(|(_, c)| *c).sum();
+            let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
+            println!("\n{} processes spawned: {}", exec_count, top.join(", "));
+        }
+
+        if !self.tool_calls.is_empty() {
+            let mut sorted: Vec<_> = self.tool_calls.iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(a.1));
+            let total: usize = sorted.iter().map(|(_, c)| *c).sum();
+            let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
+            println!("\n{} tool calls: {}", total, top.join(", "));
+        }
+
+        if !self.files.is_empty() {
+            let display: Vec<&str> = self.files.iter().take(5).map(|s| s.as_str()).collect();
+            let suffix = if self.files.len() > 5 { format!(", ... (+{} more)", self.files.len() - 5) } else { String::new() };
+            println!("{} files accessed: {}{}", self.files.len(), display.join(", "), suffix);
+        }
+
+        if !self.endpoints.is_empty() {
+            println!("Network: {}", self.endpoints.join(", "));
+        }
+
+        if let Some(ref path) = self.db_path {
+            println!("\n  Source: {}", path);
+        }
+    }
+}
+
 pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // If no DB, try reading local Claude/Codex sessions directly
     if db.is_none() && let Some((source, file, data)) = read_latest_local_session() {
-        print_local_summary(&source, &file, &data);
+        SessionSummary::from_local_jsonl(&source, &file, &data).print();
         return Ok(());
     }
     let db = db.ok_or("No session data found. Run `agentsight exec` first, or pass --db.")?;
-    let store = SqliteStore::open(db)?;
-
-    let snap = store.export_snapshot(SnapshotOptions {
-        event_limit: 50_000,
-        audit_limit: 50_000,
-    })?;
-    let s = &snap.summary;
-
-    // Duration
-    let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
-        (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
-        _ => 0.0,
-    };
-
-    // Token totals
-    let total_calls: i64 = snap.token_summary.iter().map(|r| r.calls).sum();
-
-    // Header
-    if duration_s > 0.0 {
-        println!(
-            "{:.0}s session · {} API calls · {} tokens",
-            duration_s, total_calls, s.total_tokens
-        );
-    } else {
-        println!(
-            "{} API calls · {} tokens",
-            total_calls, s.total_tokens
-        );
-    }
-    println!();
-
-    // Models
-    for row in &snap.token_summary {
-        println!(
-            "  {} — {} calls, {} tokens (in: {}, out: {})",
-            row.group, row.calls, row.total_tokens, row.input_tokens, row.output_tokens
-        );
-    }
-    println!();
-
-    // Process analysis from audit events
-    let mut exec_count = 0usize;
-    let mut programs: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    let mut git_subcommands: Vec<String> = Vec::new();
-    let mut test_runs = 0usize;
-    let mut git_commits = 0usize;
-
-    for row in &snap.audit_events {
-        if row.action.as_deref() != Some("exec") {
-            continue;
-        }
-        exec_count += 1;
-        let comm = row.comm.as_deref().unwrap_or("?");
-        *programs.entry(comm.to_string()).or_default() += 1;
-
-        // Detect specific activities from full_command or target
-        let target = row.target.as_deref().unwrap_or("");
-        let details = row.details.to_string();
-
-        if comm == "git" {
-            // Try to extract git subcommand from details or summary
-            let summary = row.summary.as_deref().unwrap_or("");
-            if summary.contains("commit") || details.contains("commit") {
-                git_commits += 1;
-            }
-            // Store for display
-            if let Some(sub) = summary.split("git ").nth(1) {
-                let sub = sub.split_whitespace().next().unwrap_or("");
-                if !sub.is_empty() {
-                    git_subcommands.push(sub.to_string());
-                }
-            }
-        }
-
-        if matches!(comm, "pytest" | "cargo" | "npm" | "jest" | "make")
-            && (target.contains("test") || details.contains("test"))
-        {
-            test_runs += 1;
-        }
-    }
-
-    // Files accessed (from file audit events)
-    let mut files_accessed: Vec<String> = Vec::new();
-    for row in &snap.audit_events {
-        if row.audit_type == "file" && row.target.as_ref().is_some_and(|t| !files_accessed.contains(t)) {
-            files_accessed.push(row.target.clone().unwrap());
-        }
-    }
-
-    // Network endpoints (from HTTP events in canonical events)
-    let mut endpoints: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for event in &snap.events {
-        if let Some(host) = &event.host {
-            endpoints.insert(host.clone());
-        }
-    }
-
-    // Print process summary
-    if exec_count > 0 {
-        let mut sorted: Vec<_> = programs.iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(a.1));
-        let top: Vec<String> = sorted
-            .iter()
-            .take(8)
-            .map(|(name, count)| format!("{}({})", name, count))
-            .collect();
-        println!("{} processes spawned: {}", exec_count, top.join(", "));
-
-        if git_commits > 0 {
-            println!("{} git commits", git_commits);
-        }
-        if test_runs > 0 {
-            println!("{} test runs", test_runs);
-        }
-    }
-
-    if !files_accessed.is_empty() {
-        let display: Vec<&str> = files_accessed.iter().take(5).map(|s| s.as_str()).collect();
-        if files_accessed.len() > 5 {
-            println!(
-                "{} files accessed: {}, ... (+{} more)",
-                files_accessed.len(),
-                display.join(", "),
-                files_accessed.len() - 5
-            );
-        } else {
-            println!(
-                "{} files accessed: {}",
-                files_accessed.len(),
-                display.join(", ")
-            );
-        }
-    }
-
-    if !endpoints.is_empty() {
-        let eps: Vec<&str> = endpoints.iter().map(|s| s.as_str()).collect();
-        println!("Network: {}", eps.join(", "));
-    }
-
-    println!();
-    println!("  agentsight db audit --db {} for full details", db);
+    SessionSummary::from_sqlite(db)?.print();
     Ok(())
 }
 
@@ -524,33 +491,3 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
     serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
 }
 
-fn print_local_summary(source: &str, file: &str, data: &serde_json::Value) {
-    let models = data.get("models").and_then(|v| v.as_object()).unwrap();
-    let total_tokens: u64 = models.values().map(|v| v.get(2).and_then(|v| v.as_u64()).unwrap_or(0)).sum();
-
-    print!("Latest {} session", source);
-    let ms = json_u64(data, "duration_ms");
-    if ms > 0 { print!(" · {:.0}s", ms as f64 / 1000.0); }
-    let turns = json_u64(data, "num_turns");
-    if turns > 0 { print!(" · {} turns", turns); }
-    let cost = data.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    if cost > 0.0 { print!(" · ${:.2}", cost); }
-    println!(" · {} tokens", total_tokens);
-    println!();
-
-    for (model, usage) in models {
-        let (inp, out, total) = (json_u64(usage, "0"), json_u64(usage, "1"), json_u64(usage, "2"));
-        println!("  {} — {} tokens (in: {}, out: {})", model, total, inp, out);
-    }
-
-    if let Some(tools) = data.get("tools").and_then(|v| v.as_object())
-        && !tools.is_empty()
-    {
-        let total_calls: u64 = tools.values().map(|v| v.as_u64().unwrap_or(0)).sum();
-        let mut sorted: Vec<_> = tools.iter().collect();
-        sorted.sort_by(|a, b| b.1.as_u64().cmp(&a.1.as_u64()));
-        let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
-        println!("\n{} tool calls: {}", total_calls, top.join(", "));
-    }
-    println!("\n  Source: {}", file);
-}
