@@ -580,8 +580,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Commands::Db(cmd) => {
             match cmd {
                 DbCommands::Summary { db } => {
-                    let db = resolve_db_or_latest(db)?;
-                    run_db_summary(&db)?;
+                    let resolved = resolve_db_or_latest(db).ok();
+                    run_db_summary(resolved.as_deref())?;
                 }
                 DbCommands::Import {
                     input,

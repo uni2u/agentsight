@@ -36,6 +36,22 @@ pub(crate) fn run_discover(json: bool) -> Result<(), Box<dyn std::error::Error +
             row.recommended_capture
         );
     }
+
+    // Report local session data
+    let local = crate::cli_db::count_local_sessions();
+    if !local.is_empty() {
+        println!("\nLocal session data:");
+        for (name, dir, count, bytes) in &local {
+            println!(
+                "  {:<10} {} sessions, {:.0} MB  ({})",
+                name,
+                count,
+                *bytes as f64 / 1_048_576.0,
+                dir.display()
+            );
+        }
+        println!("\n  Run `agentsight db summary` to analyze the latest session.");
+    }
     Ok(())
 }
 
