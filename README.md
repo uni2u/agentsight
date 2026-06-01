@@ -12,8 +12,12 @@ AgentSight is a observability tool designed specifically for monitoring LLM agen
 ## Quick Start
 
 ```bash
+# Install
 wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
+# Launch your agent with monitoring — works with any command
 ./agentsight exec -- claude
+# Or attach to an already-running agent by process name
+./agentsight record -c claude
 ```
 
 Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live. No sudo, no config.
