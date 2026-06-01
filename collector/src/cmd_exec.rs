@@ -78,7 +78,10 @@ pub(crate) async fn run_exec(
         (db_path, adapter)
     } else {
         match default_session_db_path() {
-            Ok(p) => (Some(p), Some(adapter.unwrap_or("auto"))),
+            Ok(p) => {
+                crate::session::cleanup_old_sessions();
+                (Some(p), Some(adapter.unwrap_or("auto")))
+            }
             Err(e) => {
                 eprintln!("⚠ Could not create session DB ({}), continuing without it.", e);
                 (None, adapter)

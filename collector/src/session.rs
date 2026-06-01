@@ -46,6 +46,26 @@ pub(crate) fn latest_session_db() -> Option<String> {
     sorted_session_dbs(&dir).first().map(|e| e.path().to_string_lossy().to_string())
 }
 
+const MAX_SESSIONS: usize = 50;
+const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024; // 500 MB
+
+pub(crate) fn cleanup_old_sessions() {
+    let Some(dir) = sessions_dir() else { return };
+    let entries = sorted_session_dbs(&dir); // newest first
+    let mut total_bytes = 0u64;
+    for (i, entry) in entries.iter().enumerate() {
+        let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+        total_bytes += size;
+        if i >= MAX_SESSIONS || total_bytes > MAX_TOTAL_BYTES {
+            // Delete this DB and its WAL/SHM files
+            let path = entry.path();
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        }
+    }
+}
+
 pub(crate) fn run_db_list() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dir = sessions_dir().ok_or("cannot determine data directory")?;
     let entries = sorted_session_dbs(&dir);
