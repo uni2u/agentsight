@@ -16,17 +16,7 @@ wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsig
 ./agentsight exec -- claude
 ```
 
-That's it. No sudo, no config. When the session ends:
-
-```
-16s session · 3 API calls · 194003 tokens
-  claude-opus-4-6 — 2 calls, 193535 tokens
-  claude-haiku-4-5 — 1 call, 468 tokens
-26 processes spawned: git(6), head(3), cat(2), sed(2), bash(1), ...
-Network: api.anthropic.com
-```
-
-Not just token counts — **what the agent actually did to your system**.
+Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live. No sudo, no config.
 
 <div align="center">
   <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-tree.png" alt="AgentSight Demo - Process Tree Visualization" width="800">
