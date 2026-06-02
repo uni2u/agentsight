@@ -1,11 +1,11 @@
 # AgentSight: Zero-Instrumentation LLM Agent Observability with eBPF
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/eunomia-bpf/agentsight)
+[![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
 
 **English** | [中文](README.zh-CN.md)
 
-AgentSight is a observability tool designed specifically for monitoring LLM agent behavior through SSL/TLS traffic interception and process monitoring. Unlike traditional application-level instrumentation, AgentSight observes at the system boundary using eBPF technology, providing comprehensive insights into AI agent interactions with minimal performance overhead.
+AgentSight is an observability tool designed specifically for monitoring LLM agent behavior through SSL/TLS traffic interception and process monitoring. Unlike traditional application-level instrumentation, AgentSight observes at the system boundary using eBPF technology, providing comprehensive insights into AI agent interactions with minimal performance overhead.
 
 **✨ Zero Instrumentation Required** - No code changes, no new dependencies, no SDKs. Works with any AI framework or application out of the box.
 
@@ -15,7 +15,7 @@ AgentSight is a observability tool designed specifically for monitoring LLM agen
 # Install
 wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
 # Launch your agent with monitoring — works with any command
-# May Need sudo for eBPF inside
+# AgentSight may prompt for sudo to load eBPF probes
 ./agentsight exec -- claude
 # Or attach to an already-running agent by process name
 sudo ./agentsight record -c claude
@@ -46,77 +46,25 @@ Open [http://127.0.0.1:7395](http://127.0.0.1:7395) to watch live.
 
 ### Traditional Observability vs. System-Level Monitoring
 
+Application-level tools such as [LangSmith](https://docs.langchain.com/langsmith/observability-concepts), [Langfuse](https://langfuse.com/docs/observability/overview), and [Phoenix](https://arize.com/docs/phoenix/) are great for traces, prompts, tokens, evals, and latency when you own the application code. Gateway/proxy tools such as [Helicone](https://docs.helicone.ai/getting-started/integration-method/gateway) are useful when you can route provider traffic through a managed endpoint.
+
+AgentSight focuses on the layer those tools often miss: what the agent actually does at the system boundary. It observes existing binaries and CLI agents without SDKs or proxies, then correlates LLM traffic with process execution, file access, and system activity.
+
 | **Challenge** | **Application-Level Tools** | **AgentSight Solution** |
 |---------------|----------------------------|------------------------|
-| **Framework Adoption** | ❌ New SDK/proxy for each framework | ✅ Drop-in daemon, no code changes |
-| **Closed-Source Tools** | ❌ Limited visibility into operations | ✅ Complete visibility into prompts & behaviors |
-| **Dynamic Agent Behavior** | ❌ Logs can be silenced or manipulated | ✅ Kernel-level hooks for reliable monitoring |
-| **Encrypted Traffic** | ❌ Only sees wrapper outputs | ✅ Captures real unencrypted requests/responses |
-| **System Interactions** | ❌ Misses subprocess executions | ✅ Tracks all process behaviors & file operations |
-| **Multi-Agent Systems** | ❌ Isolated per-process tracing | ✅ Global correlation and analysis |
+| **Framework Adoption** | ❌ SDK, callback, or gateway integration per app | ✅ Drop-in system tracer, no code changes |
+| **Closed-Source CLIs** | ❌ Limited to what the tool exposes or logs | ✅ Observes existing binaries and CLI agents from outside |
+| **Agent-Controlled Logs** | ❌ Logs can be incomplete, disabled, or modified | ✅ Kernel-level events independent of app logging |
+| **TLS LLM Traffic** | ❌ Visible when routed through SDKs/proxies | ✅ Captures plaintext at SSL/TLS calls without a proxy |
+| **System Actions** | ❌ Often misses subprocesses and local file activity | ✅ Tracks process execution, file access, and resource use |
+| **Cross-Boundary Behavior** | ❌ Traces usually stop at framework/process boundaries | ✅ Correlates LLM traffic with process and file events |
 
 AgentSight captures critical interactions that application-level tools miss:
 
 - Subprocess executions that bypass instrumentation
-- Raw encrypted payloads before agent processing
+- Plaintext LLM payloads at SSL/TLS call boundaries
 - File operations and system resource access  
-- Cross-agent communications and coordination
-
-## Architecture
-
-```ascii
-┌─────────────────────────────────────────────────┐
-│              AI Agent Runtime                   │
-│   ┌─────────────────────────────────────────┐   │
-│   │    Application-Level Observability      │   │
-│   │  (LangSmith, Helicone, Langfuse, etc.)  │   │
-│   │         🔴 Can be bypassed               │   │
-│   └─────────────────────────────────────────┘   │
-│                     ↕ (Can be bypassed)         │
-├─────────────────────────────────────────────────┤ ← System Boundary
-│  🟢 AgentSight eBPF Monitoring (Kernel-level)   │
-│  ┌─────────────────┐  ┌─────────────────────┐   │
-│  │   SSL Traffic   │  │    Process Events   │   │
-│  │   Monitoring    │  │    Monitoring       │   │
-│  └─────────────────┘  └─────────────────────┘   │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│         Rust Streaming Analysis Framework       │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────┐  │
-│  │   Runners   │  │  Analyzers   │  │ Output │  │
-│  │ (Collectors)│  │ (Processors) │  │        │  │
-│  └─────────────┘  └──────────────┘  └────────┘  │
-└─────────────────────────────────────────────────┘
-                      ↓
-┌─────────────────────────────────────────────────┐
-│           Frontend Visualization                │
-│     Timeline • Process Tree • Event Logs       │
-└─────────────────────────────────────────────────┘
-```
-
-### Core Components
-
-1. **eBPF Data Collection** (Kernel Space)
-   - **SSL Monitor**: Intercepts SSL/TLS read/write operations via uprobe hooks
-   - **Process Monitor**: Tracks process lifecycle and file operations via tracepoints
-   - **<3% Performance Overhead**: Operates below application layer with minimal impact
-
-2. **Rust Streaming Framework** (User Space)
-   - **Runners**: Execute eBPF programs and stream JSON events (SSL, Process, Agent, Combined)
-   - **Analyzers**: Pluggable processors for HTTP parsing, chunk merging, filtering, logging
-   - **Event System**: Standardized event format with rich metadata and JSON payloads
-
-3. **Frontend Visualization** (React/TypeScript)
-   - Interactive timeline, process tree, and log views
-   - Real-time data streaming and analysis
-   - See "Web Interface Access" section for details
-
-### Data Flow Pipeline
-
-```
-eBPF Programs → JSON Events → Runners → Analyzer Chain → Frontend/Storage/Output
-```
+- Cross-boundary behavior across LLM, process, and file events
 
 ## Usage
 
@@ -408,7 +356,7 @@ sudo ./bpf/process -c python
 
 #### Web Interface Access
 
-All monitoring commands with `--server` flag provide web visualization at:
+`exec` and `record` start the web UI by default. Low-level `debug trace` starts it when you pass `--server`:
 - **Timeline View**: http://127.0.0.1:7395/timeline
 - **Process Tree**: http://127.0.0.1:7395/tree
 - **Raw Logs**: http://127.0.0.1:7395/logs
