@@ -1,4 +1,4 @@
-# AgentSight: Zero-Instrumentation LLM Agent Observability with eBPF
+# AgentSight: LLM agent tracing and monitoring with eBPF
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
@@ -7,17 +7,28 @@
 
 **English** | [中文](README.zh-CN.md)
 
-AgentSight is a tracing tool for LLM agent behavior, combining SSL/TLS traffic interception with process and file-system monitoring. LLM/API traffic gives evidence about agent intent, while eBPF-observed process, file, network, and resource events show the system behavior that actually happened with minimal performance overhead.
+> AgentSight is perf/strace for AI agents: a local-first, vendor-neutral, zero instrumentation way to record
+> what an agent actually did to your machine, and connect those actions back to the prompts that triggered them.
 
-**✨ Zero Instrumentation Required** - No code changes, no new dependencies, no SDKs. Works with any AI framework or application out of the box.
+Run `agentsight` around Claude Code, Codex, Gemini CLI,
+OpenCode, OpenClaw, or any command. AgentSight records a local trace of:
+
+- processes and child processes, shell commands, cwd, argv, exit status, and duration
+- files created, written, truncated, renamed, or deleted
+- network destinations contacted
+- prompts, responses, tool intent, and LLM/model/token usage when observable
+  from network traffic or agent-native local session logs
+
+No SDK, no proxy, no vendor integration. AgentSight observes with eBPF and TLS traffic tracing, so it works even when the agent is a
+closed-source CLI. **✨ Zero Instrumentation Required**
 
 ## Quick Start
 
 ```bash
 # Install
 wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
-# Launch your agent with monitoring — works with any command
-# AgentSight may prompt for sudo to load eBPF probes
+# Launch your agent with monitoring. AgentSight may prompt for sudo
+# to load eBPF probes; the agent itself still runs as your user.
 ./agentsight exec -- claude
 # Or attach to an already-running agent by process name
 sudo ./agentsight record -c claude
@@ -92,9 +103,8 @@ AgentSight captures critical interactions that application-level tools miss:
 
 - **Linux kernel**: 4.1+ with eBPF support (5.0+ recommended)
 - **sudo access**: eBPF probes are auto-elevated; your agent stays unprivileged
-- **Rust toolchain**: 1.88.0+ (for building collector)
-- **Node.js**: 18+ (for frontend development)
-- **Build tools**: clang, llvm, libelf-dev
+
+For source builds, see [docs/build.md](docs/build.md).
 
 ### Installation
 
@@ -121,23 +131,7 @@ docker run --privileged --pid=host --network=host \
 
 #### Option 2: Build from Source
 
-```bash
-# Clone repository with submodules
-git clone https://github.com/eunomia-bpf/agentsight.git --recursive
-cd agentsight
-
-# Install system dependencies (Ubuntu/Debian)
-make install
-
-# Build all components (frontend, eBPF, and Rust)
-make build
-
-# Or build individually:
-# make build-frontend  # Build frontend assets
-# make build-bpf       # Build eBPF programs
-# make build-rust      # Build Rust collector
-
-```
+Build requirements and source build commands live in [docs/build.md](docs/build.md).
 
 ### Querying Past Sessions
 
@@ -385,46 +379,24 @@ sudo ./bpf/process -c python
 
 ## ❓ Frequently Asked Questions
 
-### General
-
-**Q: How does AgentSight differ from traditional APM tools?**
-A: AgentSight operates at the kernel level using eBPF, providing system-level monitoring that is independent of application code. Traditional APM requires instrumentation that can be modified or disabled.
+**Q: What permissions does AgentSight need?**
+A: eBPF probes need root privileges, so AgentSight may prompt for `sudo`. With `exec`, the monitored agent still runs as your normal user; only the probes are elevated.
 
 **Q: What's the performance impact?**
-A: Less than 3% CPU overhead due to optimized eBPF kernel-space data collection.
+A: Our evaluation reports less than 3% CPU overhead for typical traced agent workloads.
 
-**Q: Can agents detect they're being monitored?**  
-A: Detection is extremely difficult since monitoring occurs at the kernel level without code modification.
-
-### Technical
-
-**Q: Which Linux distributions are supported?**
-A: Any distribution with kernel 4.1+ (5.0+ recommended). Tested on Ubuntu 20.04+, CentOS 8+, RHEL 8+.
-
-**Q: Can I monitor multiple agents simultaneously?**  
-A: Yes, use combined monitoring modes for concurrent multi-agent observation with correlation.
-
-**Q: How do I filter sensitive data?**  
-A: Built-in analyzers can remove authentication headers and filter specific content patterns.
+**Q: Where does captured data go?**
+A: `exec` stores sessions locally in SQLite by default. Use `agentsight db summary`, `agentsight db audit --json`, and `agentsight db token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
 
 **Q: Why doesn't AgentSight capture traffic from Claude Code, Node.js, or Gemini CLI?**
 A: These applications statically link their SSL library (BoringSSL for Claude/Bun, OpenSSL for **all** Node.js — both NVM and system installs) into their own binary instead of using system `libssl.so`, so there's nothing for sslsniff to hook by default. AgentSight handles this for you: `exec` always discovers the binary, and `record -c node` now auto-discovers the Node binary too. For Claude, pass `--binary-path` (or use `exec`). See the "Zero-Config: exec" and "Monitoring Node.js AI Tools" sections.
 
-**Q: Why does `--comm claude` not capture SSL traffic?**
-A: Claude Code's SSL traffic runs on an internal "HTTP Client" thread, not the main "claude" thread. The `--comm` filter in sslsniff matches thread name (from `bpf_get_current_comm()`), not process name. When using `--binary-path`, the collector automatically skips the `--comm` filter for SSL monitoring.
-
-### Troubleshooting
-
-**Q: "Permission denied" errors**  
-A: Ensure you're running with `sudo` or have `CAP_BPF` and `CAP_SYS_ADMIN` capabilities.
-
-**Q: "Failed to load eBPF program" errors**
-A: Verify kernel version meets requirements (see Prerequisites). Update vmlinux.h for your architecture if needed.
-
+**Q: What should I check if tracing fails?**
+A: Verify you are on Linux with eBPF support, have `sudo` or `CAP_BPF`/`CAP_SYS_ADMIN`, and are using `exec` or the correct `--binary-path` for statically linked agents.
 
 ## 🤝 Contributing
 
-We welcome contributions! After cloning and building (see Installation above), you can:
+We welcome contributions! After cloning and building (see [docs/build.md](docs/build.md)), you can:
 
 ```bash
 # Run tests
