@@ -4,10 +4,9 @@
 use futures::stream::StreamExt;
 
 use crate::binary_resolver::resolve_binary_path;
-use crate::cli_db::{run_capture_adapters, SessionSummary};
+use crate::cli_db::{SessionSummary, run_capture_adapters};
 use crate::cmd_trace::{
-    build_trace_agent, drain_stream_for, start_web_server_if_enabled,
-    TraceConfig,
+    TraceConfig, build_trace_agent, drain_stream_for, start_web_server_if_enabled,
 };
 use crate::framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -36,7 +35,11 @@ pub(crate) fn default_session_db_path() -> Result<String, RunnerError> {
     let dir = sessions_dir()
         .ok_or_else(|| RunnerError::from("cannot determine home directory for session DB"))?;
     std::fs::create_dir_all(&dir).map_err(|e| {
-        RunnerError::from(format!("failed to create session directory {}: {}", dir.display(), e))
+        RunnerError::from(format!(
+            "failed to create session directory {}: {}",
+            dir.display(),
+            e
+        ))
     })?;
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
     Ok(dir.join(format!("{}.db", ts)).to_string_lossy().to_string())
@@ -79,7 +82,10 @@ pub(crate) async fn run_exec(
                 (Some(p), Some(adapter.unwrap_or("auto")))
             }
             Err(e) => {
-                eprintln!("⚠ Could not create session DB ({}), continuing without it.", e);
+                eprintln!(
+                    "⚠ Could not create session DB ({}), continuing without it.",
+                    e
+                );
                 (None, adapter)
             }
         }
@@ -161,7 +167,7 @@ pub(crate) async fn run_exec(
             if !ok {
                 return Err(RunnerError::from(
                     "sudo authentication failed. Either run as root (`sudo -E agentsight exec -- ...`) \
-                     or grant your user passwordless sudo for the eBPF binaries."
+                     or grant your user passwordless sudo for the eBPF binaries.",
                 ));
             }
         }

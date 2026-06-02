@@ -73,15 +73,23 @@ pub(crate) async fn run_raw_ssl(
     // Add analyzers based on flags - when HTTP parser is enabled, always enable SSE merge first
     if enable_http_parser {
         ssl_runner = ssl_runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(30000)));
-        let parser = if include_raw_data { HTTPParser::new() } else { HTTPParser::new().disable_raw_data() };
+        let parser = if include_raw_data {
+            HTTPParser::new()
+        } else {
+            HTTPParser::new().disable_raw_data()
+        };
         ssl_runner = ssl_runner.add_analyzer(Box::new(parser));
         if !http_filter_patterns.is_empty() {
-            ssl_runner = ssl_runner.add_analyzer(Box::new(HTTPFilter::with_patterns(http_filter_patterns.to_vec())));
+            ssl_runner = ssl_runner.add_analyzer(Box::new(HTTPFilter::with_patterns(
+                http_filter_patterns.to_vec(),
+            )));
         }
         if !disable_auth_removal {
             ssl_runner = ssl_runner.add_analyzer(Box::new(AuthHeaderRemover::new()));
         }
-        println!("Starting SSL event stream with SSE processing + HTTP parsing (press Ctrl+C to stop):");
+        println!(
+            "Starting SSL event stream with SSE processing + HTTP parsing (press Ctrl+C to stop):"
+        );
     } else if enable_chunk_merger {
         ssl_runner = ssl_runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(30000)));
         println!("Starting SSL event stream with SSE processing (press Ctrl+C to stop):");

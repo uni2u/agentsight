@@ -127,12 +127,7 @@ fn blog_agent_run_example_commands_are_real() {
         "--no-adapters",
     ]);
 
-    let summary = agentsight_stdout(&[
-        "db",
-        "summary",
-        "--db",
-        db.to_str().expect("db path"),
-    ]);
+    let summary = agentsight_stdout(&["db", "summary", "--db", db.to_str().expect("db path")]);
     assert!(summary.contains("agentsight session"), "{summary}");
     assert!(summary.contains("claude-sonnet-4-20250514"), "{summary}");
     assert!(summary.contains("1380 tokens"), "{summary}");

@@ -253,19 +253,34 @@ pub(crate) struct SessionSummary {
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut store = SqliteStore::open(db)?;
-        let snap = store.export_snapshot(SnapshotOptions { event_limit: 50_000, audit_limit: 50_000 })?;
+        let snap = store.export_snapshot(SnapshotOptions {
+            event_limit: 50_000,
+            audit_limit: 50_000,
+        })?;
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
             _ => 0.0,
         };
-        let models = snap.token_summary.iter()
-            .map(|r| (r.group.clone(), r.input_tokens, r.output_tokens, r.total_tokens, r.calls))
+        let models = snap
+            .token_summary
+            .iter()
+            .map(|r| {
+                (
+                    r.group.clone(),
+                    r.input_tokens,
+                    r.output_tokens,
+                    r.total_tokens,
+                    r.calls,
+                )
+            })
             .collect();
         let mut processes = BTreeMap::new();
         for row in &snap.audit_events {
             if row.action.as_deref() == Some("exec") {
-                *processes.entry(row.comm.clone().unwrap_or_default()).or_default() += 1;
+                *processes
+                    .entry(row.comm.clone().unwrap_or_default())
+                    .or_default() += 1;
             }
         }
         let mut files = Vec::new();
@@ -274,10 +289,13 @@ impl SessionSummary {
                 files.push(row.target.clone().unwrap());
             }
         }
-        let endpoints: Vec<String> = snap.events.iter()
+        let endpoints: Vec<String> = snap
+            .events
+            .iter()
             .filter_map(|e| e.host.clone())
             .collect::<std::collections::BTreeSet<_>>()
-            .into_iter().collect();
+            .into_iter()
+            .collect();
         let mut tool_calls = BTreeMap::new();
         {
             let mut stmt = store.connection_mut().prepare(
@@ -294,22 +312,56 @@ impl SessionSummary {
                 tool_calls.insert(name, count);
             }
         }
-        Ok(Self { source: "agentsight".into(), duration_s, models, processes, tool_calls, files, endpoints, db_path: Some(db.into()) })
+        Ok(Self {
+            source: "agentsight".into(),
+            duration_s,
+            models,
+            processes,
+            tool_calls,
+            files,
+            endpoints,
+            db_path: Some(db.into()),
+        })
     }
 
     pub fn from_local_jsonl(source: &str, file: &str, data: &serde_json::Value) -> Self {
-        let models = data.get("models").and_then(|v| v.as_object()).map(|m| {
-            m.iter().map(|(name, u)| {
-                let arr = u.as_array();
-                let get = |i: usize| arr.and_then(|a| a.get(i)).and_then(|v| v.as_i64()).unwrap_or(0);
-                (name.clone(), get(0), get(1), get(2), 0i64)
-            }).collect()
-        }).unwrap_or_default();
-        let tool_calls = data.get("tools").and_then(|v| v.as_object()).map(|t| {
-            t.iter().map(|(n, c)| (n.clone(), c.as_u64().unwrap_or(0) as usize)).collect()
-        }).unwrap_or_default();
+        let models = data
+            .get("models")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .map(|(name, u)| {
+                        let arr = u.as_array();
+                        let get = |i: usize| {
+                            arr.and_then(|a| a.get(i))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0)
+                        };
+                        (name.clone(), get(0), get(1), get(2), 0i64)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tool_calls = data
+            .get("tools")
+            .and_then(|v| v.as_object())
+            .map(|t| {
+                t.iter()
+                    .map(|(n, c)| (n.clone(), c.as_u64().unwrap_or(0) as usize))
+                    .collect()
+            })
+            .unwrap_or_default();
         let duration_s = json_u64(data, "duration_ms") as f64 / 1000.0;
-        Self { source: source.into(), duration_s, models, processes: BTreeMap::new(), tool_calls, files: vec![], endpoints: vec![], db_path: Some(file.into()) }
+        Self {
+            source: source.into(),
+            duration_s,
+            models,
+            processes: BTreeMap::new(),
+            tool_calls,
+            files: vec![],
+            endpoints: vec![],
+            db_path: Some(file.into()),
+        }
     }
 
     pub fn print(&self) {
@@ -317,14 +369,21 @@ impl SessionSummary {
         let total_tokens: i64 = self.models.iter().map(|m| m.3).sum();
         let total_calls: i64 = self.models.iter().map(|m| m.4).sum();
         print!("{} session", self.source);
-        if self.duration_s > 0.0 { print!(" · {:.0}s", self.duration_s); }
-        if total_calls > 0 { print!(" · {} API calls", total_calls); }
+        if self.duration_s > 0.0 {
+            print!(" · {:.0}s", self.duration_s);
+        }
+        if total_calls > 0 {
+            print!(" · {} API calls", total_calls);
+        }
         println!(" · {} tokens", total_tokens);
         println!();
 
         for (name, inp, out, total, calls) in &self.models {
             if *calls > 0 {
-                println!("  {} — {} calls, {} tokens (in: {}, out: {})", name, calls, total, inp, out);
+                println!(
+                    "  {} — {} calls, {} tokens (in: {}, out: {})",
+                    name, calls, total, inp, out
+                );
             } else {
                 println!("  {} — {} tokens (in: {}, out: {})", name, total, inp, out);
             }
@@ -334,7 +393,11 @@ impl SessionSummary {
             let mut sorted: Vec<_> = self.processes.iter().collect();
             sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
             let exec_count: usize = sorted.iter().map(|(_, c)| *c).sum();
-            let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
+            let top: Vec<String> = sorted
+                .iter()
+                .take(8)
+                .map(|(n, c)| format!("{}({})", n, c))
+                .collect();
             println!("\n{} processes spawned: {}", exec_count, top.join(", "));
         }
 
@@ -342,14 +405,27 @@ impl SessionSummary {
             let mut sorted: Vec<_> = self.tool_calls.iter().collect();
             sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
             let total: usize = sorted.iter().map(|(_, c)| *c).sum();
-            let top: Vec<String> = sorted.iter().take(8).map(|(n, c)| format!("{}({})", n, c)).collect();
+            let top: Vec<String> = sorted
+                .iter()
+                .take(8)
+                .map(|(n, c)| format!("{}({})", n, c))
+                .collect();
             println!("\n{} tool calls: {}", total, top.join(", "));
         }
 
         if !self.files.is_empty() {
             let display: Vec<&str> = self.files.iter().take(5).map(|s| s.as_str()).collect();
-            let suffix = if self.files.len() > 5 { format!(", ... (+{} more)", self.files.len() - 5) } else { String::new() };
-            println!("{} files accessed: {}{}", self.files.len(), display.join(", "), suffix);
+            let suffix = if self.files.len() > 5 {
+                format!(", ... (+{} more)", self.files.len() - 5)
+            } else {
+                String::new()
+            };
+            println!(
+                "{} files accessed: {}{}",
+                self.files.len(),
+                display.join(", "),
+                suffix
+            );
         }
 
         if !self.endpoints.is_empty() {
@@ -365,7 +441,9 @@ impl SessionSummary {
 pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if db.is_none() && let Some((source, file, data)) = read_latest_local_session() {
+    if db.is_none()
+        && let Some((source, file, data)) = read_latest_local_session()
+    {
         SessionSummary::from_local_jsonl(&source, &file, &data).print();
         return Ok(());
     }
@@ -435,31 +513,43 @@ use std::collections::BTreeMap;
 
 fn local_session_dirs() -> Vec<(&'static str, std::path::PathBuf)> {
     let home = dirs::home_dir().unwrap_or_default();
-    [("claude", home.join(".claude/projects")), ("codex", home.join(".codex/sessions"))]
-        .into_iter()
-        .filter(|(_, d)| d.is_dir())
-        .collect()
+    [
+        ("claude", home.join(".claude/projects")),
+        ("codex", home.join(".codex/sessions")),
+    ]
+    .into_iter()
+    .filter(|(_, d)| d.is_dir())
+    .collect()
 }
 
 fn walk_jsonl(dir: &std::path::Path, f: &mut dyn FnMut(&std::path::Path, &std::fs::Metadata)) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             walk_jsonl(&path, f);
         } else if path.extension().is_some_and(|e| e == "jsonl")
-            && let Ok(meta) = path.metadata() {
+            && let Ok(meta) = path.metadata()
+        {
             f(&path, &meta);
         }
     }
 }
 
 pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, usize, u64)> {
-    local_session_dirs().into_iter().filter_map(|(name, dir)| {
-        let (mut count, mut bytes) = (0usize, 0u64);
-        walk_jsonl(&dir, &mut |_, meta| { count += 1; bytes += meta.len(); });
-        (count > 0).then_some((name, dir, count, bytes))
-    }).collect()
+    local_session_dirs()
+        .into_iter()
+        .filter_map(|(name, dir)| {
+            let (mut count, mut bytes) = (0usize, 0u64);
+            walk_jsonl(&dir, &mut |_, meta| {
+                count += 1;
+                bytes += meta.len();
+            });
+            (count > 0).then_some((name, dir, count, bytes))
+        })
+        .collect()
 }
 
 fn read_latest_local_session() -> Option<(String, String, serde_json::Value)> {
@@ -494,19 +584,27 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
     let mut codex_model = String::new();
 
     for line in content.lines() {
-        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match (source, typ) {
             ("claude", "result") => {
                 duration_ms = json_u64(&obj, "duration_ms");
                 num_turns = json_u64(&obj, "num_turns");
-                cost_usd = obj.get("total_cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                cost_usd = obj
+                    .get("total_cost_usd")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
                 if let Some(mu) = obj.get("modelUsage").and_then(|v| v.as_object()) {
                     for (m, u) in mu {
                         let inp = json_u64(u, "inputTokens");
                         let out = json_u64(u, "outputTokens");
-                        let total = inp + out + json_u64(u, "cacheReadInputTokens") + json_u64(u, "cacheCreationInputTokens");
+                        let total = inp
+                            + out
+                            + json_u64(u, "cacheReadInputTokens")
+                            + json_u64(u, "cacheCreationInputTokens");
                         models.insert(m.clone(), (inp, out, total));
                     }
                 }
@@ -530,19 +628,37 @@ fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
                 if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("token_count")
                     && let Some(u) = obj.pointer("/payload/info/total_token_usage")
                 {
-                    let key = if codex_model.is_empty() { "unknown" } else { &codex_model };
-                    models.insert(key.into(), (json_u64(u, "input_tokens"), json_u64(u, "output_tokens"), json_u64(u, "total_tokens")));
+                    let key = if codex_model.is_empty() {
+                        "unknown"
+                    } else {
+                        &codex_model
+                    };
+                    models.insert(
+                        key.into(),
+                        (
+                            json_u64(u, "input_tokens"),
+                            json_u64(u, "output_tokens"),
+                            json_u64(u, "total_tokens"),
+                        ),
+                    );
                 }
             }
             ("codex", "response_item")
-                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("function_call") => {
-                let n = obj.pointer("/payload/name").and_then(|v| v.as_str()).unwrap_or("?");
+                if obj.pointer("/payload/type").and_then(|v| v.as_str())
+                    == Some("function_call") =>
+            {
+                let n = obj
+                    .pointer("/payload/name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 *tools.entry(n.into()).or_default() += 1;
             }
             _ => {}
         }
     }
 
-    if models.is_empty() { return serde_json::Value::Null; }
+    if models.is_empty() {
+        return serde_json::Value::Null;
+    }
     serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
 }

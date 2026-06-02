@@ -753,7 +753,9 @@ impl GenericProjector {
             }
             EventKind::ProcessExec => self.project_process_audit(store, event, "exec")?,
             EventKind::ProcessExit => self.project_process_audit(store, event, "exit")?,
-            EventKind::FsOpen if is_writable_open(event) => self.project_file_audit(store, event)?,
+            EventKind::FsOpen if is_writable_open(event) => {
+                self.project_file_audit(store, event)?
+            }
             EventKind::FsWrite | EventKind::FsMutation => self.project_file_audit(store, event)?,
             _ => {}
         }

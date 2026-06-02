@@ -26,8 +26,8 @@ mod server;
 mod session;
 
 use cli_db::{
-    AdapterCommand, configured_db_path, run_adapters_command, run_audit_query,
-    run_db_summary, run_export, run_replay, run_token_query,
+    AdapterCommand, configured_db_path, run_adapters_command, run_audit_query, run_db_summary,
+    run_export, run_replay, run_token_query,
 };
 use cli_discover::run_discover;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
@@ -69,7 +69,8 @@ async fn setup_signal_handler() {
 
 #[derive(Parser)]
 #[command(
-    author, version,
+    author,
+    version,
     about = "AgentSight: See what your AI agents actually do.\n\n\
              eBPF probes require root — AgentSight auto-elevates them via sudo\n\
              while your agent runs as your normal user."

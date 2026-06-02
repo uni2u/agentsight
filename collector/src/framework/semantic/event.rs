@@ -194,7 +194,7 @@ pub fn normalize_event(
             e if e.contains("FILE_") => EventKind::FsMutation,
             _ => EventKind::Unknown,
         };
-    } else if source == "stdio" || source == "stdiocap" || source == "cli_output" {
+    } else if source == "stdio" || source == "stdiocap" {
         kind = if data.get("rpc_method").is_some() {
             EventKind::StdioRpc
         } else {

@@ -70,7 +70,7 @@ WHERE c.kind = 'llm.request'
         OR LOWER(COALESCE(existing.response_body_json, '')) LIKE '%geminicli/%'
       )
   )
-GROUP BY pid, comm;
+GROUP BY c.pid, c.comm;
 
 INSERT OR REPLACE INTO conversations (
   id, session_id, start_timestamp_ms, end_timestamp_ms, model,

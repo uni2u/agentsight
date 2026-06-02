@@ -33,17 +33,22 @@ pub(crate) fn sorted_session_dbs(dir: &std::path::Path) -> Vec<std::fs::DirEntry
     entries
 }
 
-pub(crate) fn resolve_db_or_latest(db: &Option<String>) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn resolve_db_or_latest(
+    db: &Option<String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     if let Some(db) = db {
         return Ok(db.clone());
     }
-    latest_session_db()
-        .ok_or_else(|| "No session database found. Run `agentsight exec` first or pass --db.".into())
+    latest_session_db().ok_or_else(|| {
+        "No session database found. Run `agentsight exec` first or pass --db.".into()
+    })
 }
 
 pub(crate) fn latest_session_db() -> Option<String> {
     let dir = sessions_dir()?;
-    sorted_session_dbs(&dir).first().map(|e| e.path().to_string_lossy().to_string())
+    sorted_session_dbs(&dir)
+        .first()
+        .map(|e| e.path().to_string_lossy().to_string())
 }
 
 const MAX_SESSIONS: usize = 50;
@@ -75,12 +80,23 @@ pub(crate) fn run_db_list() -> Result<(), Box<dyn std::error::Error + Send + Syn
     }
     println!("Session databases in {}:", dir.display());
     for entry in &entries {
-        let modified = entry.metadata().ok()
+        let modified = entry
+            .metadata()
+            .ok()
             .and_then(|m| m.modified().ok())
-            .map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string())
+            .map(|t| {
+                chrono::DateTime::<chrono::Local>::from(t)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
             .unwrap_or_default();
         let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
-        println!("  {} ({} KB, {})", entry.path().display(), size / 1024, modified);
+        println!(
+            "  {} ({} KB, {})",
+            entry.path().display(),
+            size / 1024,
+            modified
+        );
     }
     Ok(())
 }

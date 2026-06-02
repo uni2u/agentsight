@@ -3,7 +3,9 @@
 
 use futures::stream::StreamExt;
 
-use crate::binary_resolver::{binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path};
+use crate::binary_resolver::{
+    binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
+};
 use crate::cli_db::run_capture_adapters;
 use crate::framework::{
     analyzers::{
@@ -11,7 +13,10 @@ use crate::framework::{
         SSEProcessor, SSLFilter, TimestampNormalizer,
     },
     binary_extractor::BinaryExtractor,
-    runners::{AgentRunner, EventStream, ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner},
+    runners::{
+        AgentRunner, EventStream, ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner,
+        SystemRunner,
+    },
     storage::StorageAnalyzer,
 };
 use crate::server::WebServer;

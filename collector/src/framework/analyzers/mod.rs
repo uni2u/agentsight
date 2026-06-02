@@ -44,7 +44,6 @@ pub use sse_processor::SSEProcessor;
 pub use ssl_filter::{SSLFilter, print_global_ssl_filter_metrics};
 pub use timestamp_normalizer::TimestampNormalizer;
 
-
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod comprehensive_analyzer_chain_tests;
