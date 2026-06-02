@@ -4,7 +4,8 @@
 use futures::stream::StreamExt;
 
 use crate::binary_resolver::resolve_binary_path;
-use crate::cli_db::{SessionSummary, run_capture_adapters};
+use crate::cli_db::run_capture_adapters;
+use crate::cli_output::{SessionSummary, print_session_summary as print_summary};
 use crate::cmd_trace::{
     TraceConfig, build_trace_agent, drain_stream_for, start_web_server_if_enabled,
 };
@@ -48,7 +49,7 @@ pub(crate) fn default_session_db_path() -> Result<String, RunnerError> {
 pub(crate) fn print_session_summary(db_path: &str) {
     if let Ok(summary) = SessionSummary::from_sqlite(db_path) {
         println!();
-        summary.print();
+        print_summary(&summary);
     }
 }
 

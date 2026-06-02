@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+use crate::cli_output::{
+    SessionSummary, print_adapter_run, print_adapters, print_audit_rows, print_capture_adapters,
+    print_exported_snapshot, print_json, print_llm_prompts, print_local_audit, print_replay,
+    print_session_summary, print_token_summary,
+};
 use crate::framework::{
     adapters::{builtin_adapters, run_sql_adapters},
     core::Event,
@@ -58,15 +63,9 @@ pub(crate) fn run_replay(
 
     if let Some(adapter) = adapter {
         run_sql_adapters(&mut store, adapter)?;
-        println!(
-            "Replayed {} events into {} and ran adapter '{}'",
-            inserted, db, adapter
-        );
+        print_replay(db, inserted, Some(adapter));
     } else {
-        println!(
-            "Replayed {} events into {} without SQL adapters",
-            inserted, db
-        );
+        print_replay(db, inserted, None);
     }
     Ok(())
 }
@@ -79,25 +78,9 @@ pub(crate) fn run_token_query(
     let store = SqliteStore::open(db)?;
     let rows = store.token_summary(group_by)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        print_json(&rows)?;
     } else {
-        println!("Token usage grouped by {}", group_by);
-        println!(
-            "{:<32} {:>12} {:>12} {:>12} {:>12} {:>12} {:>8}",
-            "group", "input", "output", "cache_new", "cache_read", "total", "calls"
-        );
-        for row in rows {
-            println!(
-                "{:<32} {:>12} {:>12} {:>12} {:>12} {:>12} {:>8}",
-                truncate(&row.group, 32),
-                row.input_tokens,
-                row.output_tokens,
-                row.cache_creation_tokens,
-                row.cache_read_tokens,
-                row.total_tokens,
-                row.calls
-            );
-        }
+        print_token_summary(group_by, &rows);
     }
     Ok(())
 }
@@ -111,27 +94,9 @@ pub(crate) fn run_audit_query(
     let store = SqliteStore::open(db)?;
     let rows = store.audit_rows(audit_type, limit)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        print_json(&rows)?;
     } else {
-        println!("Audit events");
-        println!(
-            "{:<15} {:<10} {:<8} {:<16} {:<10} {:<28} summary",
-            "timestamp_ms", "type", "pid", "comm", "status", "target"
-        );
-        for row in rows {
-            println!(
-                "{:<15} {:<10} {:<8} {:<16} {:<10} {:<28} {}",
-                row.timestamp_ms,
-                row.audit_type,
-                row.pid
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                truncate(row.comm.as_deref().unwrap_or("-"), 16),
-                row.status.as_deref().unwrap_or("-"),
-                truncate(row.target.as_deref().unwrap_or("-"), 28),
-                row.summary.as_deref().unwrap_or("")
-            );
-        }
+        print_audit_rows(&rows);
     }
     Ok(())
 }
@@ -144,23 +109,9 @@ pub(crate) fn run_prompts_query(
     let store = SqliteStore::open(db)?;
     let rows = store.llm_call_rows(limit)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        print_json(&rows)?;
     } else {
-        println!("LLM prompts");
-        println!(
-            "{:<15} {:<16} {:<28} {:>8} prompt",
-            "timestamp_ms", "comm", "model", "tokens"
-        );
-        for row in rows {
-            println!(
-                "{:<15} {:<16} {:<28} {:>8} {}",
-                row.start_timestamp_ms,
-                truncate(row.comm.as_deref().unwrap_or("-"), 16),
-                truncate(row.model.as_deref().unwrap_or("-"), 28),
-                row.total_tokens,
-                prompt_preview(&row.request, 96)
-            );
-        }
+        print_llm_prompts(&rows);
     }
     Ok(())
 }
@@ -183,7 +134,7 @@ pub(crate) fn run_export(
         stdout.write_all(b"\n")?;
     } else {
         std::fs::write(output, json)?;
-        println!("Exported snapshot to {}", output);
+        print_exported_snapshot(output);
     }
     Ok(())
 }
@@ -218,7 +169,7 @@ pub(crate) fn run_capture_adapters(
     run_sql_adapters(&mut store, adapter).map_err(|e| {
         RunnerError::from(format!("failed to run SQL adapter '{}': {}", adapter, e))
     })?;
-    println!("✓ SQL adapters projected: {} ({})", adapter, db_path);
+    print_capture_adapters(db_path, adapter);
     Ok(())
 }
 
@@ -228,7 +179,7 @@ fn run_adapters_on_db(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut store = SqliteStore::open(db)?;
     run_sql_adapters(&mut store, adapter)?;
-    println!("Ran SQL adapter '{}' on {}", adapter, db);
+    print_adapter_run(db, adapter);
     Ok(())
 }
 
@@ -247,36 +198,11 @@ fn run_adapters_list(json: bool) -> Result<(), Box<dyn std::error::Error + Send 
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        print_json(&rows)?;
     } else {
-        println!("{:<16} {:<10} {:<8} detect", "id", "version", "type");
-        for adapter in adapters {
-            println!(
-                "{:<16} {:<10} {:<8} {}",
-                adapter.id,
-                adapter.version,
-                adapter.adapter_type,
-                if adapter.supports_detect() {
-                    "yes"
-                } else {
-                    "no"
-                }
-            );
-        }
+        print_adapters(&adapters);
     }
     Ok(())
-}
-
-// Unified summary data — produced from SQLite, Claude JSONL, or Codex JSONL.
-pub(crate) struct SessionSummary {
-    pub source: String,
-    pub duration_s: f64,
-    pub models: Vec<(String, i64, i64, i64, i64)>, // (name, input, output, total, calls)
-    pub processes: BTreeMap<String, usize>,
-    pub process_exits: BTreeMap<String, usize>,
-    pub tool_calls: BTreeMap<String, usize>,
-    pub files: Vec<String>,
-    pub endpoints: Vec<String>,
 }
 
 impl SessionSummary {
@@ -399,102 +325,6 @@ impl SessionSummary {
             endpoints: vec![],
         }
     }
-
-    pub fn print(&self) {
-        // Header
-        let total_tokens: i64 = self.models.iter().map(|m| m.3).sum();
-        let total_calls: i64 = self.models.iter().map(|m| m.4).sum();
-        let has_tokens = self
-            .models
-            .iter()
-            .any(|(_, input, output, total, _)| *input > 0 || *output > 0 || *total > 0);
-        print!("{} session", self.source);
-        if self.duration_s > 0.0 {
-            print!(" · {:.0}s", self.duration_s);
-        }
-        if total_calls > 0 {
-            print!(" · {} API calls", total_calls);
-        }
-        if has_tokens {
-            print!(" · {} tokens", total_tokens);
-        }
-        println!();
-        println!();
-
-        for (name, inp, out, total, calls) in &self.models {
-            if *inp == 0 && *out == 0 && *total == 0 {
-                continue;
-            }
-            if *calls > 0 {
-                println!(
-                    "  {} — {} calls, {} tokens (in: {}, out: {})",
-                    name, calls, total, inp, out
-                );
-            } else {
-                println!("  {} — {} tokens (in: {}, out: {})", name, total, inp, out);
-            }
-        }
-
-        if !self.processes.is_empty() {
-            let mut sorted: Vec<_> = self.processes.iter().collect();
-            sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
-            let exec_count: usize = sorted.iter().map(|(_, c)| *c).sum();
-            let top: Vec<String> = sorted
-                .iter()
-                .take(8)
-                .map(|(n, c)| format!("{}({})", n, c))
-                .collect();
-            println!("\n{} processes spawned: {}", exec_count, top.join(", "));
-        }
-
-        if !self.process_exits.is_empty() {
-            let exit_count: usize = self.process_exits.values().sum();
-            let ordered = ["failure", "success", "observed"];
-            let mut parts = Vec::new();
-            for status in ordered {
-                if let Some(count) = self.process_exits.get(status) {
-                    parts.push(format!("{}({})", status, count));
-                }
-            }
-            for (status, count) in &self.process_exits {
-                if !ordered.contains(&status.as_str()) {
-                    parts.push(format!("{}({})", status, count));
-                }
-            }
-            println!("{} process exits: {}", exit_count, parts.join(", "));
-        }
-
-        if !self.tool_calls.is_empty() {
-            let mut sorted: Vec<_> = self.tool_calls.iter().collect();
-            sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
-            let total: usize = sorted.iter().map(|(_, c)| *c).sum();
-            let top: Vec<String> = sorted
-                .iter()
-                .take(8)
-                .map(|(n, c)| format!("{}({})", n, c))
-                .collect();
-            println!("\n{} tool calls: {}", total, top.join(", "));
-        }
-
-        if !self.files.is_empty() {
-            let display: Vec<&str> = self.files.iter().take(5).map(|s| s.as_str()).collect();
-            let suffix = if self.files.len() > 5 {
-                format!(", ... (+{} more)", self.files.len() - 5)
-            } else {
-                String::new()
-            };
-            println!(
-                "{} files accessed: {}{}",
-                self.files.len(),
-                display.join(", "),
-                suffix
-            );
-        }
-
-        if !self.endpoints.is_empty() {
-            println!("Network: {}", self.endpoints.join(", "));
-        }
-    }
 }
 
 pub(crate) fn run_db_summary(
@@ -503,11 +333,11 @@ pub(crate) fn run_db_summary(
     if db.is_none()
         && let Some((source, file, data)) = read_latest_local_session()
     {
-        SessionSummary::from_local_jsonl(&source, &file, &data).print();
+        print_session_summary(&SessionSummary::from_local_jsonl(&source, &file, &data));
         return Ok(());
     }
     let db = db.ok_or("No session data found. Run `agentsight record` first, or pass --db.")?;
-    SessionSummary::from_sqlite(db)?.print();
+    print_session_summary(&SessionSummary::from_sqlite(db)?);
     Ok(())
 }
 
@@ -515,100 +345,14 @@ pub(crate) fn run_local_audit(json: bool) -> Result<(), Box<dyn std::error::Erro
     let (source, file, data) = read_latest_local_session()
         .ok_or("No session data found. Install Claude Code or Codex, or pass --db.")?;
 
-    let tools = data.get("tools").and_then(|v| v.as_object());
-    let models = data.get("models").and_then(|v| v.as_object());
-
     if json {
-        println!("{}", serde_json::to_string_pretty(&data)?);
+        print_json(&data)?;
         return Ok(());
     }
 
-    println!("Local {} session: {}", source, file);
-    println!();
-
-    if let Some(models) = models {
-        for (name, usage) in models {
-            if let Some(arr) = usage.as_array() {
-                let (inp, out, total) = (
-                    arr.first().and_then(|v| v.as_u64()).unwrap_or(0),
-                    arr.get(1).and_then(|v| v.as_u64()).unwrap_or(0),
-                    arr.get(2).and_then(|v| v.as_u64()).unwrap_or(0),
-                );
-                println!("  {} — {} tokens (in: {}, out: {})", name, total, inp, out);
-            }
-        }
-        println!();
-    }
-
-    if let Some(tools) = tools {
-        println!("Tool calls:");
-        let mut sorted: Vec<_> = tools.iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.1.as_u64()));
-        for (name, count) in &sorted {
-            println!("  {:<30} {}", name, count);
-        }
-    }
+    print_local_audit(&source, &file, &data);
 
     Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    if max <= 3 {
-        return ".".repeat(max);
-    }
-    let mut out: String = s.chars().take(max - 3).collect();
-    out.push_str("...");
-    out
-}
-
-fn prompt_preview(value: &serde_json::Value, max: usize) -> String {
-    let text = extract_prompt_text(value).unwrap_or_else(|| value.to_string());
-    truncate(&text.split_whitespace().collect::<Vec<_>>().join(" "), max)
-}
-
-fn extract_prompt_text(value: &serde_json::Value) -> Option<String> {
-    if let Some(prompt) = value.get("prompt").and_then(|v| v.as_str()) {
-        return Some(prompt.to_string());
-    }
-
-    let mut parts = Vec::new();
-    if let Some(messages) = value.get("messages").and_then(|v| v.as_array()) {
-        for message in messages {
-            collect_content_text(message.get("content").unwrap_or(message), &mut parts);
-        }
-    }
-    if let Some(contents) = value.get("contents").and_then(|v| v.as_array()) {
-        for content in contents {
-            collect_content_text(content, &mut parts);
-        }
-    }
-
-    (!parts.is_empty()).then(|| parts.join(" "))
-}
-
-fn collect_content_text(value: &serde_json::Value, out: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(s) => out.push(s.clone()),
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_content_text(item, out);
-            }
-        }
-        serde_json::Value::Object(obj) => {
-            for key in ["text", "content"] {
-                if let Some(v) = obj.get(key) {
-                    collect_content_text(v, out);
-                }
-            }
-            if let Some(parts) = obj.get("parts") {
-                collect_content_text(parts, out);
-            }
-        }
-        _ => {}
-    }
 }
 
 // ---------------------------------------------------------------------------

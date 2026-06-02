@@ -146,23 +146,14 @@ impl Default for FakeRunner {
 #[async_trait]
 impl Runner for FakeRunner {
     async fn run(&mut self) -> Result<EventStream, RunnerError> {
-        eprintln!(
-            "FakeRunner: Starting to generate {} fake SSL event pairs with {}ms delay",
-            self.event_count, self.delay_ms
-        );
-
         let event_count = self.event_count;
         let delay_ms = self.delay_ms;
 
         // Create event stream using a simple generator
         let event_stream = async_stream::stream! {
             for i in 0..event_count {
-                eprintln!("FakeRunner: Generating request/response pair #{}", i + 1);
-
                 // Generate and yield request
                 let request_event = Self::generate_ssl_request(i);
-                eprintln!("FakeRunner: Yielding request event #{} (PID: {})",
-                    i + 1, request_event.data["pid"].as_u64().unwrap_or(0));
                 yield request_event;
 
                 // Small delay between request and response
@@ -170,8 +161,6 @@ impl Runner for FakeRunner {
 
                 // Generate and yield response
                 let response_event = Self::generate_ssl_response(i);
-                eprintln!("FakeRunner: Yielding response event #{} (PID: {})",
-                    i + 1, response_event.data["pid"].as_u64().unwrap_or(0));
                 yield response_event;
 
                 // Longer delay between pairs (except for the last pair)
@@ -180,14 +169,9 @@ impl Runner for FakeRunner {
                 }
             }
 
-            eprintln!("FakeRunner: Completed generating {} request/response pairs", event_count);
         };
 
         // Process through analyzer chain
-        eprintln!(
-            "FakeRunner: Processing through {} analyzers",
-            self.analyzers.len()
-        );
         AnalyzerProcessor::process_through_analyzers(Box::pin(event_stream), &mut self.analyzers)
             .await
     }
@@ -251,14 +235,8 @@ mod tests {
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        println!("Chunk Merger Test Results:");
-        println!("Total events: {}", events.len());
-
         let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
         let chunk_events = events.iter().filter(|e| e.source == "chunk_merger").count();
-
-        println!("SSL events: {}", ssl_events);
-        println!("Chunk events: {}", chunk_events);
 
         // Should have exactly 4 SSL events (2 pairs = 4 events)
         assert_eq!(
@@ -295,9 +273,6 @@ mod tests {
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        println!("File Logger Test Results:");
-        println!("Total events: {}", events.len());
-
         // Should have exactly 4 events (2 pairs = 4 events)
         assert_eq!(
             events.len(),
@@ -312,13 +287,11 @@ mod tests {
         );
 
         let log_size = fs::metadata(test_log_file).unwrap().len();
-        println!("Log file size: {} bytes", log_size);
         assert!(log_size > 0, "Log file should not be empty");
 
         // Read and check log contents
         let log_contents = fs::read_to_string(test_log_file).unwrap();
         let log_lines: Vec<&str> = log_contents.lines().collect();
-        println!("Log file lines: {}", log_lines.len());
         assert_eq!(
             log_lines.len(),
             4,
@@ -376,9 +349,6 @@ mod tests {
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        println!("Multiple Analyzer Instances Test Results:");
-        println!("Total events: {}", events.len());
-
         // Verify all events passed through multiple analyzers - should be 4 events (2 pairs) + HTTP analyzer events
         assert!(
             events.len() >= 4,
@@ -413,8 +383,6 @@ mod tests {
             "Pretty printed log should be larger or equal"
         );
 
-        println!("✅ Multiple analyzer instances test completed!");
-
         // Clean up
         let _ = fs::remove_file(test_log_file1);
         let _ = fs::remove_file(test_log_file2);
@@ -432,13 +400,8 @@ mod tests {
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        println!("Empty Stream Test Results:");
-        println!("Events processed: {}", events.len());
-
         // Should handle empty stream gracefully
         assert_eq!(events.len(), 0, "Should have no events");
-
-        println!("✅ Empty stream test completed!");
     }
 
     #[tokio::test]
@@ -486,27 +449,15 @@ mod tests {
 
         let events: Vec<_> = processed_stream.collect().await;
 
-        println!("Mixed Event Sources Test Results:");
-        println!("Total events: {}", events.len());
-
         // Count events by source
         let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
         let process_events = events.iter().filter(|e| e.source == "process").count();
         let custom_events = events.iter().filter(|e| e.source == "custom").count();
-        let chunk_events = events.iter().filter(|e| e.source == "chunk_merger").count();
-
-        println!("SSL events: {}", ssl_events);
-        println!("Process events: {}", process_events);
-        println!("Custom events: {}", custom_events);
-        println!("Chunk events: {}", chunk_events);
 
         // Verify all events are preserved
         assert_eq!(ssl_events, 2, "Should have 2 SSL events");
         assert_eq!(process_events, 1, "Should have 1 process event");
         assert_eq!(custom_events, 1, "Should have 1 custom event");
-        // Note: chunk_events might be 0 if no chunked data was processed
-
-        println!("✅ Mixed event sources test completed!");
     }
 
     #[tokio::test]
@@ -575,10 +526,6 @@ mod tests {
 
         let max_events_seen = max_events_ref.load(Ordering::SeqCst);
 
-        println!("Memory Cleanup Test Results:");
-        println!("Total events processed: {}", events.len());
-        println!("Max events seen at once: {}", max_events_seen);
-
         // Verify events were processed - should be exactly 50 events (25 pairs)
         assert_eq!(
             events.len(),
@@ -595,8 +542,6 @@ mod tests {
             max_events_seen <= 10,
             "Should not accumulate more than 10 events due to cleanup"
         );
-
-        println!("✅ Memory cleanup test completed!");
     }
 
     #[test]
@@ -621,8 +566,6 @@ mod tests {
         // Clean up any existing test file
         let _ = fs::remove_file(test_log_file);
 
-        println!("Starting comprehensive analyzer chain integration test...");
-
         // Create a realistic analyzer chain that might be used in production:
         // 1. HTTP analyzer for pairing requests/responses
         // 2. File logger for persistence
@@ -639,16 +582,9 @@ mod tests {
         let events: Vec<_> = stream.collect().await;
         let elapsed = start_time.elapsed();
 
-        println!("Integration Test Results:");
-        println!("Total processing time: {:?}", elapsed);
-        println!("Total events processed: {}", events.len());
-
         // Analyze event distribution
         let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
         let chunk_events = events.iter().filter(|e| e.source == "chunk_merger").count();
-
-        println!("SSL events: {}", ssl_events);
-        println!("Chunk events: {}", chunk_events);
 
         // Verify expected behavior
         assert_eq!(
@@ -668,12 +604,10 @@ mod tests {
         );
         let log_content = fs::read_to_string(test_log_file).unwrap();
         let log_lines = log_content.lines().count();
-        println!("Log file lines: {}", log_lines);
         assert!(log_lines > 0, "Log file should have content");
 
         // Verify performance characteristics
         let events_per_second = events.len() as f64 / elapsed.as_secs_f64();
-        println!("Processing rate: {:.2} events/second", events_per_second);
         assert!(
             events_per_second > 10.0,
             "Should process at least 10 events per second"
@@ -699,8 +633,6 @@ mod tests {
                 "Events should have function field"
             );
         }
-
-        println!("✅ Comprehensive analyzer chain integration test completed successfully!");
 
         // Clean up
         let _ = fs::remove_file(test_log_file);

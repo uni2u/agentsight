@@ -74,29 +74,6 @@ pub(crate) fn cleanup_old_sessions() {
 pub(crate) fn run_db_list() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dir = sessions_dir().ok_or("cannot determine data directory")?;
     let entries = sorted_session_dbs(&dir);
-    if entries.is_empty() {
-        println!("No session databases found in {}", dir.display());
-        return Ok(());
-    }
-    println!("Session databases in {}:", dir.display());
-    for entry in &entries {
-        let modified = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .map(|t| {
-                chrono::DateTime::<chrono::Local>::from(t)
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string()
-            })
-            .unwrap_or_default();
-        let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
-        println!(
-            "  {} ({} KB, {})",
-            entry.path().display(),
-            size / 1024,
-            modified
-        );
-    }
+    crate::cli_output::print_session_list(&dir, &entries);
     Ok(())
 }

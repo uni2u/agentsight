@@ -1,57 +1,29 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+use crate::cli_output::{print_discovery, print_json};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
-struct DiscoveryRow {
-    id: &'static str,
-    name: &'static str,
-    adapter: &'static str,
-    command: &'static str,
-    available: bool,
-    path: Option<String>,
-    recommended_capture: &'static str,
+pub(crate) struct DiscoveryRow {
+    pub(crate) id: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) adapter: &'static str,
+    pub(crate) command: &'static str,
+    pub(crate) available: bool,
+    pub(crate) path: Option<String>,
+    pub(crate) recommended_capture: &'static str,
 }
 
 pub(crate) fn run_discover(json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rows = discover_rows();
     if json {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        print_json(&rows)?;
         return Ok(());
     }
 
-    println!(
-        "{:<14} {:<10} {:<10} {:<9} recommended",
-        "id", "adapter", "command", "available"
-    );
-    for row in rows {
-        println!(
-            "{:<14} {:<10} {:<10} {:<9} {}",
-            row.id,
-            row.adapter,
-            row.command,
-            if row.available { "yes" } else { "no" },
-            row.recommended_capture
-        );
-    }
-
-    // Report local session data
-    let local = crate::cli_db::count_local_sessions();
-    if !local.is_empty() {
-        println!("\nLocal session data:");
-        for (name, dir, count, bytes) in &local {
-            println!(
-                "  {:<10} {} sessions, {:.0} MB  ({})",
-                name,
-                count,
-                *bytes as f64 / 1_048_576.0,
-                dir.display()
-            );
-        }
-        println!("\n  Run `agentsight report` or `agentsight stat` to analyze the latest session.");
-    }
+    print_discovery(&rows, &crate::cli_db::count_local_sessions());
     Ok(())
 }
 

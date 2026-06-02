@@ -154,8 +154,8 @@ mod tests {
     #[ignore = "requires real binary and may need sudo privileges"]
     async fn test_ssl_runner_with_real_binary() {
         use std::path::Path;
-        use std::time::{Duration, Instant};
-        use tokio::time::{interval, timeout};
+        use std::time::Duration;
+        use tokio::time::timeout;
 
         // Initialize debug logging for the test
         let _ = env_logger::Builder::from_default_env()
@@ -167,119 +167,19 @@ mod tests {
 
         // Check if binary exists before attempting to run
         if !Path::new(binary_path).exists() {
-            eprintln!("SSL binary not found at {}", binary_path);
-            eprintln!("   Build the binary first: cd ../src && make sslsniff");
             return;
         }
-
-        let start_time = Instant::now();
-        println!("Testing SslRunner with real binary at {}", binary_path);
-        println!("   Runtime: 30 seconds with live streaming output");
-        println!("   Will terminate the process automatically after timeout");
-        println!("   Generate SSL traffic: curl -s https://httpbin.org/get > /dev/null");
-        println!("{}", "=".repeat(60));
 
         // Create runner with real binary
         let mut runner = SslRunner::from_binary_extractor(binary_path)
             .add_analyzer(Box::new(crate::framework::analyzers::OutputAnalyzer::new()));
 
         // Run the binary and collect events for 30 seconds
-        match runner.run().await {
-            Ok(mut stream) => {
-                println!(
-                    "SslRunner started successfully! ({}s)",
-                    start_time.elapsed().as_secs()
-                );
-                println!("Streaming SSL/TLS events live for 30 seconds...");
-                println!();
-
-                let mut event_count = 0;
-                let mut status_interval = interval(Duration::from_secs(5));
-                let mut last_event_time = Instant::now();
-
-                // Run for 30 seconds with streaming output
-                let result = timeout(Duration::from_secs(30), async {
-                    loop {
-                        tokio::select! {
-                            event_opt = futures::StreamExt::next(&mut stream) => {
-                                match event_opt {
-                                    Some(event) => {
-                                        event_count += 1;
-                                        last_event_time = Instant::now();
-                                        let runtime = start_time.elapsed().as_secs();
-
-                                        // Print event as JSON
-                                        println!("[{:02}s] Event #{}: {}",
-                                            runtime,
-                                            event_count,
-                                            serde_json::to_string(&event).unwrap()
-                                        );
-                                    }
-                                    None => {
-                                        println!("[{:02}s] Event stream ended naturally", start_time.elapsed().as_secs());
-                                        break;
-                                    }
-                                }
-                            }
-                            _ = status_interval.tick() => {
-                                let runtime = start_time.elapsed().as_secs();
-                                let time_since_last = last_event_time.elapsed().as_secs();
-                                println!("[{:02}s] Status: {} SSL events collected, last event {}s ago",
-                                    runtime, event_count, time_since_last);
-                            }
-                        }
-                    }
-                }).await;
-
-                let total_runtime = start_time.elapsed();
-                println!();
-
-                match result {
-                    Ok(_) => println!(
-                        "SSL event stream completed naturally after {:.1}s",
-                        total_runtime.as_secs_f32()
-                    ),
-                    Err(_) => {
-                        println!("30-second timeout reached - terminating process");
-                        println!("Process killed automatically");
-                    }
-                }
-
-                println!("{}", "=".repeat(60));
-                println!("SslRunner test completed!");
-                println!("   Total SSL events: {}", event_count);
-                println!("   Total runtime: {:.2}s", total_runtime.as_secs_f32());
-                println!(
-                    "   Event rate: {:.1} events/sec",
-                    event_count as f32 / total_runtime.as_secs_f32()
-                );
-
-                if event_count == 0 {
-                    println!();
-                    println!("No SSL events captured during test period!");
-                    println!("   Try generating HTTPS traffic in another terminal:");
-                    println!("   curl -s https://httpbin.org/get");
-                    println!("   wget -q -O /dev/null https://example.com");
-                    println!("   firefox (browse HTTPS sites)");
-                }
-            }
-            Err(e) => {
-                let runtime = start_time.elapsed();
-                eprintln!(
-                    "SslRunner failed after {:.2}s: {}",
-                    runtime.as_secs_f32(),
-                    e
-                );
-                eprintln!("   Possible causes:");
-                eprintln!("   - Insufficient privileges (try: sudo cargo test ...)");
-                eprintln!("   - Binary compilation failed");
-                eprintln!("   - eBPF/kernel support missing");
-                eprintln!("   - Missing kernel headers");
-                eprintln!("   - SSL/TLS hooks not available");
-
-                // Don't panic - allow test to pass even with environmental issues
-                return;
-            }
+        if let Ok(mut stream) = runner.run().await {
+            let _ = timeout(Duration::from_secs(30), async {
+                while futures::StreamExt::next(&mut stream).await.is_some() {}
+            })
+            .await;
         }
     }
 }

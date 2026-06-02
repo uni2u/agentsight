@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::cli_output::{ResourcePeaks, StatOutput, TopSection, print_json, print_stat, print_top};
+use crate::cli_output::{
+    ResourcePeaks, StatOutput, TopSection, clear_screen, print_json, print_stat, print_top,
+};
 use crate::framework::storage::{
     SnapshotOptions, SqliteStore,
     sqlite::{Snapshot, StorageResult},
@@ -38,7 +40,7 @@ pub(crate) fn run_top_query(
     loop {
         let (snapshot, resources) = load_snapshot_and_resources(db)?;
         if should_clear_screen {
-            print!("\x1b[2J\x1b[H");
+            clear_screen();
         }
         print_top(
             db,

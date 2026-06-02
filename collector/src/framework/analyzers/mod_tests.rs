@@ -140,9 +140,6 @@ async fn test_complex_analyzer_chain_composition() {
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
 
-    println!("Complex Chain Test Results:");
-    println!("Total events: {}", events.len());
-
     // Verify events passed through all analyzers
     assert!(!events.is_empty(), "Should have events");
 
@@ -170,8 +167,6 @@ async fn test_complex_analyzer_chain_composition() {
     // Verify file was written
     let file_size = std::fs::metadata(temp_file.path()).unwrap().len();
     assert!(file_size > 0, "Log file should have content");
-
-    println!("✅ Complex analyzer chain composition test completed!");
 }
 
 #[tokio::test]
@@ -186,9 +181,6 @@ async fn test_analyzer_chain_error_resilience() {
 
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
-
-    println!("Error Resilience Test Results:");
-    println!("Total events: {}", events.len());
 
     // Should still process all events
     assert!(
@@ -205,8 +197,6 @@ async fn test_analyzer_chain_error_resilience() {
         error_events > 0,
         "Should have error markers from ErrorSimulator"
     );
-
-    println!("✅ Error resilience test completed!");
 }
 
 #[tokio::test]
@@ -247,10 +237,6 @@ async fn test_analyzer_chain_concurrent_processing() {
 
     let results_guard = results.lock().await;
 
-    println!("Concurrent Processing Test Results:");
-    println!("Total events across all chains: {}", total_events);
-    println!("Individual chain results: {:?}", *results_guard);
-
     // All chains should have processed events
     assert_eq!(results_guard.len(), 3, "Should have 3 chain results");
     assert!(
@@ -265,8 +251,6 @@ async fn test_analyzer_chain_concurrent_processing() {
             chain_id
         );
     }
-
-    println!("✅ Concurrent processing test completed!");
 }
 
 #[tokio::test]
@@ -328,20 +312,13 @@ async fn test_analyzer_chain_streaming_behavior() {
         .add_analyzer(Box::new(TimestampRecorderAnalyzer::new(timestamps_clone)))
         .add_analyzer(Box::new(OutputAnalyzer::new()));
 
-    let start_time = Instant::now();
     let stream = runner.run().await.unwrap();
-    let events: Vec<_> = stream.collect().await;
-    let total_time = start_time.elapsed();
+    let _: Vec<_> = stream.collect().await;
 
     // Wait a bit for async timestamp recording to complete
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let timestamps_guard = event_timestamps.lock().await;
-
-    println!("Streaming Behavior Test Results:");
-    println!("Total events: {}", events.len());
-    println!("Total time: {:?}", total_time);
-    println!("Recorded timestamps: {}", timestamps_guard.len());
 
     // Verify streaming behavior - events should arrive over time, not all at once
     assert!(
@@ -354,16 +331,12 @@ async fn test_analyzer_chain_streaming_behavior() {
         let last_event_time = timestamps_guard[timestamps_guard.len() - 1].1;
         let processing_span = last_event_time.duration_since(first_event_time);
 
-        println!("Processing span: {:?}", processing_span);
-
         // Should take some time due to delays, indicating streaming behavior
         assert!(
             processing_span >= Duration::from_millis(50),
             "Events should be processed over time, not all at once"
         );
     }
-
-    println!("✅ Streaming behavior test completed!");
 }
 
 #[tokio::test]
@@ -410,10 +383,6 @@ async fn test_analyzer_chain_backpressure_handling() {
     let events: Vec<_> = stream.collect().await;
     let total_time = start_time.elapsed();
 
-    println!("Backpressure Test Results:");
-    println!("Total events: {}", events.len());
-    println!("Total time: {:?}", total_time);
-
     // Should process all events
     assert_eq!(
         events.len(),
@@ -426,8 +395,6 @@ async fn test_analyzer_chain_backpressure_handling() {
         total_time >= Duration::from_millis(100),
         "Should take time due to slow analyzer processing"
     );
-
-    println!("✅ Backpressure handling test completed!");
 }
 
 #[tokio::test]
@@ -449,10 +416,7 @@ async fn test_analyzer_chain_resource_cleanup() {
     }
 
     impl Drop for ResourceTrackingAnalyzer {
-        fn drop(&mut self) {
-            // Simulate resource cleanup
-            println!("Cleaning up ResourceTrackingAnalyzer: {}", self.id);
-        }
+        fn drop(&mut self) {}
     }
 
     #[async_trait]
@@ -499,9 +463,6 @@ async fn test_analyzer_chain_resource_cleanup() {
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        println!("Resource Cleanup Test Results:");
-        println!("Events processed: {}", events.len());
-
         assert_eq!(events.len(), 4, "Should process all events");
     } // Runner and analyzers go out of scope here
 
@@ -514,6 +475,4 @@ async fn test_analyzer_chain_resource_cleanup() {
     );
     assert!(resources_guard.contains(&"resource_test1".to_string()));
     assert!(resources_guard.contains(&"resource_test2".to_string()));
-
-    println!("✅ Resource cleanup test completed!");
 }
