@@ -101,7 +101,7 @@ fn tool_call_count(db: &std::path::Path, adapter_id: &str) -> i64 {
 
 #[test]
 #[ignore = "requires sudo and an authenticated Gemini CLI"]
-fn real_gemini_cli_smoke_captures_stdout_tokens() {
+fn real_gemini_cli_smoke_captures_http_tokens() {
     if !enabled("AGENTSIGHT_REAL_CLI_SMOKE") && !enabled("AGENTSIGHT_REAL_GEMINI_SMOKE") {
         eprintln!("skipping real Gemini smoke; set AGENTSIGHT_REAL_CLI_SMOKE=1");
         return;
@@ -111,7 +111,6 @@ fn real_gemini_cli_smoke_captures_stdout_tokens() {
         return;
     }
 
-    let mut last_cli_total = 0;
     let mut last_response_total = 0;
     let mut last_session_total = 0;
     for attempt in 1..=3 {
@@ -143,19 +142,17 @@ fn real_gemini_cli_smoke_captures_stdout_tokens() {
         ]);
         assert_agentsight_success(output, "real Gemini smoke");
 
-        last_cli_total = token_total(&db, "gemini_cli_stdout");
         last_response_total = token_total(&db, "response_usage");
         last_session_total = positive_session_total(&db, "gemini-cli");
-        if last_cli_total > 0 && last_response_total > 0 && last_session_total > 0 {
+        if last_response_total > 0 && last_session_total > 0 {
             return;
         }
         eprintln!(
-            "Gemini smoke attempt {} did not capture all signals: cli={}, response={}, session={}",
-            attempt, last_cli_total, last_response_total, last_session_total
+            "Gemini smoke attempt {} did not capture all signals: response={}, session={}",
+            attempt, last_response_total, last_session_total
         );
     }
 
-    assert!(last_cli_total > 0);
     assert!(
         last_response_total > 0,
         "Gemini response usage should be decoded from TLS/SSE capture"
@@ -165,7 +162,7 @@ fn real_gemini_cli_smoke_captures_stdout_tokens() {
 
 #[test]
 #[ignore = "requires sudo and an authenticated Claude Code CLI"]
-fn real_claude_code_smoke_captures_stdout_tokens() {
+fn real_claude_code_smoke_captures_observed_tokens() {
     if !enabled("AGENTSIGHT_REAL_CLI_SMOKE") && !enabled("AGENTSIGHT_REAL_CLAUDE_SMOKE") {
         eprintln!("skipping real Claude Code smoke; set AGENTSIGHT_REAL_CLI_SMOKE=1");
         return;
@@ -195,7 +192,6 @@ fn real_claude_code_smoke_captures_stdout_tokens() {
         "json",
     ]);
     assert_agentsight_success(output, "real Claude Code smoke");
-    assert!(token_total(&db, "claude_code_stdout_model_usage") > 0);
     assert!(positive_session_total(&db, "claude-code") > 0);
 }
 

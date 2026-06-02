@@ -49,7 +49,6 @@ SELECT
 FROM token_usage
 WHERE adapter_id = 'claude-code'
   AND source IN (
-    'claude_code_stdout_model_usage',
     'claude_telemetry',
     'claude_telemetry_fallback'
   )

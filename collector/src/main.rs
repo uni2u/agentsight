@@ -93,7 +93,7 @@ enum Commands {
         /// SQLite database path for production queries and adapters
         #[arg(long)]
         db: Option<String>,
-        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli, opencode, codex
+        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
         #[arg(long, default_value = "auto")]
         adapter: String,
         /// Do not run SQL adapters after capture
@@ -129,7 +129,7 @@ enum Commands {
         /// SQLite database path for production queries and adapters
         #[arg(long)]
         db: Option<String>,
-        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli, opencode, codex
+        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
         #[arg(long, default_value = "auto")]
         adapter: String,
         /// Do not run SQL adapters after capture
@@ -217,7 +217,7 @@ enum DbCommands {
         /// SQLite database path
         #[arg(long)]
         db: String,
-        /// SQL adapter to run after import: auto, anthropic, claude-code, openclaw, gemini-cli, opencode, codex
+        /// SQL adapter to run after import: auto, anthropic, claude-code, openclaw, gemini-cli
         #[arg(long, default_value = "auto")]
         adapter: String,
         /// Do not run SQL adapters after import
@@ -423,7 +423,7 @@ enum DebugCommands {
         /// SQLite database path for production queries and adapters
         #[arg(long)]
         db: Option<String>,
-        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli, opencode, codex
+        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
         #[arg(long, default_value = "auto")]
         adapter: String,
         /// Do not run SQL adapters after capture

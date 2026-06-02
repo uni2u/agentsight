@@ -44,13 +44,7 @@ WHERE (t.input_tokens > 0 OR t.output_tokens > 0 OR t.cache_read_tokens > 0)
   AND NOT EXISTS (
     SELECT 1
     FROM token_usage existing
-    WHERE (
-        existing.adapter_id = 'generic'
-        OR (
-          existing.adapter_id = 'claude-code'
-          AND existing.source = 'claude_code_stdout_model_usage'
-        )
-      )
+    WHERE existing.adapter_id = 'generic'
       AND existing.pid = t.pid
       AND existing.input_tokens = t.input_tokens
       AND existing.cache_creation_tokens = t.cache_creation_tokens
@@ -128,13 +122,7 @@ WHERE (p.input_tokens > 0 OR p.output_tokens > 0 OR p.cache_read_tokens > 0)
   AND NOT EXISTS (
     SELECT 1
     FROM token_usage existing
-    WHERE (
-        existing.adapter_id = 'generic'
-        OR (
-          existing.adapter_id = 'claude-code'
-          AND existing.source = 'claude_code_stdout_model_usage'
-        )
-      )
+    WHERE existing.adapter_id = 'generic'
       AND existing.pid = p.pid
       AND existing.input_tokens = p.input_tokens
       AND existing.cache_creation_tokens = p.cache_creation_tokens

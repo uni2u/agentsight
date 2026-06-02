@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
 
-**English** | [中文](README.zh-CN.md)
+**English** | [中文](README.zh-CN.md) [Arxiv](https://www.arxiv.org/abs/2508.02736)
 
 AgentSight is an observability tool designed specifically for monitoring LLM agent behavior through SSL/TLS traffic interception and process monitoring. Unlike traditional application-level instrumentation, AgentSight observes at the system boundary using eBPF technology, providing comprehensive insights into AI agent interactions with minimal performance overhead.
 

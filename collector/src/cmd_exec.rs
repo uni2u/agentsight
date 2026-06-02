@@ -12,10 +12,6 @@ use crate::cmd_trace::{
 use crate::framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
     binary_extractor::BinaryExtractor,
-    capture::cli_output::{
-        CLI_OUTPUT_CAPTURE_MAX_BYTES, persist_cli_output_evidence, should_capture_cli_output,
-        tee_child_stream,
-    },
     runners::{Runner, RunnerError},
 };
 use crate::session::sessions_dir;
@@ -193,21 +189,8 @@ pub(crate) async fn run_exec(
     println!("▶ Launching: {}", command.join(" "));
     println!("{}", "=".repeat(60));
 
-    // Keep interactive tools on inherited stdio. For known headless JSON runs,
-    // tee stdout/stderr so CLI-native usage summaries can be stored as evidence.
-    let capture_cli_output =
-        should_capture_cli_output(program, prog_args, db_path_for_adapters.as_deref());
-    if capture_cli_output {
-        println!("✓ CLI output evidence capture enabled");
-    }
-
     let mut command_builder = tokio::process::Command::new(program);
     command_builder.args(prog_args);
-    if capture_cli_output {
-        command_builder
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-    }
     // When running as root (via sudo), drop the child back to the real user
     // so the agent doesn't have elevated privileges.
     if let Some((uid, gid)) = target_user_ids() {
@@ -227,33 +210,9 @@ pub(crate) async fn run_exec(
     let mut child = command_builder
         .spawn()
         .map_err(|e| RunnerError::from(format!("failed to launch '{}': {}", program, e)))?;
-    let child_pid = child.id().unwrap_or_default();
-    let stdout_task = if capture_cli_output {
-        child.stdout.take().map(|stdout| {
-            tokio::spawn(tee_child_stream(
-                stdout,
-                "stdout",
-                CLI_OUTPUT_CAPTURE_MAX_BYTES,
-            ))
-        })
-    } else {
-        None
-    };
-    let stderr_task = if capture_cli_output {
-        child.stderr.take().map(|stderr| {
-            tokio::spawn(tee_child_stream(
-                stderr,
-                "stderr",
-                CLI_OUTPUT_CAPTURE_MAX_BYTES,
-            ))
-        })
-    } else {
-        None
-    };
 
     let shutdown = crate::shutdown_notify();
     let mut target_exited = false;
-    let mut exit_status = None;
     // Consume events and watch for the child to exit, whichever happens.
     loop {
         tokio::select! {
@@ -270,7 +229,6 @@ pub(crate) async fn run_exec(
                 match status {
                     Ok(s) => {
                         println!("\n{}\n✓ Target exited ({}). Stopping monitoring.", "=".repeat(60), s);
-                        exit_status = Some(s);
                     }
                     Err(e) => println!("\n⚠ Error waiting on target: {}", e),
                 }
@@ -289,48 +247,6 @@ pub(crate) async fn run_exec(
     }
     drop(stream);
     drop(agent);
-
-    let stdout_capture = match stdout_task {
-        Some(task) => match task.await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(e)) => {
-                println!("⚠ Error capturing child stdout: {}", e);
-                Vec::new()
-            }
-            Err(e) => {
-                println!("⚠ Child stdout capture task failed: {}", e);
-                Vec::new()
-            }
-        },
-        None => Vec::new(),
-    };
-    let stderr_capture = match stderr_task {
-        Some(task) => match task.await {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(e)) => {
-                println!("⚠ Error capturing child stderr: {}", e);
-                Vec::new()
-            }
-            Err(e) => {
-                println!("⚠ Child stderr capture task failed: {}", e);
-                Vec::new()
-            }
-        },
-        None => Vec::new(),
-    };
-    if capture_cli_output {
-        persist_cli_output_evidence(
-            db_path_for_adapters.as_deref(),
-            log_file,
-            program,
-            prog_args,
-            child_pid,
-            &comm,
-            exit_status,
-            &stdout_capture,
-            &stderr_capture,
-        )?;
-    }
 
     print_global_http_filter_metrics();
     print_global_ssl_filter_metrics();

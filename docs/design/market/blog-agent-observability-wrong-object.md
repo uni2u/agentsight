@@ -360,7 +360,7 @@ Dashboard 默认暗示人坐在那里看图。Agent run 的关键问题往往发
 假设你让 agent 修一个后端测试：
 
 ```bash
-agentsight exec -- claude "fix the failing API test"
+agentsight exec --db run.db -- claude "fix the failing API test"
 ```
 
 Agent 最后给你的总结是：
@@ -372,41 +372,32 @@ Fixed the API test and ran npm test successfully.
 这句话不一定是谎言。它可能只是把自己最后一次看到的局部结果，当成了整次 run 的事实。AgentSight 里更有用的输出应该长这样：
 
 ```text
-$ agentsight report --latest
+$ agentsight db summary --db run.db
 
-Session
-  agent: claude
-  task: fix the failing API test
-  duration: 18m42s
+agentsight session · 7s · 1 API calls · 1380 tokens
 
-Observed
-  Commands
-    npm test                         exit=1   duration=74s
-    npm test tests/api.test.ts       exit=0   duration=11s
+  claude-sonnet-4-20250514 — 1 calls, 1380 tokens (in: 1200, out: 180)
 
-  Files changed
-    M src/api/handler.ts
-    M tests/api.test.ts
-    M package-lock.json              unexpected lockfile rewrite
+2 processes spawned: node(1), npm(1)
+3 files accessed: /workspace/app/src/api/handler.ts, /workspace/app/tests/api.test.ts, /workspace/app/package-lock.json
+Network: api.anthropic.com, registry.npmjs.org
+```
 
-  Reads outside repo
-    ~/.npmrc                         package manager config
+再往下查，过程事实会更具体：
 
-  Network
-    registry.npmjs.org               package metadata fetch
-
-  Flags
-    full_test_failed_then_partial_test_passed
-    lockfile_changed_without_dependency_request
-    config_read_outside_workspace
+```bash
+agentsight db audit --db run.db --audit-type process --limit 20
+agentsight db audit --db run.db --audit-type file --json --limit 20
+agentsight db token --db run.db --json
+agentsight db export --db run.db -o snapshot.json
 ```
 
 这份输出没有替你判断代码好不好。它只是把 review 真正需要的问题摆到了桌面上：
 
-- 这个 PR 不能简单写“tests passed”，因为全量测试失败过。
-- `package-lock.json` 为什么变了，需要解释或 revert。
-- 读取 `~/.npmrc` 可能完全正常，也可能说明 package manager 状态影响了复现性。
-- 如果这是 CI 或团队策略，可以要求 “backend code changed 后必须看到全量测试 exit=0”。
+- `npm test` 相关进程确实启动过，但“测试通过”还需要 exit status 或 CI 证据支持。
+- `src/api/handler.ts` 和 `tests/api.test.ts` 的修改符合任务范围。
+- `package-lock.json` 也被写了；如果任务没有要求依赖变化，这就值得 reviewer 追问。
+- `registry.npmjs.org` 被访问过；这可能完全正常，也可能说明依赖解析影响了可复现性。
 
 这个例子的价值不在于它抓到了一个“严重问题”。价值在于它把 agent 的一句自我总结，拆成了可检查的状态变化。用户、reviewer、CI、另一个 agent 都可以基于同一份事实继续工作。
 

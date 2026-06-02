@@ -480,11 +480,9 @@ Expected result:
 
 - The command prints `agentsight-smoke`.
 - The capture exits with status 0.
-- `raw_events` contains redacted `cli_output` evidence for the JSON result.
-  Prompt text, raw stdout/stderr, and assistant response text are not stored;
-  only usage-shaped fields needed by adapters are persisted.
-- `token_usage` contains `claude_code_stdout_model_usage` rows from
-  `modelUsage`; generic response usage and telemetry remain fallback evidence.
+- AgentSight does not tee the child process stdout/stderr into SQLite.
+- Token evidence comes from TLS/SSE response usage, Claude telemetry, or an
+  explicit agent-native session log reader.
 - `agent_sessions` contains a `claude-code` row after adapters run.
 
 Automated gated test:
@@ -595,10 +593,7 @@ Expected result:
   `generativelanguage.googleapis.com` or `cloudcode-pa.googleapis.com`.
 - `llm_calls` contains a Gemini row when AgentSight captures the matching
   response event.
-- `raw_events` contains redacted `cli_output` evidence for Gemini JSON stats.
-  Prompt text and raw stdout/stderr are not stored.
-- `token_usage` contains `gemini_cli_stdout` rows from
-  `stats.models.*.tokens`.
+- AgentSight does not tee the child process stdout/stderr into SQLite.
 - `token_usage` contains generic `response_usage` rows when the TLS/SSE stream
   exposes Gemini `usageMetadata`; the gated test retries because Google may
   gzip or split some response bodies in ways that do not expose the final

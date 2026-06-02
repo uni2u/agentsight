@@ -23,7 +23,7 @@ pub(crate) enum AdapterCommand {
         /// SQLite database path
         #[arg(long)]
         db: String,
-        /// SQL adapter to run: auto, anthropic, claude-code, openclaw, gemini-cli, opencode, codex
+        /// SQL adapter to run: auto, anthropic, claude-code, openclaw, gemini-cli
         #[arg(long, default_value = "auto")]
         adapter: String,
     },

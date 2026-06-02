@@ -148,10 +148,6 @@ pub fn builtin_adapters() -> Vec<SqlAdapter> {
             ),
             sql_files: &[
                 (
-                    "project_cli_output_tokens.sql",
-                    include_str!("../../../adapters/sql/claude-code/project_cli_output_tokens.sql"),
-                ),
-                (
                     "project_telemetry_tokens.sql",
                     include_str!("../../../adapters/sql/claude-code/project_telemetry_tokens.sql"),
                 ),
@@ -205,66 +201,8 @@ pub fn builtin_adapters() -> Vec<SqlAdapter> {
             ),
             sql_files: &[
                 (
-                    "project_cli_output_tokens.sql",
-                    include_str!("../../../adapters/sql/gemini-cli/project_cli_output_tokens.sql"),
-                ),
-                (
                     "project_sessions.sql",
                     include_str!("../../../adapters/sql/gemini-cli/project_sessions.sql"),
-                ),
-            ],
-        },
-        SqlAdapter {
-            id: "opencode",
-            version: "0.1.0",
-            adapter_type: "agent",
-            detect_sql: Some(
-                "SELECT CASE WHEN EXISTS (
-                   SELECT 1 FROM canonical_events
-                   WHERE json_extract(attributes_json, '$.program') = 'opencode'
-                      OR comm LIKE 'opencode%'
-                      OR LOWER(attributes_json) LIKE '%opencode/%'
-                 ) THEN 1 ELSE 0 END",
-            ),
-            sql_files: &[
-                (
-                    "project_cli_output_tokens.sql",
-                    include_str!("../../../adapters/sql/opencode/project_cli_output_tokens.sql"),
-                ),
-                (
-                    "project_sessions.sql",
-                    include_str!("../../../adapters/sql/opencode/project_sessions.sql"),
-                ),
-                (
-                    "project_tool_calls.sql",
-                    include_str!("../../../adapters/sql/opencode/project_tool_calls.sql"),
-                ),
-            ],
-        },
-        SqlAdapter {
-            id: "codex",
-            version: "0.1.0",
-            adapter_type: "agent",
-            detect_sql: Some(
-                "SELECT CASE WHEN EXISTS (
-                   SELECT 1 FROM canonical_events
-                   WHERE json_extract(attributes_json, '$.program') = 'codex'
-                      OR comm LIKE 'codex%'
-                      OR LOWER(attributes_json) LIKE '%codex%'
-                 ) THEN 1 ELSE 0 END",
-            ),
-            sql_files: &[
-                (
-                    "project_cli_output_tokens.sql",
-                    include_str!("../../../adapters/sql/codex/project_cli_output_tokens.sql"),
-                ),
-                (
-                    "project_sessions.sql",
-                    include_str!("../../../adapters/sql/codex/project_sessions.sql"),
-                ),
-                (
-                    "project_tool_calls.sql",
-                    include_str!("../../../adapters/sql/codex/project_tool_calls.sql"),
                 ),
             ],
         },
@@ -361,34 +299,37 @@ mod tests {
     fn auto_adapter_runs_only_detected_adapter() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let mut projector = GenericProjector::new();
-        let output = Event::new_with_timestamp(
+        let req = Event::new_with_timestamp(
             10,
-            "cli_output".to_string(),
+            "http_parser".to_string(),
             42,
-            "gemini".to_string(),
+            "node".to_string(),
             json!({
-                "event": "CLI_OUTPUT",
-                "program": "gemini",
-                "stream": "stdout",
-                "parsed_json": {
-                    "stats": {
-                        "models": {
-                            "gemini-2.5-pro": {
-                                "tokens": {
-                                    "input": 100,
-                                    "prompt": 100,
-                                    "candidates": 20,
-                                    "thoughts": 0,
-                                    "cached": 0,
-                                    "total": 120
-                                }
-                            }
-                        }
-                    }
-                }
+                "tid": 42001,
+                "message_type": "request",
+                "method": "POST",
+                "path": "/v1internal:generateContent",
+                "headers": {
+                    "host": "cloudcode-pa.googleapis.com",
+                    "user-agent": "GeminiCLI/0.28.1/gemini-2.5-pro (linux; x64)"
+                },
+                "body": "{\"model\":\"gemini-2.5-pro\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"This is the Gemini CLI. say hi\"}]}]}}"
             }),
         );
-        store.insert_event(&output, &mut projector).unwrap();
+        let resp = Event::new_with_timestamp(
+            20,
+            "http_parser".to_string(),
+            42,
+            "MainThread".to_string(),
+            json!({
+                "tid": 42001,
+                "message_type": "response",
+                "status_code": 200,
+                "body": "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}],\"usageMetadata\":{\"promptTokenCount\":11,\"candidatesTokenCount\":4,\"totalTokenCount\":15}}"
+            }),
+        );
+        store.insert_event(&req, &mut projector).unwrap();
+        store.insert_event(&resp, &mut projector).unwrap();
 
         run_sql_adapters(&mut store, "auto").unwrap();
 
@@ -417,7 +358,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(total, 120);
+        assert_eq!(total, 15);
     }
 
     #[test]
@@ -1011,170 +952,6 @@ mod tests {
             .unwrap();
         assert_eq!(tool_name, "Bash");
         assert_eq!(input_json, "{\"redacted\":true}");
-    }
-
-    #[test]
-    fn opencode_adapter_projects_stdout_tokens_and_tool_calls() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        let output = Event::new_with_timestamp(
-            10,
-            "cli_output".to_string(),
-            42,
-            "opencode".to_string(),
-            json!({
-                "event": "CLI_OUTPUT",
-                "program": "opencode",
-                "stream": "stdout",
-                "parsed_json": [
-                    {
-                        "type": "tool_use",
-                        "timestamp": 1780382677191u64,
-                        "sessionID": "session-1",
-                        "part": {
-                            "tool": "write",
-                            "callID": "call_1",
-                            "state": {
-                                "status": "completed",
-                                "input_redacted": true,
-                                "metadata": {
-                                    "filepath": "/tmp/package-lock.json",
-                                    "exists": false
-                                },
-                                "title": "tmp/package-lock.json",
-                                "time": { "start": 1, "end": 2 }
-                            }
-                        }
-                    },
-                    {
-                        "type": "step_finish",
-                        "timestamp": 1780382677191u64,
-                        "sessionID": "session-1",
-                        "part": {
-                            "tokens": {
-                                "total": 7463,
-                                "input": 4340,
-                                "output": 34,
-                                "cache": { "write": 0, "read": 3072 }
-                            }
-                        }
-                    }
-                ]
-            }),
-        );
-        store.insert_event(&output, &mut projector).unwrap();
-
-        run_sql_adapters(&mut store, "opencode").unwrap();
-
-        let total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT COALESCE(SUM(total_tokens), 0)
-                 FROM token_usage WHERE source = 'opencode_stdout'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(total, 7463);
-
-        let (tool_name, input_json): (String, String) = store
-            .connection()
-            .query_row(
-                "SELECT tool_name, input_json FROM tool_calls WHERE adapter_id = 'opencode'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(tool_name, "write");
-        assert!(input_json.contains("/tmp/package-lock.json"));
-
-        let session_total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT total_tokens FROM agent_sessions WHERE agent_type = 'opencode'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(session_total, 7463);
-    }
-
-    #[test]
-    fn codex_adapter_projects_stdout_tokens_and_command_calls() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        let output = Event::new_with_timestamp(
-            10,
-            "cli_output".to_string(),
-            42,
-            "codex".to_string(),
-            json!({
-                "event": "CLI_OUTPUT",
-                "program": "codex",
-                "stream": "stdout",
-                "parsed_json": [
-                    {
-                        "type": "thread.started",
-                        "thread_id": "thread-1"
-                    },
-                    {
-                        "type": "item.completed",
-                        "item": {
-                            "id": "item_0",
-                            "type": "command_execution",
-                            "status": "completed",
-                            "exit_code": 0,
-                            "command_redacted": true,
-                            "output_redacted": true
-                        }
-                    },
-                    {
-                        "type": "turn.completed",
-                        "usage": {
-                            "input_tokens": 24126,
-                            "cached_input_tokens": 15104,
-                            "output_tokens": 584,
-                            "reasoning_output_tokens": 516
-                        }
-                    }
-                ]
-            }),
-        );
-        store.insert_event(&output, &mut projector).unwrap();
-
-        run_sql_adapters(&mut store, "codex").unwrap();
-
-        let total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT COALESCE(SUM(total_tokens), 0)
-                 FROM token_usage WHERE source = 'codex_stdout'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(total, 24710);
-
-        let (tool_name, input_json): (String, String) = store
-            .connection()
-            .query_row(
-                "SELECT tool_name, input_json FROM tool_calls WHERE adapter_id = 'codex'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(tool_name, "command_execution");
-        assert!(input_json.contains("exit_code"));
-
-        let session_total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT total_tokens FROM agent_sessions WHERE agent_type = 'codex'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(session_total, 24710);
     }
 
     #[test]

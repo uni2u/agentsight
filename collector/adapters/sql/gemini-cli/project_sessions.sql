@@ -70,39 +70,6 @@ WHERE c.kind = 'llm.request'
         OR LOWER(COALESCE(existing.response_body_json, '')) LIKE '%geminicli/%'
       )
   )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM token_usage cli_tokens
-    WHERE cli_tokens.adapter_id = 'gemini-cli'
-      AND cli_tokens.source = 'gemini_cli_stdout'
-      AND ABS(cli_tokens.timestamp_ms - c.timestamp_ms) <= 300000
-  )
-GROUP BY c.pid, c.comm;
-
-INSERT OR REPLACE INTO agent_sessions (
-  id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
-  status, model, input_tokens, output_tokens, total_tokens, adapter_id, confidence,
-  attributes_json
-)
-SELECT
-  'gemini-cli-pid-' || pid,
-  'gemini-cli',
-  'Gemini CLI',
-  pid,
-  comm,
-  MIN(timestamp_ms),
-  MAX(timestamp_ms),
-  'observed',
-  MAX(model),
-  COALESCE(SUM(input_tokens), 0),
-  COALESCE(SUM(output_tokens), 0),
-  COALESCE(SUM(total_tokens), 0),
-  'gemini-cli',
-  0.95,
-  json_object('projection', 'cli-output')
-FROM token_usage
-WHERE adapter_id = 'gemini-cli'
-  AND source = 'gemini_cli_stdout'
 GROUP BY pid, comm;
 
 INSERT OR REPLACE INTO conversations (
