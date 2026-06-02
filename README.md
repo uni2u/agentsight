@@ -1,4 +1,4 @@
-# AgentSight: LLM agent tracing and monitoring with eBPF
+# AgentSight: perf/strace for AI agents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml/badge.svg)](https://github.com/eunomia-bpf/agentsight/actions/workflows/ci.yml)
@@ -7,8 +7,9 @@
 
 **English** | [中文](README.zh-CN.md)
 
-> AgentSight is perf/strace for AI agents: a local-first, vendor-neutral, zero instrumentation way to record
-> what an agent actually did to your machine, and connect those actions back to the prompts that triggered them.
+LLM agent observability with eBPF. See what coding agents actually do
+to your machine, and connect those actions back to the prompts, model calls, and
+tool decisions that triggered them.
 
 Run `agentsight` around Claude Code, Codex, Gemini CLI,
 OpenCode, OpenClaw, or any command. AgentSight records a local trace of:
@@ -108,28 +109,15 @@ For source builds, see [docs/build.md](docs/build.md).
 
 ### Installation
 
-#### Option 1: Using Docker (Recommended)
+#### Release Binary
 
-AgentSight runs in Docker with `--privileged` for eBPF, `--pid=host` to access host processes, `-v /sys:/sys:ro` for process monitoring, and `-v /usr:/usr:ro -v /lib:/lib:ro` for SSL library access (required to attach uprobes to shared libraries like `libssl.so`). Example:
+For local use, download the latest release binary and run `agentsight exec -- ...` as shown in Quick Start.
 
-```bash
-# Monitor Python AI tools
-docker run --privileged --pid=host --network=host \
-  -v /sys:/sys:ro -v /usr:/usr:ro -v /lib:/lib:ro \
-  -v $(pwd)/logs:/logs \
-  ghcr.io/eunomia-bpf/agentsight:latest \
-  record --comm python --log-file /logs/record.log
+#### Docker
 
-# Monitor Claude Code (mount home dir for binary access)
-docker run --privileged --pid=host --network=host \
-  -v /sys:/sys:ro -v /usr:/usr:ro -v /lib:/lib:ro \
-  -v $HOME/.local/share/claude:/claude:ro \
-  -v $(pwd)/logs:/logs \
-  ghcr.io/eunomia-bpf/agentsight:latest \
-  record --comm claude --binary-path /claude/versions/2.1.39 --log-file /logs/record.log
-```
+Docker is useful for container, CI, or isolated Linux environments, but it still needs privileged host access for eBPF. See [docs/docker.md](docs/docker.md).
 
-#### Option 2: Build from Source
+#### Build from Source
 
 Build requirements and source build commands live in [docs/build.md](docs/build.md).
 
