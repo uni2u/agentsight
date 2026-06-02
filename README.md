@@ -7,7 +7,7 @@
 
 **English** | [中文](README.zh-CN.md)
 
-AgentSight is a perf/strace-like tool for AI agents. See what coding agents actually do
+AgentSight is `perf`/`top`/`strace`/`nsight`-like tool for AI agents. See what coding agents actually do
 to your machine, and connect those actions back to the prompts, model calls, and
 tool decisions that triggered them.
 
@@ -30,17 +30,21 @@ closed-source CLI. **✨ Zero Instrumentation Required**
 wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsight && chmod +x agentsight
 # Launch your agent with monitoring. AgentSight may prompt for sudo
 # to load eBPF probes; the agent itself still runs as your user.
-./agentsight exec -- claude
-# Re-open the latest session summary after the agent exits.
+# Launch your agent, record the run, and print perf-style counters.
+./agentsight stat -- claude
+# Re-open the latest session report after the agent exits.
 ./agentsight report
+# Watch ranked activity for the latest or selected session.
+./agentsight top
 # Or attach to an already-running agent by process name
 sudo ./agentsight record -c claude
 ```
 
-When the launched agent exits, `exec` prints a run summary; `report` opens it again later. For the blog example:
+When the launched agent exits, `stat` prints counters; `report` opens the saved run summary later. For the blog example:
 
 ```bash
-./agentsight exec --db run.db -- claude "fix the failing API test"
+./agentsight record --db run.db -- claude "fix the failing API test"
+./agentsight stat --db run.db
 ./agentsight report --db run.db
 ./agentsight prompts --db run.db --json
 ```
@@ -117,7 +121,7 @@ For source builds, see [docs/build.md](docs/build.md).
 
 #### Release Binary
 
-For local use, download the latest release binary and run `agentsight exec -- ...` as shown in Quick Start.
+For local use, download the latest release binary and run `agentsight stat -- ...` or `agentsight record -- ...` as shown in Quick Start.
 
 #### Docker
 
@@ -129,9 +133,12 @@ Build requirements and source build commands live in [docs/build.md](docs/build.
 
 ### Querying Past Sessions
 
-Every `exec` or `record` session is automatically saved to SQLite. Start with the perf-style commands, then use `agentsight db` for structured queries:
+Every `stat -- <command>` or `record` session is automatically saved to SQLite. Start with the perf-style commands, then use `agentsight db` for structured queries:
 
 ```bash
+agentsight stat                       # counters for the latest session
+agentsight top                        # live ranked view of the latest session
+agentsight record -- claude           # record a command
 agentsight report                     # high-level run summary
 agentsight list                       # all recorded sessions
 agentsight prompts --json             # full LLM request/response JSON
@@ -142,7 +149,7 @@ agentsight db export -o snapshot.json # export for web dashboard
 
 During a session, visit [http://127.0.0.1:7395](http://127.0.0.1:7395) for live traffic, process trees, and metrics.
 
-> **Privileges:** eBPF probes need root. AgentSight auto-elevates them via `sudo` (you may be prompted once). Your agent always runs as your normal user. If you prefer explicit sudo: `sudo -E ./agentsight exec -- claude` — the child is still dropped to your user.
+> **Privileges:** eBPF probes need root. AgentSight auto-elevates them via `sudo` (you may be prompted once). Your agent always runs as your normal user. If you prefer explicit sudo: `sudo -E ./agentsight record -- claude` — the child is still dropped to your user.
 
 **Discover what agents are installed locally:**
 
@@ -162,22 +169,22 @@ Built-in SQL adapters cover Anthropic, Claude Code, Gemini CLI, and OpenClaw ses
 
 ### Usage Examples
 
-#### Zero-Config: `exec` (recommended)
+#### Zero-Config: `record`
 
-`exec` is the simplest way to trace an agent. Put the command you want to run
-after `exec --`; AgentSight handles everything else:
+`record` is the simplest way to trace an agent. Put the command you want to run
+after `record --`; AgentSight handles everything else:
 
 ```bash
 # Launch and trace Claude Code — no --binary-path or --comm needed
-./agentsight exec -- claude
+./agentsight record -- claude
 
 # Works for any agent: pass the command exactly as you'd normally run it
-./agentsight exec -- claude -p "review my last commit"
-./agentsight exec -- python my_agent.py
-./agentsight exec -- node ./cli.js
+./agentsight record -- claude -p "review my last commit"
+./agentsight record -- python my_agent.py
+./agentsight record -- node ./cli.js
 ```
 
-What `exec` does automatically:
+What `record -- <command>` does automatically:
 
 1. **Discovers the SSL binary** — resolves the command via `$PATH`, follows
    symlinks (e.g. `claude` → `~/.local/share/claude/versions/2.1.150`), and
@@ -189,9 +196,9 @@ What `exec` does automatically:
    background.
 4. **Stops automatically** when the agent process exits.
 
-> **`sudo` note**: under `sudo`, `exec` still finds *your* user-local installs
+> **`sudo` note**: under `sudo`, `record` still finds *your* user-local installs
 > (it reads `$SUDO_USER`'s home for `~/.local/bin`, `~/bin`, and `~/.nvm`), so
-> `./agentsight exec -- claude` traces the claude in your home directory,
+> `./agentsight record -- claude` traces the claude in your home directory,
 > not a different one on root's `$PATH`.
 
 Useful flags: `--binary-path <path>` to override auto-discovery, `--no-server`
@@ -242,11 +249,11 @@ This captures:
 > OpenSSL into the `node` binary** — there is no system `libssl.so` to hook.
 > SSL capture therefore requires pointing sslsniff at the `node` binary itself.
 
-The easiest way is `exec`, which discovers the `node` binary automatically:
+The easiest way is `record -- <command>`, which discovers the `node` binary automatically:
 
 ```bash
-# Gemini CLI runs on Node — exec finds the right binary and traces it
-./agentsight exec -- gemini
+# Gemini CLI runs on Node — record finds the right binary and traces it
+./agentsight record -- gemini
 ```
 
 With `record`, AgentSight now auto-discovers the Node binary from `-c node`
@@ -366,7 +373,7 @@ sudo ./bpf/process -c python
 
 #### Web Interface Access
 
-`exec` and `record` start the web UI by default. Low-level `debug trace` starts it when you pass `--server`:
+`stat -- <command>` and `record` start the web UI by default. Low-level `debug trace` starts it when you pass `--server`:
 - **Timeline View**: http://127.0.0.1:7395/timeline
 - **Process Tree**: http://127.0.0.1:7395/tree
 - **Raw Logs**: http://127.0.0.1:7395/logs
@@ -375,19 +382,19 @@ sudo ./bpf/process -c python
 ## ❓ Frequently Asked Questions
 
 **Q: What permissions does AgentSight need?**
-A: eBPF probes need root privileges, so AgentSight may prompt for `sudo`. With `exec`, the monitored agent still runs as your normal user; only the probes are elevated.
+A: eBPF probes need root privileges, so AgentSight may prompt for `sudo`. With `record -- <command>` or `stat -- <command>`, the monitored agent still runs as your normal user; only the probes are elevated.
 
 **Q: What's the performance impact?**
 A: Our evaluation reports less than 3% CPU overhead for typical traced agent workloads.
 
 **Q: Where does captured data go?**
-A: `exec` stores sessions locally in SQLite by default. Use `agentsight report`, `agentsight list`, `agentsight db audit --json`, and `agentsight db token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
+A: `record` and `stat -- <command>` store sessions locally in SQLite by default. Use `agentsight stat`, `agentsight top`, `agentsight report`, `agentsight list`, `agentsight db audit --json`, and `agentsight db token` to inspect prior runs. Captured data can include prompts, responses, paths, headers, and network targets, so treat logs and DBs as sensitive.
 
 **Q: Why doesn't AgentSight capture traffic from Claude Code, Node.js, or Gemini CLI?**
-A: These applications statically link their SSL library (BoringSSL for Claude/Bun, OpenSSL for **all** Node.js — both NVM and system installs) into their own binary instead of using system `libssl.so`, so there's nothing for sslsniff to hook by default. AgentSight handles this for you: `exec` always discovers the binary, and `record -c node` now auto-discovers the Node binary too. For Claude, pass `--binary-path` (or use `exec`). See the "Zero-Config: exec" and "Monitoring Node.js AI Tools" sections.
+A: These applications statically link their SSL library (BoringSSL for Claude/Bun, OpenSSL for **all** Node.js — both NVM and system installs) into their own binary instead of using system `libssl.so`, so there's nothing for sslsniff to hook by default. AgentSight handles this for you: `record -- <command>` always discovers the binary, and `record -c node` now auto-discovers the Node binary too. For Claude attach mode, pass `--binary-path`. See the "Zero-Config: record" and "Monitoring Node.js AI Tools" sections.
 
 **Q: What should I check if tracing fails?**
-A: Verify you are on Linux with eBPF support, have `sudo` or `CAP_BPF`/`CAP_SYS_ADMIN`, and are using `exec` or the correct `--binary-path` for statically linked agents.
+A: Verify you are on Linux with eBPF support, have `sudo` or `CAP_BPF`/`CAP_SYS_ADMIN`, and are using `record -- <command>` or the correct `--binary-path` for statically linked agents.
 
 ## 🤝 Contributing
 

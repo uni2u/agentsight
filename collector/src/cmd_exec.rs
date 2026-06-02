@@ -63,9 +63,10 @@ pub(crate) async fn run_exec(
     max_log_size: u64,
     enable_server: bool,
     server_port: u16,
-) -> Result<(), RunnerError> {
+    print_summary: bool,
+) -> Result<Option<String>, RunnerError> {
     let program = command.first().ok_or_else(|| {
-        RunnerError::from("exec requires a command to run, e.g. `agentsight exec -- claude`")
+        RunnerError::from("record requires a command to run, e.g. `agentsight record -- claude`")
     })?;
     let prog_args = &command[1..];
 
@@ -88,7 +89,7 @@ pub(crate) async fn run_exec(
         }
     };
 
-    println!("AgentSight exec");
+    println!("AgentSight record");
     println!("{}", "=".repeat(60));
 
     // Derive the process comm filter from the command's base name. The kernel
@@ -163,7 +164,7 @@ pub(crate) async fn run_exec(
                 .unwrap_or(false);
             if !ok {
                 return Err(RunnerError::from(
-                    "sudo authentication failed. Either run as root (`sudo -E agentsight exec -- ...`) \
+                    "sudo authentication failed. Either run as root (`sudo -E agentsight record -- ...`) \
                      or grant your user passwordless sudo for the eBPF binaries.",
                 ));
             }
@@ -255,7 +256,7 @@ pub(crate) async fn run_exec(
     print_global_ssl_filter_metrics();
     run_capture_adapters(db_path_for_adapters.as_deref(), adapter)?;
 
-    if let Some(ref db) = db_path_for_adapters {
+    if print_summary && let Some(ref db) = db_path_for_adapters {
         print_session_summary(db);
     }
 
@@ -266,7 +267,7 @@ pub(crate) async fn run_exec(
         );
     }
 
-    Ok(())
+    Ok(db_path_for_adapters)
 }
 
 pub(crate) async fn stop_child(child: &mut tokio::process::Child) {

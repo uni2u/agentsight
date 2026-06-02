@@ -506,7 +506,7 @@ pub(crate) fn run_db_summary(
         SessionSummary::from_local_jsonl(&source, &file, &data).print();
         return Ok(());
     }
-    let db = db.ok_or("No session data found. Run `agentsight exec` first, or pass --db.")?;
+    let db = db.ok_or("No session data found. Run `agentsight record` first, or pass --db.")?;
     SessionSummary::from_sqlite(db)?.print();
     Ok(())
 }

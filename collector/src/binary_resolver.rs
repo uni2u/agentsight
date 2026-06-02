@@ -91,7 +91,7 @@ fn resolve_binary_path_inner(command: &str, depth: u8) -> Result<String, String>
 ///
 /// When invoked under `sudo`, the inherited `$PATH` is root's secure path, which
 /// usually misses user-local installs like `~/.local/bin/claude`. To make
-/// `sudo agentsight exec -- claude` find the *invoking user's* tools, we search
+/// `sudo agentsight record -- claude` find the *invoking user's* tools, we search
 /// that user's common bin dirs first (derived from `$SUDO_USER`).
 fn find_in_path(cmd: &str) -> Option<std::path::PathBuf> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();

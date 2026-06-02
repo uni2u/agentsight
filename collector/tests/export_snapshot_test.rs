@@ -41,8 +41,12 @@ fn agentsight_stdout_with_env(args: &[&str], envs: &[(&str, &std::ffi::OsStr)]) 
 #[test]
 fn top_level_help_surfaces_perf_strace_flow() {
     let help = agentsight_stdout(&["--help"]);
-    assert!(help.contains("perf/strace for AI agents"), "{help}");
-    assert!(help.contains("exec"), "{help}");
+    assert!(
+        help.contains("stat/top/record/report for AI agent runs"),
+        "{help}"
+    );
+    assert!(help.contains("stat"), "{help}");
+    assert!(help.contains("top"), "{help}");
     assert!(help.contains("record"), "{help}");
     assert!(help.contains("report"), "{help}");
     assert!(help.contains("prompts"), "{help}");
@@ -211,6 +215,29 @@ fn default_agent_run_summary_commands_are_real() {
     assert!(summary.contains("package-lock.json"), "{summary}");
     assert!(summary.contains("api.anthropic.com"), "{summary}");
     assert!(summary.contains("registry.npmjs.org"), "{summary}");
+
+    let stat = agentsight_stdout(&["stat", "--db", db.to_str().expect("db path")]);
+    assert!(stat.contains("AgentSight stat"), "{stat}");
+    assert!(stat.contains("LLM calls:"), "{stat}");
+    assert!(stat.contains("1380 total"), "{stat}");
+    assert!(stat.contains("process execs:"), "{stat}");
+    assert!(stat.contains("network hosts:"), "{stat}");
+
+    let top = agentsight_stdout(&[
+        "top",
+        "--db",
+        db.to_str().expect("db path"),
+        "--once",
+        "--limit",
+        "5",
+    ]);
+    assert!(top.contains("AgentSight top"), "{top}");
+    assert!(top.contains("Processes"), "{top}");
+    assert!(top.contains("Files"), "{top}");
+    assert!(top.contains("Network"), "{top}");
+    assert!(top.contains("Models"), "{top}");
+    assert!(top.contains("package-lock.json"), "{top}");
+    assert!(top.contains("api.anthropic.com"), "{top}");
 
     let prompts = agentsight_stdout(&["prompts", "--db", db.to_str().expect("db path")]);
     assert!(prompts.contains("fix the failing API test"), "{prompts}");

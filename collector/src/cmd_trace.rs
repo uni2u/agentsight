@@ -34,7 +34,7 @@ pub(crate) struct OtelConfig {
 ///
 /// Collapses what used to be ~28 positional arguments threaded through
 /// `run_trace` and `build_trace_agent`. The `Default` impl is the neutral
-/// "nothing enabled" baseline; the `trace`, `record`, and `exec` handlers each
+/// "nothing enabled" baseline; the `trace` and `record` handlers each
 /// fill in only the fields they care about.
 #[derive(Default)]
 pub(crate) struct TraceConfig {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-// The trace/record/exec path now uses the TraceConfig struct instead of ~28
+// The trace/record path now uses the TraceConfig struct instead of ~28
 // positional args. The remaining offenders are the raw `ssl`/`stdio`/`system`
 // CLI handlers and HTTPEvent::new; collapsing those is a follow-up, so the lint
 // stays allowed crate-wide until then.
@@ -20,6 +20,7 @@ mod cli_db;
 mod cli_discover;
 mod cmd_debug;
 mod cmd_exec;
+mod cmd_perf;
 mod cmd_trace;
 mod framework;
 mod server;
@@ -32,6 +33,7 @@ use cli_db::{
 use cli_discover::run_discover;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
+use cmd_perf::{run_stat_query, run_top_query};
 use cmd_trace::{OtelConfig, TraceConfig, convert_runner_error, run_trace};
 use framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -46,6 +48,10 @@ fn shutdown_notify() -> Arc<Notify> {
     SHUTDOWN_NOTIFY
         .get_or_init(|| Arc::new(Notify::new()))
         .clone()
+}
+
+pub(crate) fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
 }
 
 async fn setup_signal_handler() {
@@ -71,10 +77,11 @@ async fn setup_signal_handler() {
 #[command(
     author,
     version,
-    about = "AgentSight: perf/strace for AI agents.\n\n\
+    about = "AgentSight: stat/top/record/report for AI agent runs.\n\n\
              Common flow:\n\
-               agentsight exec -- claude\n\
-               agentsight record -c claude\n\
+               agentsight stat -- claude\n\
+               agentsight record -- claude\n\
+               agentsight top\n\
                agentsight report\n\
                agentsight prompts --json\n\n\
              eBPF probes require root; AgentSight auto-elevates them via sudo\n\
@@ -87,19 +94,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Launch a command and automatically discover + trace it (zero config).
-    /// Example: agentsight exec -- claude     (or)  agentsight exec -- python my_agent.py
-    #[command(visible_alias = "run")]
-    Exec {
-        /// Override the auto-discovered SSL binary path (rarely needed)
-        #[arg(long)]
-        binary_path: Option<String>,
-        /// Log file for output and server
-        #[arg(short = 'o', long, default_value = "record.log")]
-        log_file: String,
-        /// SQLite database path for production queries and adapters
+    /// Print counters for a recorded session, or run a command and print counters when it exits.
+    /// Examples: agentsight stat --db run.db     (or)  agentsight stat -- claude
+    Stat {
+        /// SQLite database path (defaults to latest session when no command is passed)
         #[arg(long)]
         db: Option<String>,
+        /// Emit JSON output. For clean JSON, use this with --db instead of a live command.
+        #[arg(long)]
+        json: bool,
+        /// Override the auto-discovered SSL binary path when tracing a command
+        #[arg(long)]
+        binary_path: Option<String>,
+        /// Log file for output and server when tracing a command
+        #[arg(short = 'o', long, default_value = "record.log")]
+        log_file: String,
         /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
         #[arg(long, default_value = "auto")]
         adapter: String,
@@ -112,22 +121,36 @@ enum Commands {
         /// Maximum log file size in MB (used with --rotate-logs)
         #[arg(long, default_value = "10")]
         max_log_size: u64,
-        /// Disable the web server (enabled by default on --server-port)
+        /// Disable the web server while tracing a command
         #[arg(long)]
         no_server: bool,
-        /// Server port for the web UI
+        /// Server port for the web UI while tracing a command
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// The command (and its arguments) to launch and trace
-        #[arg(last = true, required = true)]
+        /// Optional command to launch and trace before printing counters
+        #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Record an already-running agent by command name or PID
-    #[command(group(
-        clap::ArgGroup::new("target")
-            .required(true)
-            .args(["comm", "pid"])
-    ))]
+    /// Show a live ranked view for the latest or selected recorded session.
+    Top {
+        /// SQLite database path (defaults to latest session)
+        #[arg(long)]
+        db: Option<String>,
+        /// Refresh interval in seconds
+        #[arg(short = 'i', long, default_value = "2")]
+        interval: u64,
+        /// Rows per section
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+        /// Number of refreshes before exiting
+        #[arg(long)]
+        count: Option<u32>,
+        /// Print one snapshot and exit
+        #[arg(long)]
+        once: bool,
+    },
+    /// Record a command, or attach to an already-running agent by command name or PID.
+    /// Examples: agentsight record -- claude     (or)  agentsight record -c claude
     Record {
         /// Process command filter, e.g. claude, codex, node, python
         #[arg(short = 'c', long, conflicts_with = "pid")]
@@ -156,9 +179,15 @@ enum Commands {
         /// Maximum log file size in MB (used with --rotate-logs)
         #[arg(long, default_value = "10")]
         max_log_size: u64,
-        /// Server port (used with --server, always enabled)
+        /// Disable the web server
+        #[arg(long)]
+        no_server: bool,
+        /// Server port for the web UI
         #[arg(long, default_value = "7395")]
         server_port: u16,
+        /// Optional command to launch and trace. Use -c/--comm or -p/--pid instead to attach.
+        #[arg(last = true)]
+        command: Vec<String>,
     },
     /// Show a report for the latest recorded session
     Report {
@@ -621,6 +650,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             run_db_summary(resolved.as_deref())?;
             return Ok(());
         }
+        Commands::Stat {
+            db, json, command, ..
+        } if command.is_empty() => {
+            let db = resolve_db_or_latest(db)?;
+            run_stat_query(&db, *json)?;
+            return Ok(());
+        }
+        Commands::Top {
+            db,
+            interval,
+            limit,
+            count,
+            once,
+        } => {
+            let db = resolve_db_or_latest(db)?;
+            let count = if *once { Some(1) } else { *count };
+            run_top_query(&db, *interval, *limit, count)?;
+            return Ok(());
+        }
         Commands::Prompts { db, limit, json } => {
             let db = resolve_db_or_latest(db)?;
             run_prompts_query(&db, *limit, *json)?;
@@ -641,10 +689,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let binary_extractor = BinaryExtractor::new().await?;
 
     match &cli.command {
-        Commands::Exec {
+        Commands::Stat {
             binary_path,
             log_file,
             db,
+            json,
             adapter,
             no_adapters,
             rotate_logs,
@@ -652,20 +701,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             no_server,
             server_port,
             command,
-        } => run_exec(
-            &binary_extractor,
-            command,
-            binary_path.as_deref(),
-            log_file,
-            configured_db_path(db),
-            (!*no_adapters).then_some(adapter.as_str()),
-            *rotate_logs,
-            *max_log_size,
-            !*no_server,
-            *server_port,
-        )
-        .await
-        .map_err(convert_runner_error)?,
+        } => {
+            if command.is_empty() {
+                unreachable!("stat without a command is handled before binary extraction");
+            }
+            if *json {
+                return Err("stat --json currently requires --db for clean JSON output".into());
+            }
+            let recorded_db = run_exec(
+                &binary_extractor,
+                command,
+                binary_path.as_deref(),
+                log_file,
+                configured_db_path(db),
+                (!*no_adapters).then_some(adapter.as_str()),
+                *rotate_logs,
+                *max_log_size,
+                !*no_server,
+                *server_port,
+                false,
+            )
+            .await
+            .map_err(convert_runner_error)?;
+            let db = recorded_db
+                .as_deref()
+                .ok_or("stat command did not produce a SQLite session database")?;
+            run_stat_query(db, false)?;
+        }
         Commands::Record {
             comm,
             pid,
@@ -676,8 +738,39 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             no_adapters,
             rotate_logs,
             max_log_size,
+            no_server,
             server_port,
+            command,
         } => {
+            if !command.is_empty() {
+                if comm.is_some() || pid.is_some() {
+                    return Err(
+                        "record accepts either -- <command> or -c/--comm/-p/--pid, not both".into(),
+                    );
+                }
+                run_exec(
+                    &binary_extractor,
+                    command,
+                    binary_path.as_deref(),
+                    log_file,
+                    configured_db_path(db),
+                    (!*no_adapters).then_some(adapter.as_str()),
+                    *rotate_logs,
+                    *max_log_size,
+                    !*no_server,
+                    *server_port,
+                    true,
+                )
+                .await
+                .map_err(convert_runner_error)?;
+                return Ok(());
+            }
+            if comm.is_none() && pid.is_none() {
+                return Err(
+                    "record requires either a command (`agentsight record -- claude`) or an attach target (`-c <comm>` / `-p <pid>`)"
+                        .into(),
+                );
+            }
             let db_path = match configured_db_path(db) {
                 Some(path) => Some(path),
                 None => match default_session_db_path() {
@@ -716,7 +809,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 quiet: true,
                 rotate_logs: *rotate_logs,
                 max_log_size: *max_log_size,
-                server: true,
+                server: !*no_server,
                 server_port: *server_port,
                 ..Default::default()
             };
@@ -919,6 +1012,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Commands::Db(_)
         | Commands::Discover { .. }
         | Commands::Report { .. }
+        | Commands::Top { .. }
         | Commands::Prompts { .. }
         | Commands::List => unreachable!(),
     }

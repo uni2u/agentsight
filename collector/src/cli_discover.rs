@@ -50,7 +50,7 @@ pub(crate) fn run_discover(json: bool) -> Result<(), Box<dyn std::error::Error +
                 dir.display()
             );
         }
-        println!("\n  Run `agentsight db summary` to analyze the latest session.");
+        println!("\n  Run `agentsight report` or `agentsight stat` to analyze the latest session.");
     }
     Ok(())
 }
@@ -62,21 +62,21 @@ fn discover_rows() -> Vec<DiscoveryRow> {
             "Claude Code",
             "claude-code",
             "claude",
-            "agentsight exec --db record.db --adapter claude-code -- claude -p 'hello' --output-format json",
+            "agentsight record --db record.db --adapter claude-code -- claude -p 'hello' --output-format json",
         ),
         row(
             "gemini-cli",
             "Gemini CLI",
             "gemini-cli",
             "gemini",
-            "agentsight exec --db record.db --adapter gemini-cli -- gemini --prompt 'hello' --json",
+            "agentsight record --db record.db --adapter gemini-cli -- gemini --prompt 'hello' --json",
         ),
         row(
             "openclaw",
             "OpenClaw",
             "openclaw",
             "docker",
-            "agentsight trace --db record.db --adapter openclaw --binary-path docker://<container>",
+            "agentsight record -c node --db record.db --adapter openclaw --binary-path docker://<container>",
         ),
     ]
 }
