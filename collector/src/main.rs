@@ -34,7 +34,7 @@ use cli_db::{
 use cli_discover::run_discover;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
-use cmd_perf::{run_stat_query, run_top_query};
+use cmd_perf::{TopOptions, run_live_top_query, run_stat_query, run_top_query};
 use cmd_trace::{OtelConfig, TraceConfig, convert_runner_error, run_trace};
 use framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -132,11 +132,23 @@ enum Commands {
         #[arg(last = true)]
         command: Vec<String>,
     },
-    /// Show a live ranked view for the latest or selected recorded session.
+    /// Show live agent process activity, or a saved session with --db.
     Top {
-        /// SQLite database path (defaults to latest session)
+        /// SQLite database path for saved session mode
         #[arg(long)]
         db: Option<String>,
+        /// Process PID filter, similar to top -p
+        #[arg(short = 'p', long, conflicts_with = "comm")]
+        pid: Option<u32>,
+        /// Process command/name filter, e.g. claude, codex, gemini
+        #[arg(short = 'c', long, conflicts_with = "pid")]
+        comm: Option<String>,
+        /// Sort key: cpu, rss, tokens, execs, fail, files, net, agent
+        #[arg(long, default_value = "cpu")]
+        sort: String,
+        /// Detail view: all, processes, files, network, models
+        #[arg(long, default_value = "all")]
+        view: String,
         /// Refresh interval in seconds
         #[arg(short = 'i', long, default_value = "2")]
         interval: u64,
@@ -660,14 +672,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         Commands::Top {
             db,
+            pid,
+            comm,
+            sort,
+            view,
             interval,
             limit,
             count,
             once,
         } => {
-            let db = resolve_db_or_latest(db)?;
             let count = if *once { Some(1) } else { *count };
-            run_top_query(&db, *interval, *limit, count)?;
+            let options = TopOptions {
+                pid: *pid,
+                comm: comm.clone(),
+                sort: sort.clone(),
+                view: view.clone(),
+            };
+            if let Some(db) = db {
+                run_top_query(db, *interval, *limit, count, &options)?;
+            } else {
+                run_live_top_query(*interval, *limit, count, &options)?;
+            }
             return Ok(());
         }
         Commands::Prompts { db, limit, json } => {

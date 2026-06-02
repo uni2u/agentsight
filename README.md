@@ -34,7 +34,7 @@ wget https://github.com/eunomia-bpf/agentsight/releases/latest/download/agentsig
 ./agentsight stat -- claude
 # Re-open the latest session report after the agent exits.
 ./agentsight report
-# Watch ranked activity for the latest or selected session.
+# Watch live ranked agent process activity.
 ./agentsight top
 # Or attach to an already-running agent by process name
 sudo ./agentsight record -c claude
@@ -45,6 +45,7 @@ When the launched agent exits, `stat` prints counters; `report` opens the saved 
 ```bash
 ./agentsight record --db run.db -- claude "fix the failing API test"
 ./agentsight stat --db run.db
+./agentsight top --db run.db --once
 ./agentsight report --db run.db
 ./agentsight prompts --db run.db --json
 ```
@@ -137,7 +138,8 @@ Every `stat -- <command>` or `record` session is automatically saved to SQLite. 
 
 ```bash
 agentsight stat                       # counters for the latest session
-agentsight top                        # live ranked view of the latest session
+agentsight top                        # live ranked view of current agent process families
+agentsight top --db run.db --once     # ranked view of a saved session
 agentsight record -- claude           # record a command
 agentsight report                     # high-level run summary
 agentsight list                       # all recorded sessions

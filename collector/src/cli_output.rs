@@ -40,6 +40,36 @@ pub(crate) struct StatOutput {
 
 pub(crate) type TopSection = (&'static str, &'static str, Vec<(String, i64)>);
 
+#[derive(Debug, Clone)]
+pub(crate) struct AgentTopRow {
+    pub(crate) agent: String,
+    pub(crate) pid: Option<u32>,
+    pub(crate) cpu_percent: f64,
+    pub(crate) rss_mb: u64,
+    pub(crate) processes: usize,
+    pub(crate) tokens: Option<i64>,
+    pub(crate) execs: usize,
+    pub(crate) failures: usize,
+    pub(crate) files: usize,
+    pub(crate) network: usize,
+    pub(crate) unattributed: usize,
+    pub(crate) trace: String,
+    pub(crate) command: String,
+}
+
+pub(crate) struct AgentTopOutput<'a> {
+    pub(crate) mode: &'a str,
+    pub(crate) db: Option<&'a str>,
+    pub(crate) duration_s: f64,
+    pub(crate) canonical_events: i64,
+    pub(crate) llm_calls: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) rows: Vec<AgentTopRow>,
+    pub(crate) sections: Vec<TopSection>,
+    pub(crate) failures: Vec<String>,
+    pub(crate) notes: Vec<String>,
+}
+
 pub(crate) struct SessionSummary {
     pub(crate) source: String,
     pub(crate) duration_s: f64,
@@ -193,32 +223,81 @@ pub(crate) fn print_stat(stat: &StatOutput) {
     }
 }
 
-pub(crate) fn print_top(
-    db: &str,
-    duration_s: f64,
-    canonical_events: i64,
-    llm_calls: i64,
-    total_tokens: i64,
-    resources: &ResourcePeaks,
-    sections: &[TopSection],
-    failures: &[String],
-) {
+pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let db = top.db.map(|db| format!(" · {db}")).unwrap_or_default();
     println!(
-        "AgentSight top · {generated_at} · {db} · {duration_s:.0}s · {canonical_events} events · {llm_calls} LLM calls · {total_tokens} tokens\n"
+        "AgentSight top - {} agents   {}   {}{db}   {:.0}s   events: {}   LLM: {}   tokens: {}",
+        top.rows.len(),
+        top.mode,
+        generated_at,
+        top.duration_s,
+        top.canonical_events,
+        top.llm_calls,
+        format_count(top.total_tokens)
     );
-    for section in sections {
-        print_ranked(section);
+    println!();
+    println!(
+        "{:<14} {:>7} {:>6} {:>7} {:>5} {:>8} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} COMMAND",
+        "AGENT",
+        "PID",
+        "CPU%",
+        "RSS",
+        "PROCS",
+        "TOKENS",
+        "EXECS",
+        "FAIL",
+        "FILES",
+        "NET",
+        "UNATTR",
+        "TRACE"
+    );
+    for row in &top.rows {
+        println!(
+            "{:<14} {:>7} {:>6.1} {:>7} {:>5} {:>8} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} {}",
+            truncate(&row.agent, 14),
+            row.pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.cpu_percent,
+            format_mb(row.rss_mb),
+            row.processes,
+            row.tokens
+                .map(format_count)
+                .unwrap_or_else(|| "-".to_string()),
+            row.execs,
+            row.failures,
+            row.files,
+            row.network,
+            row.unattributed,
+            truncate(&row.trace, 10),
+            truncate(&row.command, 80),
+        );
     }
-    if resources.samples > 0 {
-        println!("Resources");
-        println!("  max CPU {:>8.2}%", resources.max_cpu_percent);
-        println!("  max RSS {:>8} MB", resources.max_rss_mb);
+    if top.rows.is_empty() {
+        println!(
+            "{:<14} {:>7} {:>6} {:>7} {:>5} {:>8} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} -",
+            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"
+        );
+    }
+    println!();
+
+    for note in &top.notes {
+        println!("note: {note}");
+    }
+    if !top.notes.is_empty() {
         println!();
     }
-    if !failures.is_empty() {
+
+    if !top.sections.is_empty() {
+        println!("Hot activity");
+        for section in &top.sections {
+            print_ranked(section);
+        }
+    }
+    if !top.failures.is_empty() {
         println!("Recent Failures");
-        for failure in failures {
+        for failure in &top.failures {
             println!("  {failure}");
         }
         println!();
@@ -421,6 +500,25 @@ fn print_ranked((title, unit, rows): &TopSection) {
         println!("  {value:>8} {unit:<8} {}", truncate(name, 96));
     }
     println!();
+}
+
+fn format_count(value: i64) -> String {
+    let abs = value.abs();
+    if abs >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if abs >= 1_000 {
+        format!("{:.1}k", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_mb(value: u64) -> String {
+    if value >= 1024 {
+        format!("{:.1}G", value as f64 / 1024.0)
+    } else {
+        format!("{value}M")
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

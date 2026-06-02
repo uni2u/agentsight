@@ -231,7 +231,11 @@ fn default_agent_run_summary_commands_are_real() {
         "--limit",
         "5",
     ]);
-    assert!(top.contains("AgentSight top"), "{top}");
+    assert!(top.contains("AgentSight top -"), "{top}");
+    assert!(top.contains("static session"), "{top}");
+    assert!(top.contains("AGENT"), "{top}");
+    assert!(top.contains("TOKENS"), "{top}");
+    assert!(top.contains("Hot activity"), "{top}");
     assert!(top.contains("Processes"), "{top}");
     assert!(top.contains("Files"), "{top}");
     assert!(top.contains("Network"), "{top}");
@@ -348,4 +352,15 @@ fn default_agent_run_summary_commands_are_real() {
             .iter()
             .any(|event| event["target"] == "/workspace/app/package-lock.json")
     );
+}
+
+#[test]
+fn top_without_db_uses_live_process_view() {
+    let top = agentsight_stdout(&["top", "--once"]);
+    assert!(top.contains("AgentSight top -"), "{top}");
+    assert!(top.contains("live /proc"), "{top}");
+    assert!(top.contains("AGENT"), "{top}");
+    assert!(top.contains("PID"), "{top}");
+    assert!(top.contains("CPU%"), "{top}");
+    assert!(top.contains("TRACE"), "{top}");
 }
