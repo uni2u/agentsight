@@ -12,6 +12,10 @@ The short version:
 
 > Let agents do the work. Let AgentSight make the work accountable.
 
+Accountability does not only mean audit after the fact. The broader product
+problem is delegation: users want agents to act on real systems, but they need
+confidence, control, and recovery when that delegation has side effects.
+
 ## Product Principle
 
 AgentSight should not automate the user's task. The user's agent does that.
@@ -33,7 +37,10 @@ The product should be organized around user scenarios, not telemetry categories.
 
 | Scenario | User | When it happens | Product value |
 | --- | --- | --- | --- |
+| Delegation confidence | Individual/team agent user | Before increasing agent autonomy | "Can I let it keep working without watching every step?" |
+| Permission tuning | Individual/team agent user | While configuring approvals or policy | "Which actions should be auto-approved, confirmed, or blocked?" |
 | Run receipt | Individual agent user | After a normal agent session | "What did it actually do?" |
+| Recovery context | Developer/user | After local state is changed or damaged | "What do I need to undo or inspect?" |
 | Review and acceptance | Skill/MCP/tool reviewer | Before trusting a new agent tool | "Does it really behave as claimed?" |
 | Incident forensics | Developer/security/user | After something broke or looked suspicious | "What caused this and what was touched?" |
 | PR due diligence | Code reviewer/team lead | When reviewing agent-generated code | "Can I trust the process behind this diff?" |
@@ -44,7 +51,91 @@ The product should be organized around user scenarios, not telemetry categories.
 These are not all equally important. The first three are the strongest product
 directions because they rely on independent evidence, not domain automation.
 
-## Scenario 1: Run Receipt
+Audit is only one of these scenarios. If the product is framed only as audit,
+it sounds useful mainly after something bad happens. The larger opportunity is
+to make agent delegation more usable before, during, and after a run.
+
+## Scenario 1: Delegation Confidence
+
+User:
+
+- an individual developer, team lead, or platform owner deciding how much
+  autonomy to give local or CI agents
+
+Situation:
+
+- the agent is useful, but the user is still watching every step because they
+  do not know whether it will stay inside expected boundaries
+- the user wants fewer interruptions without blindly allowing everything
+
+User question:
+
+> Can I let this agent keep working without watching every step?
+
+Why the user's agent is not enough:
+
+- the acting agent can promise it will stay inside bounds, but cannot prove its
+  historical behavior independently
+- permission prompts often show a command or short summary, not the wider
+  system effect pattern
+- a user cannot tune autonomy well without knowing which actions are actually
+  common, safe, rare, or risky
+
+AgentSight output:
+
+- historical behavior profile by agent/tool/repo
+- common commands and paths
+- writes inside vs outside workspace
+- network destinations
+- actions that usually succeed without side effects
+- actions that frequently touch sensitive paths or require review
+
+Product shape:
+
+```bash
+agentsight report --autonomy
+agentsight policy suggest
+```
+
+This turns evidence into a practical decision: what can be auto-approved, what
+should ask, and what should be denied.
+
+## Scenario 2: Permission Tuning
+
+User:
+
+- a developer or team configuring Codex/Claude/Cursor/Gemini approvals, MCP
+  allowlists, or internal agent policy
+
+Situation:
+
+- too many confirmations make the agent annoying
+- too few confirmations make it unsafe
+- generic policy is either too permissive or too restrictive
+
+User question:
+
+> Which actions should this agent be allowed to do automatically?
+
+AgentSight output:
+
+- policy suggestions from observed behavior
+- "safe so far" patterns, such as project-local test commands
+- "needs confirmation" patterns, such as writes outside workspace
+- "deny" patterns, such as secret reads plus unknown network egress
+- evidence backing each recommendation
+
+Product shape:
+
+```bash
+agentsight policy suggest --from last-20-runs
+agentsight run --policy suggested.yaml -- claude
+```
+
+This is not just audit. It is a feedback loop that makes agent autonomy more
+usable.
+
+## Scenario 3: Run Receipt
 
 User:
 
@@ -90,7 +181,49 @@ agentsight report
 This is the smallest useful product. It should work even if the user never
 opens a full timeline UI.
 
-## Scenario 2: Review And Acceptance
+## Scenario 4: Recovery Context
+
+User:
+
+- a developer or user trying to clean up after an agent changed local state
+
+Situation:
+
+- the repo is broken
+- files were deleted or generated
+- dependencies were installed
+- a shell profile, config file, cache, or service state may have changed
+
+User question:
+
+> What do I need to undo or inspect to get back to a good state?
+
+Why git diff is not enough:
+
+- it misses untracked files
+- it misses writes outside the repo
+- it misses package installs and cache changes
+- it misses background processes and network side effects
+- it does not show the command chain that produced the state
+
+AgentSight output:
+
+- changed path inventory
+- destructive operation list
+- process lineage
+- commands that modified local state
+- possible recovery context for a human or another agent
+
+Product shape:
+
+```bash
+agentsight report --recovery
+agentsight export --evidence recovery.json
+```
+
+This makes agent side effects recoverable, not merely auditable.
+
+## Scenario 5: Review And Acceptance
 
 User:
 
@@ -134,7 +267,7 @@ This is a strong scenario for the cleanup skill example. The value is not that
 AgentSight knows how to clean disks. The value is that it can verify the cleanup
 agent only scanned, recommended, and deleted what the user confirmed.
 
-## Scenario 3: Incident Forensics
+## Scenario 6: Incident Forensics
 
 User:
 
@@ -183,7 +316,7 @@ agentsight export --evidence incident.json
 This scenario is not about preventing all failures. It is about making failures
 reconstructable.
 
-## Scenario 4: PR Due Diligence
+## Scenario 7: PR Due Diligence
 
 User:
 
@@ -227,7 +360,7 @@ agentsight report --for-pr
 This is a social trust scenario. The person who needs AgentSight may not be the
 person who ran the agent.
 
-## Scenario 5: Behavioral Regression Testing
+## Scenario 8: Behavioral Regression Testing
 
 User:
 
@@ -272,7 +405,7 @@ This may become valuable for CI because it catches changes that ordinary output
 evals miss. A model can produce the same final answer while touching very
 different system resources.
 
-## Scenario 6: Live Airlock
+## Scenario 9: Live Airlock
 
 User:
 
@@ -313,7 +446,7 @@ agentsight run --policy workspace-only -- claude
 This is a later-stage scenario. It has real value, but only if the policy
 surface stays small and concrete.
 
-## Scenario 7: Cost And Resource Accounting
+## Scenario 10: Cost And Resource Accounting
 
 User:
 
