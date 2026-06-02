@@ -47,6 +47,12 @@
 
    学术界数据采集痛点：研究者正在收集 agent PR、真实会话、失败 trace、permission gate、tool/command bug、依赖可复现性和 MCP/skill 攻击数据，但缺少跨 agent 的系统行为采集层。
 
+## Blog Drafts
+
+- [blog-agent-observability-wrong-object.md](blog-agent-observability-wrong-object.md)
+
+  对外博客草稿：挑战“agent observability = prompt/tool trace”的默认理解，主张先观察真实状态变化，再解释 agent 叙事。
+
 ## What Everyone Is Doing
 
 市场已经拥挤的方向：
