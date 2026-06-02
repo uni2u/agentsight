@@ -30,9 +30,6 @@ When the launched agent exits, `exec` prints a run summary. For the blog example
 ```
 
 ```text
-────────────────────────────────────────────────────────────
-📊 Session Summary
-────────────────────────────────────────────────────────────
 agentsight session · 7s · 1 API calls · 1380 tokens
 
   claude-sonnet-4-20250514 — 1 calls, 1380 tokens (in: 1200, out: 180)
@@ -40,9 +37,6 @@ agentsight session · 7s · 1 API calls · 1380 tokens
 2 processes spawned: node(1), npm(1)
 3 files accessed: /workspace/app/src/api/handler.ts, /workspace/app/tests/api.test.ts, /workspace/app/package-lock.json
 Network: api.anthropic.com, registry.npmjs.org
-
-  Source: run.db
-────────────────────────────────────────────────────────────
 ```
 
 The summary is intentionally grounded in observable effects: model/token usage, spawned processes, touched files, and network targets, so the agent's final claim can be checked against what changed on the machine.

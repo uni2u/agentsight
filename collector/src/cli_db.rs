@@ -248,7 +248,6 @@ pub(crate) struct SessionSummary {
     pub tool_calls: BTreeMap<String, usize>,
     pub files: Vec<String>,
     pub endpoints: Vec<String>,
-    pub db_path: Option<String>,
 }
 
 impl SessionSummary {
@@ -329,11 +328,10 @@ impl SessionSummary {
             tool_calls,
             files,
             endpoints,
-            db_path: Some(db.into()),
         })
     }
 
-    pub fn from_local_jsonl(source: &str, file: &str, data: &serde_json::Value) -> Self {
+    pub fn from_local_jsonl(source: &str, _file: &str, data: &serde_json::Value) -> Self {
         let models = data
             .get("models")
             .and_then(|v| v.as_object())
@@ -370,7 +368,6 @@ impl SessionSummary {
             tool_calls,
             files: vec![],
             endpoints: vec![],
-            db_path: Some(file.into()),
         }
     }
 
@@ -468,7 +465,6 @@ impl SessionSummary {
         if !self.endpoints.is_empty() {
             println!("Network: {}", self.endpoints.join(", "));
         }
-
     }
 }
 
