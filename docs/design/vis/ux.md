@@ -2,7 +2,7 @@
 
 ## Goal
 
-AgentSight should make one sentence true in both CLI and UI:
+AgentSight should make one sentence true in both CLI and saved reports:
 
 > See what coding agents actually do to your machine, and connect those actions
 > back to the prompts, model calls, and tool decisions that triggered them.
@@ -20,7 +20,7 @@ prompt / model call / tool decision
       -> result, risk, artifact
 ```
 
-This document defines the desired command line and UI experience. It complements:
+This document defines the desired command line and report experience. It complements:
 
 - `vis.md`: Agent Footprint Map, the agent equivalent of a flame graph.
 - `agent-workspace-map.md`: workspace/file behavior visualizations.
@@ -37,12 +37,34 @@ AgentSight should borrow the interaction grammar of familiar systems tools:
 | `perf record` | capture a session artifact | `agentsight record -- <agent>` |
 | `perf report` | inspect a saved artifact | `agentsight report` |
 | `perf script` | dump ordered events | `agentsight script` |
-| `perf diff` | compare runs | `agentsight diff` |
 | `strace -f -tt -e ...` | follow subprocesses and filter events | `agentsight trace -f -tt -e process,file,network,llm` |
 | Nsight Systems | time-correlated lanes and markers | Agent run timeline with LLM/tool/process/file lanes |
 
 AgentSight is not trying to replace SDK trace tools. It should be the local,
 framework-neutral run activity layer underneath them.
+
+## User Questions First
+
+The UX should start from user questions, not from event types. A user rarely
+opens AgentSight because they want "a timeline"; they open it because they need
+to decide whether an agent run was correct, safe, efficient, or explainable.
+
+| Scenario | User question | Best first answer | Evidence needed |
+| --- | --- | --- | --- |
+| Normal run receipt | What did the agent actually do? | `stat` + `report` summary | LLM calls, commands, files, network, exits |
+| PR review | Can I trust this AI-generated diff? | blast radius section in `report` | read/write set, changed files, tests, high-risk paths |
+| File-level review | Why did this file change? | provenance chain for one path | prompt/tool/process/file event/diff hunk |
+| Debugging | Why did the agent fail or loop? | failed-command and repeated-work sections | tool calls, process exits, repeated reads/greps, tokens |
+| Security review | Did it touch secrets, config, or workspace-external paths? | policy/side-effects section | file paths, cwd, argv, network hosts, attribution |
+| Hidden behavior | What happened outside observed tool decisions? | unattributed activity section | process/file/network events without semantic parent |
+| Capture audit | What could AgentSight not see? | capture health section | probe status, adapters, event loss, observed/inferred fields |
+
+This is the main product distinction from both sides:
+
+- LLM dashboards answer "what did the agent say or call?"
+- System tools answer "what did this process do?"
+- AgentSight should answer "which agent intent caused which system effect, and
+  what system effects had no visible agent intent?"
 
 ## Core UX Principles
 
@@ -71,7 +93,7 @@ derived reports
 exported artifacts
 ```
 
-The UI should always show which run is loaded and whether it is live or static.
+Every output should show which run is loaded and whether it is live or static.
 
 ### 3. Intent-to-Effect Is the Main Story
 
@@ -92,7 +114,7 @@ User task
 
 ### 4. Unattributed Behavior Must Be Visible
 
-Unattributed behavior is a core differentiator. The UI must show a clear lane
+Unattributed behavior is a core differentiator. Reports must show a clear section
 for system activity that happened without an observed prompt/tool cause:
 
 ```text
@@ -105,9 +127,9 @@ Background / unattributed
 
 This should not be hidden in raw logs.
 
-### 5. Every View Must Export
+### 5. Every Summary Must Point Back to Evidence
 
-Useful outputs should be shareable:
+Useful outputs should be shareable, but they also need raw evidence pointers:
 
 - terminal text
 - JSON
@@ -115,6 +137,135 @@ Useful outputs should be shareable:
 - static HTML
 - SVG for footprint/workspace maps
 - Markdown report for PR review or incident notes
+
+## The System-Agent Intersection
+
+The central object is not an LLM span and not a syscall. It is an edge between
+the agent layer and the system layer:
+
+```text
+agent intent/event  ->  system effect
+```
+
+Examples:
+
+```text
+user prompt                    -> run starts
+LLM request/response            -> model/token/cost evidence
+tool decision: Bash("npm test") -> npm process tree, file reads, exit code
+tool decision: Edit(file)       -> file write/truncate/rename, diff hunk
+tool decision: install package  -> package manager process, registry network, lockfile write
+no observed tool decision       -> unattributed process/file/network event
+```
+
+AgentSight should make these edges visible as first-class data. A plain process
+tree is not enough because it loses the agent reason. A plain agent trace is not
+enough because it loses the actual OS effects.
+
+The useful derived entities are:
+
+| Entity | Meaning | Typical source |
+| --- | --- | --- |
+| Run | One recorded agent session | `record`, `stat -- <cmd>`, attach session |
+| Intent | User prompt, model call, tool decision, plan step | TLS payload, local transcript, adapter |
+| Effect | Process exec/exit, file operation, network host, resource sample | eBPF/system runner |
+| Attribution edge | Why this effect is linked to this intent | timestamp, PID/tree, cwd, tool payload, adapter |
+| Unattributed effect | System activity with no observed semantic parent | process/file/network event without matching intent |
+| Verdict | Safe/risky/policy violation/needs review | path rules, host rules, user policy, heuristics |
+
+The strongest views are built from edges, not nodes. For example:
+
+```text
+Bash("npm test")
+  -> exec npm
+  -> exec node
+  -> read package.json
+  -> read tests/api.test.ts
+  -> exit 1
+```
+
+This answers a different question from either source alone:
+
+- Agent trace alone: the agent asked to run `npm test`.
+- System trace alone: `npm` and `node` ran and touched files.
+- AgentSight: this tool decision produced this concrete process/file/result chain.
+
+## Answer Surfaces
+
+The initial product should prioritize command-line and report surfaces. Each
+surface should answer a different class of questions:
+
+| Surface | Primary question | Secondary questions |
+| --- | --- | --- |
+| `stat` | How big was this run? | tokens, commands, files, network, failures, resource peaks |
+| `top` | What is active or dominant right now? | hot processes, risky paths, token-heavy model calls, unattributed activity |
+| `record` | What artifact did we capture? | DB path, capture health, attach target, replay commands |
+| `report` | What happened and why does it matter? | intent/effect chain, blast radius, side effects, warnings |
+| `script` | What is the ordered evidence stream? | exact time, PID, command, event kind, raw summary |
+| `trace` | What did this process family do in detail? | strace-like filtered process/file/network/LLM events |
+
+`report` should be the main product surface for trust and review. It should
+contain sections that map directly to user decisions:
+
+```text
+Run receipt
+Intent -> effect chain
+Blast radius
+Changed/read files
+Commands and exits
+Network/API activity
+Unattributed activity
+Capture health
+Raw evidence pointers
+```
+
+## Implementation Boundary: Analyzer vs Renderer
+
+AgentSight currently has an `OutputAnalyzer`, but that is not the human-readable
+`stat`/`top`/`report` printer. It is a streaming analyzer that prints each event
+as raw JSON while the capture stream is being drained.
+
+The product output should use a separate query-time rendering layer:
+
+```text
+runners
+  -> runner analyzers
+    -> AgentRunner merged stream
+      -> global analyzers
+        -> FileLogger / StorageAnalyzer / raw OutputAnalyzer
+          -> SQLite + adapters
+            -> query model
+              -> stat/top/report/script renderers
+```
+
+Responsibilities:
+
+- Analyzer: normalize, filter, parse, export, or store events while capture is
+  running. It should not own terminal table layout or report wording.
+- Storage/projector: persist raw events and project canonical events, LLM calls,
+  token usage, audit events, sessions, and adapter results.
+- Query model: aggregate saved data into `StatOutput`, `AgentTopSnapshot`,
+  `AgentSection`, `ActivityRow`, `ReportModel`, and similar typed structures.
+- Renderer: print text, JSON, Markdown, or other formats from those typed query
+  models.
+
+`cmd_perf.rs` can remain a thin orchestration entry point, but the printing
+logic should move toward a dedicated module such as:
+
+```text
+collector/src/cli_print/
+  mod.rs
+  stat.rs
+  top.rs
+  report.rs
+  script.rs
+  table.rs
+  format.rs
+```
+
+This keeps `top` and `report` free to become richer without turning analyzer
+code into UI code. The only printer that belongs inside an analyzer is the
+raw event stream printer used for debug/live event output.
 
 ## Command Line UX
 
@@ -129,8 +280,6 @@ agentsight record  [options] [-- command ...]
 agentsight report  [options]
 agentsight script  [options]
 agentsight trace   [options]
-agentsight diff    [options] <run-a> <run-b>
-agentsight ui      [options]
 agentsight export  [options]
 agentsight list
 agentsight discover
@@ -181,13 +330,14 @@ Rules:
 
 - `stat -- <command>` should suppress setup chatter by default.
 - Use `--verbose` to show attach/probe details.
-- Use `--no-ui` or make no web UI the default for `stat`.
+- Do not start a server by default for `stat`.
 - JSON output should be clean JSON. If a command is run, setup logs go to
   stderr or require `--json --db`.
 
 ### `agentsight top`
 
-Like `top` or `perf top`: live ranked view.
+Like `top` or `perf top`: live ranked view. The primary unit should be an
+agent root process or agent process family, not a global dashboard panel.
 
 Examples:
 
@@ -201,47 +351,65 @@ agentsight top --view files
 agentsight top --once
 ```
 
-Default layout:
+Default layout should mirror normal `top`: a compact summary followed by a
+ranked table. For AgentSight, the top-level table ranks agent sections. Each
+agent section represents one root process plus descendants:
 
 ```text
-AgentSight top - live run 20260602-113015   00:02:13   events: 4,219
+AgentSight top - 3 agents   live   00:02:13   events: 7,820   lost: 0
 
-LLM / token activity
-  tokens   calls   model
-  128430      18   claude-sonnet-4
+AGENT   PID    CPU%  RSS    TOKENS  EXECS  FAIL  FILES  NET  UNATTR  COMMAND
+claude  1234   12.1  318M   128k       42     3    318    7      12   claude
+codex   2220    8.4  210M    76k       31     1    144    3       4   codex
+gemini  3310    4.0  180M    91k       12     0     62    2       1   gemini
 
-Processes
-  execs  fail  cpu%  rss    command
-     42     3  12.1  318M   node
-      8     2   2.0   80M   npm
-
-Files
-  ops  writes  risk   path
-   21      4   med    src/api/handler.ts
-    3      1   high   ~/.aws/config
-
-Network
-  calls  bytes  host
-    18   4.1M   api.anthropic.com
-     2   1.2M   registry.npmjs.org
-
-Unattributed
-   6 execs, 12 file ops, 1 network host
+[expanded claude]
+  SCORE  RATE/s  COUNT  KIND          STATUS  ENTITY                 ATTRIBUTED TO
+   98.1    62.0    420  process.exec  ok      node                   Bash("npm test")
+   72.4    39.4    267  file.read     ok      src/api/handler.ts     grep "handler"
+   41.2    15.2    103  file.write    risk    package-lock.json      npm install
+   19.3     5.7     38  process.exit  fail    npm                    Bash("npm test")
+   12.0     4.4     29  process.exec  warn    git status             unattributed
 ```
+
+This keeps the shape of normal `top` while making AgentSight's extra value
+visible: each hot system object is tied back to an agent decision when possible.
+
+Rules:
+
+- An agent section corresponds to an agent root PID plus descendants.
+- Child processes, files, network, resource samples, and LLM calls should roll
+  up into that agent section.
+- Unattributed events should first be grouped inside the owning agent process
+  family. Only events that cannot be assigned to any agent root should appear in
+  a global background section.
+- Expanded rows should be system-agent edges: `kind + entity + attributed to`.
+- The first table answers "which agent is active or risky?" The expanded table
+  answers "which system effects inside this agent are active or risky?"
+
+Implementation notes:
+
+1. Build agent roots from the recording target: launched command root PID,
+   attached PID, or matching `comm`.
+2. Build process families from process exec/exit events using `pid`/`ppid`.
+3. Assign every event to the nearest owning agent family by `pid`, descendant
+   PID, or adapter session metadata.
+4. Keep unmatched events in a global background bucket.
+5. Roll up per-agent counters: tokens, execs, failed exits, file ops, hosts,
+   max CPU/RSS, unattributed count.
+6. Build per-agent activity rows from system-agent edges:
+   `kind`, `entity`, `count/rate/score`, `status`, `attributed_to`.
+7. Print top-level agent rows first; print the selected/expanded agent's edge
+   rows below it.
 
 Interactive keys:
 
 ```text
-1        overview
-2        processes
-3        files
-4        network
-5        LLM calls
+space    expand/collapse selected agent
 s        change sort
 f        filter
 t        time window
 a        show attributed/unattributed
-enter    drill into row
 q        quit
 ```
 
@@ -265,7 +433,6 @@ Default output:
 AgentSight record
   target: claude "fix the failing API test"
   db: ~/.local/share/agentsight/sessions/20260602-113015.db
-  ui: http://127.0.0.1:7395
 
 Recording. Press Ctrl-C to stop.
 ```
@@ -277,7 +444,6 @@ Recorded 13.2s to ~/.local/share/agentsight/sessions/20260602-113015.db
 Run:
   agentsight report --db ...
   agentsight stat --db ...
-  agentsight ui --db ...
 ```
 
 ### `agentsight report`
@@ -377,274 +543,97 @@ Design notes:
 - `-o`: write raw event stream.
 - `--db`: write normalized run DB.
 
-### `agentsight diff`
+## Report Sections
 
-Like `perf diff`: compare two agent runs.
+Make `report` the place where the system-agent intersection is easiest to see.
 
-Examples:
+### Run Receipt
 
-```bash
-agentsight diff run-a.db run-b.db
-agentsight diff --metric files run-a.db run-b.db
-agentsight diff --metric tokens run-a.db run-b.db
-agentsight diff --markdown -o diff.md run-a.db run-b.db
-```
+Question:
 
-Questions answered:
+> What was the run's behavior radius?
 
-- Did the new model read more files?
-- Did it touch riskier paths?
-- Did it use more tokens for the same task?
-- Did it spawn more subprocesses?
-- Did it introduce new network destinations?
-
-### `agentsight ui`
-
-Open or serve the UI for a run.
-
-Examples:
-
-```bash
-agentsight ui
-agentsight ui --db run.db
-agentsight ui --port 7395 --db run.db
-agentsight ui --snapshot trace.agentsight.json
-```
-
-The UI should be a run inspector, not a generic dashboard.
-
-## Web UI Information Architecture
-
-### First Screen: Run Ledger
-
-The default view should be a dense run ledger:
+Output:
 
 ```text
-Run: claude "fix the failing API test"       13s   1,380 tokens
-DB: ~/.local/share/agentsight/sessions/...   live/static
-
-Timeline
-00.000  user prompt
-00.314  LLM call: claude-sonnet-4
-01.232  tool: Bash("npm test")
-01.240    process: npm -> node
-03.902    exit: failure
-04.110  tool: Edit("src/api/handler.ts")
-04.115    file write: src/api/handler.ts
-06.410  tool: Bash("npm test")
-06.420    process: npm -> node
-13.100    exit: success
+Touched files: 17
+Read files: 143
+Generated files: 6
+Deleted files: 1
+External network hosts: 4
+Failed commands: 2
+Unattributed activity: 6 process execs, 12 file ops
+High-risk paths:
+  .github/workflows/release.yml
+  package-lock.json
+  ~/.config/tool/config.json
 ```
 
-Columns:
+This is the command-line version of the AI PR Blast Radius View from
+`agent-workspace-map.md`.
 
-- time
-- intent node
-- effect summary
-- status/risk
-- tokens/cost
-- attribution confidence
+### Intent -> Effect Chain
 
-Clicking any row opens a side panel with raw details.
+Question:
 
-### Primary Navigation
+> Which agent decision caused this system behavior?
 
-Top-level tabs:
+Output:
 
 ```text
-Ledger | Footprint | Workspace | Processes | Files | Network | LLM | Metrics | Raw
+tool: Bash("npm test")
+  process: npm[1244] -> node[1250]
+  files read: package.json, tests/api.test.ts
+  exit: failure, code 1
 ```
 
-The order matters. The product story starts with correlated behavior, not logs.
+This is the core AgentSight object. It should be present in the CLI report.
 
-### View 1: Ledger
+### Why This File Changed
 
-Purpose:
+Question:
 
-> Explain the run from prompt to machine effects.
+> Why did this file change?
 
-Required features:
-
-- expandable prompt/model/tool/process/file chain
-- attributed vs unattributed toggle
-- failed command highlighting
-- sensitive path/risky side effect badges
-- raw event drawer
-- export selected chain as Markdown/JSON
-
-### View 2: Footprint
-
-Purpose:
-
-> Static, shareable agent flame graph.
-
-This implements the concept in `vis.md`.
-
-Modes:
-
-- width = tokens
-- width = elapsed time
-- width = process count
-- width = risk-weighted side effects
-- color = type or risk
-- border = attribution confidence
-
-Required outputs:
-
-- SVG
-- static HTML
-- copyable Markdown link/embed
-
-### View 3: Workspace
-
-Purpose:
-
-> Show where the agent spent attention and caused file effects.
-
-This implements the concepts in `agent-workspace-map.md`.
-
-Subviews:
-
-- Attention Treemap
-- Why This File Changed? provenance DAG
-- Agent I/O Flame Graph
-- Snapshot-aware workspace map
-- Policy-aware filesystem map
-
-Default should be changed-file focused:
+Output:
 
 ```text
-Changed files
-  path
-  read count
-  write count
-  first cause
-  tests/commands involved
-  risk
+src/api/handler.ts
+  read after: grep "handler"
+  written by: tool Edit("src/api/handler.ts")
+  related command: npm test
+  result: later test success
+  attribution: observed tool payload + file write event
 ```
 
-### View 4: Processes
+This is the textual form of the provenance DAG from `agent-workspace-map.md`.
 
-Purpose:
+### Unattributed Activity
 
-> Show actual subprocess execution, including child processes the agent did not
-> explicitly report.
+Question:
 
-Required features:
+> What happened at the system layer without an observed agent/tool parent?
 
-- process tree
-- exit code/status
-- duration
-- cwd/argv
-- parent tool/LLM attribution
-- failed process filter
-- background/unattributed process lane
-
-### View 5: Files
-
-Purpose:
-
-> Make local side effects reviewable.
-
-Required features:
-
-- files read/written/created/deleted/renamed/truncated
-- repo vs outside repo
-- generated/cache/dependency paths
-- secret/cloud/shell-profile risk classes
-- diff hunk link when available
-- provenance drawer: why this file changed
-
-### View 6: Network
-
-Purpose:
-
-> Show network destinations and LLM/API activity.
-
-Required features:
-
-- host/path/method/status
-- provider/model
-- request/response availability
-- auth header redaction status
-- package registry/cloud API badges
-- attributed tool/process chain
-
-### View 7: LLM
-
-Purpose:
-
-> Inspect prompt/model calls without losing system context.
-
-Required features:
-
-- prompt/response previews
-- token usage
-- model/provider
-- tool_use extraction when observable
-- linked side effects after each call
-- "no observed side effects" state
-
-### View 8: Metrics
-
-Purpose:
-
-> Support performance/resource debugging without making performance the only
-> story.
-
-Required features:
-
-- CPU/RSS over time
-- process/resource correlation
-- event-loss/capture-health counters
-- overhead estimate when available
-
-### View 9: Raw
-
-Purpose:
-
-> Escape hatch for systems users.
-
-Required features:
-
-- raw JSONL
-- canonical events
-- stored activity events
-- SQL table browser or query presets
-- copy event id
-
-## Side Panel Design
-
-Every row/card should open the same details drawer:
+Output:
 
 ```text
-Title: file write src/api/handler.ts
+unattributed process execs:
+  git status x6
+  cat ~/.config/tool/config.json
 
-Attribution
-  user prompt -> LLM call -> tool call -> process -> file event
-  confidence: high
-
-Observed facts
-  time: ...
-  pid: ...
-  comm: ...
-  cwd: ...
-  argv: ...
-  path: ...
-  operation: write
-
-Related
-  previous LLM call
-  next process exit
-  diff hunk
-  raw event
+unattributed network:
+  telemetry.example.com
 ```
 
-The drawer should use tabs:
+This is where AgentSight should feel most different from SDK trace tools.
 
-```text
-Summary | Facts | Raw | SQL
-```
+### Capture Health
+
+Question:
+
+> Which parts of the answer are observed, inferred, or unavailable?
+
+This section should be short but always present.
 
 ## Capture Health UX
 
@@ -666,7 +655,6 @@ This belongs in:
 
 - `stat`
 - `report`
-- UI header
 - exported reports
 
 ## Empty and Partial States
@@ -681,7 +669,8 @@ Start a run:
   agentsight record -- claude
 
 Or open an existing run:
-  agentsight ui --db run.db
+  agentsight report --db run.db
+  agentsight script --db run.db
 ```
 
 Partial states should be explicit:
@@ -708,31 +697,14 @@ Preferred:
 - process/file provenance trees
 - stable monospace identifiers
 - restrained badges for risk/status
-- export buttons
-- keyboard shortcuts
+- export commands
 
 Avoid:
 
-- decorative hero UI
+- decorative presentation
 - vague health cards that cannot point to events
 - charts that cannot be traced back to events
 - hiding raw data behind summaries
-
-## Keyboard UX
-
-UI keyboard shortcuts:
-
-```text
-/        search/filter
-1-9      switch primary tabs
-f        filter by attributed/unattributed
-r        reset filters
-e        export current view
-j/k      move selection
-enter    open details drawer
-esc      close drawer
-?        shortcut help
-```
 
 ## Search and Filter Model
 
@@ -754,16 +726,16 @@ The same filter grammar should work in:
 
 - `agentsight script -e ...`
 - `agentsight top --filter ...`
-- UI search bar
-- report/export commands
+- `agentsight report --filter ...`
+- export commands
 
 ## MVP Priorities
 
 ### P0: Make the Core Claim Visible
 
-1. Run Ledger default view.
-2. Side Effects summary in CLI `report`.
-3. UI details drawer.
+1. Run receipt in `stat` and `report`.
+2. Intent -> effect chain in `report`.
+3. Side effects and blast radius sections in `report`.
 4. Capture health block.
 5. Attributed vs unattributed grouping.
 
@@ -773,13 +745,13 @@ The same filter grammar should work in:
 2. Footprint SVG export.
 3. Workspace changed-file table.
 4. `agentsight script`.
-5. `agentsight diff`.
+5. Raw evidence pointers for every summarized claim.
 
 ### P2: Make It Feel Like a Systems Tool
 
 1. Interactive `top`.
-2. Filter grammar shared by CLI and UI.
-3. Keyboard shortcuts.
+2. Filter grammar shared by `top`, `script`, and `report`.
+3. Strace-like `trace -f -tt -e ...`.
 4. Event-loss and overhead counters.
 5. TUI mode for SSH-only environments.
 
@@ -790,7 +762,7 @@ The next release is good enough when a user can run:
 ```bash
 agentsight stat -- claude "fix the failing API test"
 agentsight report
-agentsight ui
+agentsight script --summary
 ```
 
 And immediately answer:
@@ -802,5 +774,5 @@ And immediately answer:
 5. Which actions were not attributable to an observed tool decision?
 6. Which details are observed vs inferred?
 
-If the UI only shows process trees and raw logs, it is not good enough, even if
-the underlying data is present.
+If the output only lists process trees and raw logs without connecting them to
+agent intent, it is not good enough, even if the underlying data is present.

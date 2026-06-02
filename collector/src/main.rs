@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 mod binary_resolver;
 mod cli_db;
 mod cli_discover;
+mod cli_output;
 mod cmd_debug;
 mod cmd_exec;
 mod cmd_perf;
