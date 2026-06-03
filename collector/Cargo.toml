@@ -46,6 +46,8 @@ libc = "0.2"
 chunked_transfer = "1.5"
 num_cpus = "1.16"
 rusqlite = { version = "0.32", features = ["bundled"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29"] }
+crossterm = "0.29"
 
 # Web server dependencies
 hyper = { version = "1.0", features = ["full"] }

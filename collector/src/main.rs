@@ -34,7 +34,7 @@ use cli_db::{
 use cli_discover::run_discover;
 use cmd_debug::{run_raw_process, run_raw_ssl, run_raw_stdio, run_system};
 use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
-use cmd_perf::{TopOptions, run_live_top_query, run_stat_query, run_top_query};
+use cmd_perf::{TopOptions, run_live_top_query, run_live_top_tui, run_stat_query, run_top_query};
 use cmd_trace::{OtelConfig, TraceConfig, convert_runner_error, run_trace};
 use framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -53,6 +53,10 @@ fn shutdown_notify() -> Arc<Notify> {
 
 pub(crate) fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
+}
+
+fn interactive_terminal_available() -> bool {
+    unsafe { libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1 }
 }
 
 async fn setup_signal_handler() {
@@ -164,6 +168,9 @@ enum Commands {
         /// Print one snapshot and exit
         #[arg(long)]
         once: bool,
+        /// Use plain table output instead of the interactive live TUI
+        #[arg(long)]
+        plain: bool,
     },
     /// Record a command, or attach to an already-running agent by command name or PID.
     /// Examples: agentsight record -- claude     (or)  agentsight record -c claude
@@ -683,6 +690,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             limit,
             count,
             once,
+            plain: _,
         } => {
             let count = if *once { Some(1) } else { *count };
             let options = TopOptions {
@@ -857,6 +865,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             limit,
             count,
             once,
+            plain,
         } => {
             let count = if *once { Some(1) } else { *count };
             let options = TopOptions {
@@ -865,7 +874,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 sort: sort.clone(),
                 view: view.clone(),
             };
-            run_live_top_query(&binary_extractor, *interval, *limit, count, &options).await?;
+            if !*plain && count.is_none() && interactive_terminal_available() {
+                run_live_top_tui(&binary_extractor, *interval, *limit, &options).await?;
+            } else {
+                run_live_top_query(&binary_extractor, *interval, *limit, count, &options).await?;
+            }
         }
         Commands::Top { db: Some(_), .. } => {
             unreachable!("top --db is handled before binary extraction");

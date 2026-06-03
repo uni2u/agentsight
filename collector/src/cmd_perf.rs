@@ -12,7 +12,21 @@ use crate::framework::storage::{
     SnapshotOptions, SqliteStore,
     sqlite::{Snapshot, StorageResult},
 };
+use crossterm::{
+    cursor::{Hide, Show},
+    event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use futures::StreamExt;
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -318,6 +332,676 @@ pub(crate) async fn run_live_top_query(
     }
 
     Ok(())
+}
+
+pub(crate) async fn run_live_top_tui(
+    binary_extractor: &BinaryExtractor,
+    interval_secs: u64,
+    limit: usize,
+    options: &TopOptions,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let capture = start_live_ebpf_capture(binary_extractor, options).await;
+    let result = run_live_top_tui_loop(interval_secs, limit, options, capture.as_ref());
+    if let Some(capture) = capture {
+        capture.stop();
+    }
+    result
+}
+
+struct LiveTopTerminalGuard;
+
+impl LiveTopTerminalGuard {
+    fn enter() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, Hide)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for LiveTopTerminalGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, Show, LeaveAlternateScreen);
+    }
+}
+
+fn run_live_top_tui_loop(
+    interval_secs: u64,
+    limit: usize,
+    options: &TopOptions,
+    capture: Option<&LiveEbpfCapture>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut options = options.clone();
+    let mut display_limit = limit.clamp(1, 100);
+    let interval = Duration::from_secs(interval_secs.max(1));
+    let _guard = LiveTopTerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+
+    let mut previous: Option<LiveSample> = None;
+    let mut current_top: Option<AgentTopOutput<'static>> = None;
+    let mut selected = 0usize;
+    let mut paused = false;
+    let mut show_help = false;
+    let mut last_refresh = Instant::now() - interval;
+    let mut force_refresh = true;
+
+    loop {
+        if force_refresh
+            || (!paused && (current_top.is_none() || last_refresh.elapsed() >= interval))
+        {
+            current_top = Some(refresh_live_top(
+                &mut previous,
+                capture,
+                display_limit,
+                &options,
+                &mut selected,
+            )?);
+            last_refresh = Instant::now();
+            force_refresh = false;
+        }
+
+        let top = current_top
+            .as_ref()
+            .expect("live top TUI refreshes before first render");
+        terminal.draw(|frame| {
+            draw_live_top_tui(
+                frame,
+                top,
+                selected,
+                &options,
+                paused,
+                show_help,
+                interval_secs,
+                display_limit,
+            );
+        })?;
+
+        if crate::shutdown_requested() {
+            break;
+        }
+
+        let wait = if paused {
+            Duration::from_millis(250)
+        } else {
+            interval
+                .checked_sub(last_refresh.elapsed())
+                .unwrap_or(Duration::ZERO)
+                .min(Duration::from_millis(250))
+        };
+        if !event::poll(wait)? {
+            continue;
+        }
+        let CrosstermEvent::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => break,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            KeyCode::Char('?') => show_help = !show_help,
+            KeyCode::Char('p') => paused = !paused,
+            KeyCode::Char('r') => force_refresh = true,
+            KeyCode::Char('s') => {
+                options.sort = next_sort_key(&options.sort);
+                if let Some(top) = &mut current_top {
+                    sort_agent_rows(&mut top.rows, &options.sort);
+                    top.rows.truncate(display_limit);
+                    clamp_selected(&mut selected, top.rows.len());
+                }
+            }
+            KeyCode::Char('v') => options.view = next_view_key(&options.view),
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                display_limit = (display_limit + 1).min(100);
+                force_refresh = true;
+            }
+            KeyCode::Char('-') => {
+                display_limit = display_limit.saturating_sub(1).max(1);
+                if let Some(top) = &mut current_top {
+                    top.rows.truncate(display_limit);
+                    clamp_selected(&mut selected, top.rows.len());
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(top) = &current_top
+                    && selected + 1 < top.rows.len()
+                {
+                    selected += 1;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+            }
+            KeyCode::Home => selected = 0,
+            KeyCode::End => {
+                if let Some(top) = &current_top {
+                    selected = top.rows.len().saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_live_top(
+    previous: &mut Option<LiveSample>,
+    capture: Option<&LiveEbpfCapture>,
+    limit: usize,
+    options: &TopOptions,
+    selected: &mut usize,
+) -> io::Result<AgentTopOutput<'static>> {
+    let sample = LiveSample::collect()?;
+    let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
+    let mut top: AgentTopOutput<'static> = build_live_top(
+        &sample,
+        previous.as_ref(),
+        capture_snapshot.as_ref(),
+        limit,
+        options,
+    );
+    if let Some(capture) = capture
+        && let Some(note) = capture.start_note()
+    {
+        top.notes.push(note);
+    }
+    sort_agent_rows(&mut top.rows, &options.sort);
+    top.rows.truncate(limit);
+    clamp_selected(selected, top.rows.len());
+    *previous = Some(sample);
+    Ok(top)
+}
+
+fn clamp_selected(selected: &mut usize, rows: usize) {
+    if rows == 0 {
+        *selected = 0;
+    } else if *selected >= rows {
+        *selected = rows - 1;
+    }
+}
+
+fn draw_live_top_tui(
+    frame: &mut Frame<'_>,
+    top: &AgentTopOutput<'_>,
+    selected: usize,
+    options: &TopOptions,
+    paused: bool,
+    show_help: bool,
+    interval_secs: u64,
+    display_limit: usize,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(10),
+            Constraint::Length(8),
+            Constraint::Length(5),
+        ])
+        .split(frame.area());
+
+    render_top_summary(
+        frame,
+        chunks[0],
+        top,
+        options,
+        paused,
+        interval_secs,
+        display_limit,
+    );
+    render_session_table(frame, chunks[1], top, selected);
+    render_session_detail(frame, chunks[2], top, selected, options);
+    render_top_footer(frame, chunks[3], top);
+
+    if show_help {
+        render_top_help(frame);
+    }
+}
+
+fn render_top_summary(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    top: &AgentTopOutput<'_>,
+    options: &TopOptions,
+    paused: bool,
+    interval_secs: u64,
+    display_limit: usize,
+) {
+    let state = if paused { "paused" } else { "running" };
+    let filter = top_filter_label(options);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "AgentSight top",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "  mode={}  state={}  refresh={}s  rows={}/{}",
+                top.mode,
+                state,
+                interval_secs.max(1),
+                top.rows.len(),
+                display_limit
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("sort ", label_style()),
+            Span::raw(options.sort.clone()),
+            Span::raw("  "),
+            Span::styled("view ", label_style()),
+            Span::raw(options.view.clone()),
+            Span::raw("  "),
+            Span::styled("filter ", label_style()),
+            Span::raw(filter),
+            Span::raw("  "),
+            Span::styled("tokens ", label_style()),
+            Span::raw(format_token_value(Some(top.total_tokens))),
+        ]),
+        Line::from(vec![
+            Span::styled("evidence ", label_style()),
+            Span::raw(evidence_summary(top)),
+        ]),
+    ];
+    let block = Block::default().borders(Borders::ALL);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_session_table(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    top: &AgentTopOutput<'_>,
+    selected: usize,
+) {
+    let header = Row::new(vec![
+        Cell::from("SESSION"),
+        Cell::from("AGENT"),
+        Cell::from("PID"),
+        Cell::from("CPU"),
+        Cell::from("RSS"),
+        Cell::from("PROC"),
+        Cell::from("TOK"),
+        Cell::from("TOOLS"),
+        Cell::from("EXECS"),
+        Cell::from("FAIL"),
+        Cell::from("FILES"),
+        Cell::from("NET"),
+        Cell::from("TRACE"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )
+    .bottom_margin(1);
+
+    let rows = top.rows.iter().map(|row| {
+        Row::new(vec![
+            Cell::from(truncate_text(&row.session, 20)),
+            Cell::from(truncate_text(&row.agent, 10)),
+            Cell::from(
+                row.pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            Cell::from(format!("{:.1}", row.cpu_percent)),
+            Cell::from(format!("{}m", row.rss_mb)),
+            Cell::from(row.processes.to_string()),
+            Cell::from(format_token_value(row.tokens)),
+            Cell::from(format_compact_usize(row.tools)),
+            Cell::from(format_compact_usize(row.execs)),
+            Cell::from(format_compact_usize(row.failures)),
+            Cell::from(format_compact_usize(row.files)),
+            Cell::from(format_compact_usize(row.network)),
+            Cell::from(truncate_text(&row.trace, 16)),
+        ])
+        .style(row_style(row))
+    });
+
+    let widths = [
+        Constraint::Length(20),
+        Constraint::Length(10),
+        Constraint::Length(8),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(6),
+        Constraint::Length(9),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(6),
+        Constraint::Length(7),
+        Constraint::Length(6),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(Block::default().title("sessions").borders(Borders::ALL))
+        .column_spacing(1)
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+    let mut state = TableState::default();
+    if !top.rows.is_empty() {
+        state.select(Some(selected));
+    }
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+fn render_session_detail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    top: &AgentTopOutput<'_>,
+    selected: usize,
+    options: &TopOptions,
+) {
+    let title = format!("selected session - {}", normalize_view_key(&options.view));
+    let lines = if let Some(row) = top.rows.get(selected) {
+        session_detail_lines(row, options)
+    } else {
+        vec![
+            Line::from("No active agent session matched this view."),
+            Line::from("Run an agent, pass -c/-p, or inspect a saved session with top --db."),
+        ]
+    };
+    let block = Block::default().title(title).borders(Borders::ALL);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_top_footer(frame: &mut Frame<'_>, area: Rect, top: &AgentTopOutput<'_>) {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("keys ", label_style()),
+        Span::raw(
+            "q quit | up/down select | s sort | v view | p pause | r refresh | +/- rows | ? help",
+        ),
+    ])];
+    for note in top.notes.iter().take(3) {
+        lines.push(Line::from(note.clone()));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title("status").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_top_help(frame: &mut Frame<'_>) {
+    let area = centered_rect(62, 52, frame.area());
+    frame.render_widget(Clear, area);
+    let lines = vec![
+        Line::from(vec![Span::styled(
+            "AgentSight top keys",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from("q or Esc       exit"),
+        Line::from("up/down, k/j   select a session"),
+        Line::from("s              cycle sort: cpu, rss, tokens, execs, fail, files, net, agent"),
+        Line::from("v              cycle detail view: all, processes, files, network, models"),
+        Line::from("p              pause or resume refresh"),
+        Line::from("r              refresh now"),
+        Line::from("+/-            change row limit"),
+        Line::from("?              close this help"),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title("help").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'static>> {
+    match normalize_view_key(&options.view).as_str() {
+        "processes" => vec![
+            detail_line("session", row.session.clone()),
+            detail_line("agent", row.agent.clone()),
+            detail_line(
+                "root pid",
+                row.pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            detail_line("processes", row.processes.to_string()),
+            detail_line("cpu", format!("{:.1}%", row.cpu_percent)),
+            detail_line("rss", format!("{} MB", row.rss_mb)),
+            detail_line("command", row.command.clone()),
+        ],
+        "files" => vec![
+            detail_line("session", row.session.clone()),
+            detail_line("trace", row.trace.clone()),
+            detail_line("execs", row.execs.to_string()),
+            detail_line("failures", row.failures.to_string()),
+            detail_line("file events", row.files.to_string()),
+            detail_line("unattributed ebpf pids", row.unattributed.to_string()),
+            detail_line("command", row.command.clone()),
+        ],
+        "network" => vec![
+            detail_line("session", row.session.clone()),
+            detail_line("trace", row.trace.clone()),
+            detail_line("network events", row.network.to_string()),
+            detail_line("tokens", format_token_value(row.tokens)),
+            detail_line("tools", row.tools.to_string()),
+            detail_line("command", row.command.clone()),
+        ],
+        "models" => vec![
+            detail_line("session", row.session.clone()),
+            detail_line("agent", row.agent.clone()),
+            detail_line("tokens", format_token_value(row.tokens)),
+            detail_line("tools", row.tools.to_string()),
+            detail_line("prompt or command", row.command.clone()),
+        ],
+        _ => vec![
+            detail_line("session", row.session.clone()),
+            detail_line(
+                "agent",
+                format!(
+                    "{}  pid={}  trace={}",
+                    row.agent,
+                    row.pid
+                        .map(|pid| pid.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    row.trace
+                ),
+            ),
+            detail_line(
+                "resources",
+                format!(
+                    "cpu={:.1}% rss={} MB processes={}",
+                    row.cpu_percent, row.rss_mb, row.processes
+                ),
+            ),
+            detail_line(
+                "activity",
+                format!(
+                    "tokens={} tools={} execs={} fail={} files={} net={} unattributed={}",
+                    format_token_value(row.tokens),
+                    row.tools,
+                    row.execs,
+                    row.failures,
+                    row.files,
+                    row.network,
+                    row.unattributed
+                ),
+            ),
+            detail_line("prompt or command", row.command.clone()),
+        ],
+    }
+}
+
+fn detail_line(label: &'static str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), label_style()),
+        Span::raw(value),
+    ])
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn label_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn row_style(row: &AgentTopRow) -> Style {
+    if row.failures > 0 {
+        Style::default().fg(Color::Red)
+    } else if row.trace.contains("ebpf") {
+        Style::default().fg(Color::Green)
+    } else if row.trace.contains("local") {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    }
+}
+
+fn evidence_summary(top: &AgentTopOutput<'_>) -> String {
+    let local = top
+        .rows
+        .iter()
+        .filter(|row| row.trace.contains("local"))
+        .count();
+    let proc_rows = top
+        .rows
+        .iter()
+        .filter(|row| row.trace.contains("proc"))
+        .count();
+    let ebpf = top
+        .rows
+        .iter()
+        .filter(|row| row.trace.contains("ebpf"))
+        .count();
+    let mut parts = Vec::new();
+    if local > 0 {
+        parts.push(format!("local={local}"));
+    }
+    if proc_rows > 0 {
+        parts.push(format!("proc={proc_rows}"));
+    }
+    if ebpf > 0 {
+        parts.push(format!("ebpf={ebpf}"));
+    }
+    if parts.is_empty() {
+        "none yet".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn top_filter_label(options: &TopOptions) -> String {
+    if let Some(pid) = options.pid {
+        format!("pid={pid}")
+    } else if let Some(comm) = &options.comm {
+        format!("comm={comm}")
+    } else {
+        "known agents".to_string()
+    }
+}
+
+fn normalize_view_key(view: &str) -> String {
+    match view.to_ascii_lowercase().as_str() {
+        "process" | "proc" => "processes".to_string(),
+        "file" | "fs" => "files".to_string(),
+        "net" => "network".to_string(),
+        "model" | "tokens" => "models".to_string(),
+        "processes" | "files" | "network" | "models" => view.to_ascii_lowercase(),
+        _ => "all".to_string(),
+    }
+}
+
+fn next_view_key(current: &str) -> String {
+    const VIEWS: [&str; 5] = ["all", "processes", "files", "network", "models"];
+    let current = normalize_view_key(current);
+    let idx = VIEWS
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or(0);
+    VIEWS[(idx + 1) % VIEWS.len()].to_string()
+}
+
+fn normalize_sort_key(sort: &str) -> &'static str {
+    match sort.to_ascii_lowercase().as_str() {
+        "rss" | "mem" | "memory" => "rss",
+        "tokens" | "token" => "tokens",
+        "exec" | "execs" => "execs",
+        "fail" | "fails" | "failure" | "failures" => "fail",
+        "file" | "files" => "files",
+        "net" | "network" => "net",
+        "agent" | "name" | "command" => "agent",
+        _ => "cpu",
+    }
+}
+
+fn next_sort_key(current: &str) -> String {
+    const SORTS: [&str; 8] = [
+        "cpu", "rss", "tokens", "execs", "fail", "files", "net", "agent",
+    ];
+    let current = normalize_sort_key(current);
+    let idx = SORTS
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or(0);
+    SORTS[(idx + 1) % SORTS.len()].to_string()
+}
+
+fn format_token_value(value: Option<i64>) -> String {
+    value
+        .map(format_compact_i64)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_compact_i64(value: i64) -> String {
+    let abs = value.abs();
+    if abs >= 1_000_000 {
+        format!("{:.1}m", value as f64 / 1_000_000.0)
+    } else if abs >= 10_000 {
+        format!("{:.1}k", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_compact_usize(value: usize) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}m", value as f64 / 1_000_000.0)
+    } else if value >= 10_000 {
+        format!("{:.1}k", value as f64 / 1_000.0)
+    } else {
+        value.to_string()
+    }
 }
 
 fn load_stat(db: &str) -> StorageResult<StatOutput> {
@@ -822,12 +1506,12 @@ fn build_live_top<'a>(
     sample: &LiveSample,
     previous: Option<&LiveSample>,
     capture: Option<&LiveCaptureSnapshot>,
-    _limit: usize,
+    limit: usize,
     options: &TopOptions,
 ) -> AgentTopOutput<'a> {
     let mut live_rows = live_process_rows(sample, previous, options);
     sort_agent_rows(&mut live_rows, "cpu");
-    let local_sessions = discover_local_top_sessions(options);
+    let local_sessions = discover_local_top_sessions(options, limit);
     let mut used_live_pids = HashSet::new();
     let mut rows = Vec::new();
 
@@ -1309,7 +1993,7 @@ struct LocalTopSession {
     prompt_preview: Option<String>,
 }
 
-fn discover_local_top_sessions(options: &TopOptions) -> Vec<LocalTopSession> {
+fn discover_local_top_sessions(options: &TopOptions, limit: usize) -> Vec<LocalTopSession> {
     let mut candidates = Vec::new();
     for (agent, dir) in local_session_dirs() {
         walk_jsonl(&dir, &mut |path, meta| {
@@ -1320,11 +2004,10 @@ fn discover_local_top_sessions(options: &TopOptions) -> Vec<LocalTopSession> {
     candidates.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
 
     let mut sessions = Vec::new();
-    let mut seen_agents = HashSet::new();
-    for (_, agent, path) in candidates.into_iter().take(50) {
-        if seen_agents.contains(agent) {
-            continue;
-        }
+    let mut seen_sessions = HashSet::new();
+    let target_sessions = limit.clamp(1, 25);
+    let candidate_scan = target_sessions.saturating_mul(3).clamp(10, 75);
+    for (_, agent, path) in candidates.into_iter().take(candidate_scan) {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
@@ -1334,8 +2017,13 @@ fn discover_local_top_sessions(options: &TopOptions) -> Vec<LocalTopSession> {
         if !local_session_matches_filter(&session, options) {
             continue;
         }
-        seen_agents.insert(agent);
+        if !seen_sessions.insert(session.display_id.clone()) {
+            continue;
+        }
         sessions.push(session);
+        if sessions.len() >= target_sessions {
+            break;
+        }
     }
     sessions
 }
@@ -1592,7 +2280,20 @@ fn short_session_id(id: &str) -> String {
         .next()
         .unwrap_or(id)
         .trim_end_matches(".jsonl");
-    truncate_text(compact, 12)
+    const MAX_SESSION_ID_CHARS: usize = 12;
+    if compact.chars().count() <= MAX_SESSION_ID_CHARS {
+        return compact.to_string();
+    }
+    let head = compact.chars().take(6).collect::<String>();
+    let tail = compact
+        .chars()
+        .rev()
+        .take(5)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head}.{tail}")
 }
 
 fn truncate_text(text: &str, max: usize) -> String {
