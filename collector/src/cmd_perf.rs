@@ -1527,6 +1527,7 @@ fn build_live_top<'a>(
         let live_idx = live_rows.iter().position(|row| {
             !row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
                 && row.agent == session.agent
+                && local_session_can_attach_to_live(&session, row)
                 && matches_top_filter(row.pid, Some(&row.agent), Some(&row.command), options)
         });
         let live = live_idx.and_then(|idx| live_rows.get(idx).cloned());
@@ -1625,6 +1626,13 @@ fn build_live_top<'a>(
         sections: Vec::new(),
         failures: Vec::new(),
         notes,
+    }
+}
+
+fn local_session_can_attach_to_live(session: &LocalTopSession, row: &AgentTopRow) -> bool {
+    match (session.age_s, row.age_s) {
+        (Some(local_age_s), Some(process_age_s)) => local_age_s <= process_age_s + 60.0,
+        _ => false,
     }
 }
 
@@ -1981,22 +1989,64 @@ fn agent_name_from_command(comm: &str, command: &str) -> String {
 }
 
 fn known_agent_label(comm: &str, command: &str) -> Option<&'static str> {
-    let needle = format!(
-        "{} {}",
-        comm.to_ascii_lowercase(),
-        command.to_ascii_lowercase()
-    );
-    [
-        ("claude", "claude"),
-        ("codex", "codex"),
-        ("gemini", "gemini"),
-        ("opencode", "opencode"),
-        ("openclaw", "openclaw"),
-        ("aider", "aider"),
-        ("goose", "goose"),
-    ]
-    .into_iter()
-    .find_map(|(marker, label)| needle.contains(marker).then_some(label))
+    label_from_exec_token(comm).or_else(|| label_from_command_argv(command))
+}
+
+fn label_from_command_argv(command: &str) -> Option<&'static str> {
+    let mut args = command.split_whitespace();
+    let argv0 = args.next()?;
+    if let Some(label) = label_from_exec_token(argv0) {
+        return Some(label);
+    }
+
+    args.filter(|arg| looks_like_exec_path(arg))
+        .find_map(label_from_exec_token)
+}
+
+fn looks_like_exec_path(token: &str) -> bool {
+    let token = token.trim_matches(|ch| matches!(ch, '"' | '\''));
+    token.contains('/')
+}
+
+fn label_from_exec_token(token: &str) -> Option<&'static str> {
+    let token = token.trim_matches(|ch| matches!(ch, '"' | '\''));
+    if token.is_empty() {
+        return None;
+    }
+
+    let lower = token.to_ascii_lowercase();
+    let basename = Path::new(&lower)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(lower.as_str());
+
+    label_from_exec_name(basename).or_else(|| label_from_known_package_path(&lower))
+}
+
+fn label_from_exec_name(name: &str) -> Option<&'static str> {
+    match name {
+        "claude" | "claude-code" => Some("claude"),
+        "codex" | "codex-cli" => Some("codex"),
+        "gemini" | "gemini-cli" => Some("gemini"),
+        "opencode" => Some("opencode"),
+        "aider" => Some("aider"),
+        "goose" => Some("goose"),
+        "openclaw" => Some("openclaw"),
+        name if name.starts_with("openclaw-") => Some("openclaw"),
+        _ => None,
+    }
+}
+
+fn label_from_known_package_path(path: &str) -> Option<&'static str> {
+    if path.contains("@anthropic-ai/claude-code") || path.contains("/claude-code/") {
+        Some("claude")
+    } else if path.contains("@openai/codex") || path.contains("/codex-linux-") {
+        Some("codex")
+    } else if path.contains("@google/gemini-cli") || path.contains("/gemini-cli/") {
+        Some("gemini")
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2477,4 +2527,79 @@ fn number_or_string(value: Option<&Value>) -> Option<f64> {
         v.as_f64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_agent_label_uses_executable_not_model_argument() {
+        assert_eq!(
+            known_agent_label(
+                "python",
+                "python benchmark_runner.py --model claude-sonnet-4-5-20250929"
+            ),
+            None
+        );
+        assert_eq!(
+            known_agent_label(
+                "bash",
+                "/bin/bash -lc ./target/debug/agentsight top --once -c claude"
+            ),
+            None
+        );
+        assert_eq!(
+            known_agent_label(
+                "docker",
+                "docker run image bash -c claude --model claude-sonnet-4"
+            ),
+            None
+        );
+        assert_eq!(
+            known_agent_label("node", "node /home/user/.nvm/versions/node/v22/bin/codex"),
+            Some("codex")
+        );
+        assert_eq!(
+            known_agent_label("node", "node /home/user/.local/bin/claude"),
+            Some("claude")
+        );
+        assert_eq!(known_agent_label("claude", "claude"), Some("claude"));
+        assert_eq!(known_agent_label("openclaw-gatewa", ""), Some("openclaw"));
+    }
+
+    #[test]
+    fn local_session_does_not_attach_to_newer_unrelated_process() {
+        let session = LocalTopSession {
+            agent: "claude".to_string(),
+            display_id: "claude:old".to_string(),
+            path: PathBuf::from("/home/user/.claude/projects/old.jsonl"),
+            model: None,
+            age_s: Some(1_200.0),
+            total_tokens: 1,
+            tools: 0,
+            prompt_preview: None,
+        };
+        let row = AgentTopRow {
+            session: "proc:1".to_string(),
+            agent: "claude".to_string(),
+            pid: Some(1),
+            model: None,
+            age_s: Some(30.0),
+            cpu_percent: 0.0,
+            rss_mb: 0,
+            processes: 1,
+            tokens: None,
+            tools: 0,
+            execs: 0,
+            failures: 0,
+            files: 0,
+            network: 0,
+            unattributed: 0,
+            trace: "proc".to_string(),
+            command: "claude".to_string(),
+        };
+
+        assert!(!local_session_can_attach_to_live(&session, &row));
+    }
 }
