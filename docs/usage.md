@@ -1,6 +1,6 @@
 # Usage
 
-**English** | [中文](usage.zh-CN.md)
+**English** | [中文](https://github.com/eunomia-bpf/agentsight/blob/master/docs/usage.zh-CN.md)
 
 ## Building from Source
 

@@ -3,7 +3,7 @@
 Use Docker when you want a packaged AgentSight runtime for container, CI, or isolated Linux environments. Docker does not remove the eBPF permission requirements: the container must observe the host kernel and host processes, so it needs privileged mode and host mounts.
 
 For local day-to-day use, the release binary plus `sudo agentsight top` or
-`sudo agentsight record -- ...` in [README.md](../README.md) is usually simpler.
+`sudo agentsight record -- ...` in [README.md](https://github.com/eunomia-bpf/agentsight#quick-start) is usually simpler.
 
 ## Requirements
 

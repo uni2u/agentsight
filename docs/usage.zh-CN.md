@@ -1,6 +1,6 @@
 # 使用说明
 
-[English](usage.md) | **中文**
+[English](https://github.com/eunomia-bpf/agentsight/blob/master/docs/usage.md) | **中文**
 
 ## 从源代码编译
 

@@ -1,6 +1,6 @@
 # Build From Source
 
-Use this guide when developing AgentSight or building a local binary from the repository. If you only want to run a release binary, see the Quick Start in [README.md](../README.md).
+Use this guide when developing AgentSight or building a local binary from the repository. If you only want to run a release binary, see the Quick Start in [README.md](https://github.com/eunomia-bpf/agentsight#quick-start).
 
 ## Requirements
 
