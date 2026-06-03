@@ -536,6 +536,94 @@ fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
     v.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
+fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
+    let mut models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    let mut tools: BTreeMap<String, usize> = BTreeMap::new();
+    let mut duration_ms = 0u64;
+    let mut num_turns = 0u64;
+    let mut cost_usd = 0.0f64;
+    let mut codex_model = String::new();
+
+    for line in content.lines() {
+        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        match (source, typ) {
+            ("claude", "result") => {
+                duration_ms = json_u64(&obj, "duration_ms");
+                num_turns = json_u64(&obj, "num_turns");
+                cost_usd = obj
+                    .get("total_cost_usd")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                if let Some(mu) = obj.get("modelUsage").and_then(|v| v.as_object()) {
+                    for (m, u) in mu {
+                        let inp = json_u64(u, "inputTokens");
+                        let out = json_u64(u, "outputTokens");
+                        let total = inp
+                            + out
+                            + json_u64(u, "cacheReadInputTokens")
+                            + json_u64(u, "cacheCreationInputTokens");
+                        models.insert(m.clone(), (inp, out, total));
+                    }
+                }
+            }
+            ("claude", "assistant") => {
+                if let Some(items) = obj.pointer("/message/content").and_then(|v| v.as_array()) {
+                    for item in items {
+                        if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
+                            let n = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                            *tools.entry(n.into()).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            ("codex", "turn_context") => {
+                if let Some(m) = obj.pointer("/payload/model").and_then(|v| v.as_str()) {
+                    codex_model = m.into();
+                }
+            }
+            ("codex", "event_msg") => {
+                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("token_count")
+                    && let Some(u) = obj.pointer("/payload/info/total_token_usage")
+                {
+                    let key = if codex_model.is_empty() {
+                        "unknown"
+                    } else {
+                        &codex_model
+                    };
+                    models.insert(
+                        key.into(),
+                        (
+                            json_u64(u, "input_tokens"),
+                            json_u64(u, "output_tokens"),
+                            json_u64(u, "total_tokens"),
+                        ),
+                    );
+                }
+            }
+            ("codex", "response_item")
+                if obj.pointer("/payload/type").and_then(|v| v.as_str())
+                    == Some("function_call") =>
+            {
+                let n = obj
+                    .pointer("/payload/name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                *tools.entry(n.into()).or_default() += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if models.is_empty() && tools.is_empty() && duration_ms == 0 && num_turns == 0 {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,92 +722,4 @@ mod tests {
                 .contains(&"api.anthropic.com/v1/messages(2)".to_string())
         );
     }
-}
-
-fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
-    let mut models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-    let mut tools: BTreeMap<String, usize> = BTreeMap::new();
-    let mut duration_ms = 0u64;
-    let mut num_turns = 0u64;
-    let mut cost_usd = 0.0f64;
-    let mut codex_model = String::new();
-
-    for line in content.lines() {
-        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-        match (source, typ) {
-            ("claude", "result") => {
-                duration_ms = json_u64(&obj, "duration_ms");
-                num_turns = json_u64(&obj, "num_turns");
-                cost_usd = obj
-                    .get("total_cost_usd")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                if let Some(mu) = obj.get("modelUsage").and_then(|v| v.as_object()) {
-                    for (m, u) in mu {
-                        let inp = json_u64(u, "inputTokens");
-                        let out = json_u64(u, "outputTokens");
-                        let total = inp
-                            + out
-                            + json_u64(u, "cacheReadInputTokens")
-                            + json_u64(u, "cacheCreationInputTokens");
-                        models.insert(m.clone(), (inp, out, total));
-                    }
-                }
-            }
-            ("claude", "assistant") => {
-                if let Some(items) = obj.pointer("/message/content").and_then(|v| v.as_array()) {
-                    for item in items {
-                        if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                            let n = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            *tools.entry(n.into()).or_default() += 1;
-                        }
-                    }
-                }
-            }
-            ("codex", "turn_context") => {
-                if let Some(m) = obj.pointer("/payload/model").and_then(|v| v.as_str()) {
-                    codex_model = m.into();
-                }
-            }
-            ("codex", "event_msg") => {
-                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("token_count")
-                    && let Some(u) = obj.pointer("/payload/info/total_token_usage")
-                {
-                    let key = if codex_model.is_empty() {
-                        "unknown"
-                    } else {
-                        &codex_model
-                    };
-                    models.insert(
-                        key.into(),
-                        (
-                            json_u64(u, "input_tokens"),
-                            json_u64(u, "output_tokens"),
-                            json_u64(u, "total_tokens"),
-                        ),
-                    );
-                }
-            }
-            ("codex", "response_item")
-                if obj.pointer("/payload/type").and_then(|v| v.as_str())
-                    == Some("function_call") =>
-            {
-                let n = obj
-                    .pointer("/payload/name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                *tools.entry(n.into()).or_default() += 1;
-            }
-            _ => {}
-        }
-    }
-
-    if models.is_empty() && tools.is_empty() && duration_ms == 0 && num_turns == 0 {
-        return serde_json::Value::Null;
-    }
-    serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
 }
