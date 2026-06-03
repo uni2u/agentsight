@@ -84,6 +84,63 @@ struct LiveCaptureState {
 
 const TRACE_EBPF_FILE: &str = "ebpf_file";
 const TRACE_PROC_FD: &str = "proc_fd";
+const TRACE_STICKY_BINDING: &str = "sticky";
+
+#[derive(Default)]
+struct LiveSessionBindings {
+    by_pid: HashMap<u32, LiveSessionBinding>,
+}
+
+struct LiveSessionBinding {
+    starttime_ticks: u64,
+    session_path: PathBuf,
+}
+
+impl LiveSessionBindings {
+    fn retain_live(&mut self, live_rows: &[AgentTopRow], sample: &LiveSample) {
+        self.by_pid.retain(|pid, binding| {
+            live_rows.iter().any(|row| row.pid == Some(*pid))
+                && sample
+                    .procs
+                    .get(pid)
+                    .is_some_and(|proc_info| proc_info.starttime_ticks == binding.starttime_ticks)
+        });
+    }
+
+    fn link_trace(
+        &mut self,
+        session: &LocalSession,
+        row: &AgentTopRow,
+        sample: &LiveSample,
+        path_evidence: &HashMap<u32, BTreeMap<PathBuf, &'static str>>,
+    ) -> Option<&'static str> {
+        let pid = row.pid?;
+        let proc_info = sample.procs.get(&pid)?;
+        let path = local_sessions::normalize_session_log_path(&session.path);
+
+        if let Some(evidence) = path_evidence.get(&pid) {
+            if let Some(trace) = evidence.get(&path).copied() {
+                self.by_pid.insert(
+                    pid,
+                    LiveSessionBinding {
+                        starttime_ticks: proc_info.starttime_ticks,
+                        session_path: path,
+                    },
+                );
+                return Some(trace);
+            }
+            self.by_pid.remove(&pid);
+            return None;
+        }
+
+        self.by_pid
+            .get(&pid)
+            .filter(|binding| {
+                binding.starttime_ticks == proc_info.starttime_ticks && binding.session_path == path
+            })
+            .map(|_| TRACE_STICKY_BINDING)
+    }
+}
 
 struct LiveEbpfCapture {
     state: Arc<Mutex<LiveCaptureState>>,
@@ -358,6 +415,7 @@ pub(crate) async fn run_live_top_query(
     let mut iterations = 0u32;
     let should_clear_screen = count != Some(1);
     let mut previous: Option<LiveSample> = None;
+    let mut bindings = LiveSessionBindings::default();
     let capture = start_live_ebpf_capture(binary_extractor, options).await;
 
     loop {
@@ -370,6 +428,7 @@ pub(crate) async fn run_live_top_query(
             &sample,
             previous.as_ref(),
             capture_snapshot.as_ref(),
+            &mut bindings,
             limit,
             options,
         );
@@ -446,10 +505,12 @@ fn run_live_top_tui_loop(
     terminal.clear()?;
 
     let mut previous: Option<LiveSample> = None;
+    let mut bindings = LiveSessionBindings::default();
     let mut current_top: Option<AgentTopOutput<'static>> = None;
     let mut selected = 0usize;
     let mut paused = false;
     let mut show_help = false;
+    let mut show_diagnostics = false;
     let mut last_refresh = Instant::now() - interval;
     let mut force_refresh = true;
 
@@ -460,6 +521,7 @@ fn run_live_top_tui_loop(
             current_top = Some(refresh_live_top(
                 &mut previous,
                 capture,
+                &mut bindings,
                 display_limit,
                 &options,
                 &mut selected,
@@ -479,6 +541,7 @@ fn run_live_top_tui_loop(
                 &options,
                 paused,
                 show_help,
+                show_diagnostics,
                 interval_secs,
                 display_limit,
             );
@@ -510,6 +573,7 @@ fn run_live_top_tui_loop(
             KeyCode::Char('q') | KeyCode::Esc => break,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
             KeyCode::Char('?') => show_help = !show_help,
+            KeyCode::Char('e') => show_diagnostics = !show_diagnostics,
             KeyCode::Char('p') => paused = !paused,
             KeyCode::Char('r') => force_refresh = true,
             KeyCode::Char('s') => {
@@ -558,6 +622,7 @@ fn run_live_top_tui_loop(
 fn refresh_live_top(
     previous: &mut Option<LiveSample>,
     capture: Option<&LiveEbpfCapture>,
+    bindings: &mut LiveSessionBindings,
     limit: usize,
     options: &TopOptions,
     selected: &mut usize,
@@ -568,6 +633,7 @@ fn refresh_live_top(
         &sample,
         previous.as_ref(),
         capture_snapshot.as_ref(),
+        bindings,
         limit,
         options,
     );
@@ -598,6 +664,7 @@ fn draw_live_top_tui(
     options: &TopOptions,
     paused: bool,
     show_help: bool,
+    show_diagnostics: bool,
     interval_secs: u64,
     display_limit: usize,
 ) {
@@ -626,6 +693,8 @@ fn draw_live_top_tui(
 
     if show_help {
         render_top_help(frame);
+    } else if show_diagnostics {
+        render_top_diagnostics(frame, top);
     }
 }
 
@@ -769,11 +838,18 @@ fn render_top_footer(frame: &mut Frame<'_>, area: Rect, top: &AgentTopOutput<'_>
     let mut lines = vec![Line::from(vec![
         Span::styled("keys ", label_style()),
         Span::raw(
-            "q quit | up/down select | s sort | v view | p pause | r refresh | +/- rows | ? help",
+            "q quit | up/down select | s sort | v view | p pause | r refresh | +/- rows | e errors | ? help",
         ),
     ])];
-    for note in top.notes.iter().take(3) {
-        lines.push(Line::from(note.clone()));
+    lines.push(Line::from(vec![
+        Span::styled("status ", label_style()),
+        Span::raw(tui_status_line(top)),
+    ]));
+    if let Some(message) = tui_diagnostic_lines(top, 1).into_iter().next() {
+        lines.push(Line::from(vec![
+            Span::styled("diagnostic ", label_style()),
+            Span::raw(message),
+        ]));
     }
     frame.render_widget(
         Paragraph::new(lines)
@@ -781,6 +857,70 @@ fn render_top_footer(frame: &mut Frame<'_>, area: Rect, top: &AgentTopOutput<'_>
             .wrap(Wrap { trim: true }),
         area,
     );
+}
+
+fn tui_status_line(top: &AgentTopOutput<'_>) -> String {
+    let mut parts = Vec::new();
+    if top.rows.iter().any(|row| row.trace.contains("local")) {
+        parts.push("local logs".to_string());
+    }
+    if top.rows.iter().any(|row| row.trace.contains("proc")) {
+        parts.push("/proc".to_string());
+    }
+    if top.rows.iter().any(|row| row.trace.contains("ebpf")) {
+        parts.push("eBPF".to_string());
+    }
+    if top.rows.iter().any(|row| {
+        row.trace.contains("ebpf_file")
+            || row.trace.contains("proc_fd")
+            || row.trace.contains("sticky")
+    }) {
+        parts.push("session path linked".to_string());
+    }
+    if top.total_tokens > 0 {
+        parts.push(format!(
+            "tokens {}",
+            format_token_value(Some(top.total_tokens))
+        ));
+    }
+    if parts.is_empty() {
+        if top.rows.is_empty() {
+            "no matching sessions".to_string()
+        } else {
+            "observing".to_string()
+        }
+    } else {
+        parts.join(" | ")
+    }
+}
+
+fn tui_diagnostic_lines(top: &AgentTopOutput<'_>, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let recent = crate::recent_tui_diagnostics(limit);
+    for message in top
+        .notes
+        .iter()
+        .filter(|note| !is_tui_status_note(note))
+        .chain(recent.iter())
+    {
+        if !out.contains(message) {
+            out.push(message.clone());
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+fn is_tui_status_note(note: &str) -> bool {
+    note.starts_with("session tokens/tools come from")
+        || note.starts_with("proc evidence uses")
+        || note.starts_with("local sessions attach")
+        || note.starts_with("ebpf evidence is")
 }
 
 fn render_top_help(frame: &mut Frame<'_>) {
@@ -806,6 +946,36 @@ fn render_top_help(frame: &mut Frame<'_>) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().title("help").borders(Borders::ALL))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_top_diagnostics(frame: &mut Frame<'_>, top: &AgentTopOutput<'_>) {
+    let area = centered_rect(76, 48, frame.area());
+    frame.render_widget(Clear, area);
+    let messages = tui_diagnostic_lines(top, 8);
+    let mut lines = vec![
+        Line::from(vec![Span::styled(
+            "Diagnostics",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+    ];
+    if messages.is_empty() {
+        lines.push(Line::from("No warnings or errors captured."));
+    } else {
+        for message in messages {
+            lines.push(Line::from(message));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from("e close | ? help | q quit"));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().title("diagnostics").borders(Borders::ALL))
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -990,6 +1160,11 @@ fn evidence_summary(top: &AgentTopOutput<'_>) -> String {
         .iter()
         .filter(|row| row.trace.contains("proc_fd"))
         .count();
+    let sticky = top
+        .rows
+        .iter()
+        .filter(|row| row.trace.contains("sticky"))
+        .count();
     let mut parts = Vec::new();
     if local > 0 {
         parts.push(format!("local={local}"));
@@ -999,6 +1174,9 @@ fn evidence_summary(top: &AgentTopOutput<'_>) -> String {
     }
     if proc_fd > 0 {
         parts.push(format!("fd={proc_fd}"));
+    }
+    if sticky > 0 {
+        parts.push(format!("sticky={sticky}"));
     }
     if ebpf_file > 0 {
         parts.push(format!("ebpf_file={ebpf_file}"));
@@ -1156,7 +1334,7 @@ fn load_stat(db: &str) -> StorageResult<StatOutput> {
 }
 
 fn stat_token_totals(snapshot: &Snapshot) -> (i64, i64, i64) {
-    let local_sessions = local_sessions_from_snapshot(snapshot);
+    let local_sessions = local_sessions::from_snapshot(snapshot);
     if local_sessions.iter().any(LocalSession::has_tokens) {
         return (
             local_sessions
@@ -1191,16 +1369,6 @@ fn stat_token_totals(snapshot: &Snapshot) -> (i64, i64, i64) {
     (input_tokens, output_tokens, total_tokens)
 }
 
-fn local_sessions_from_snapshot(snapshot: &Snapshot) -> Vec<LocalSession> {
-    local_sessions::sessions_from_path_strings(
-        snapshot
-            .audit_events
-            .iter()
-            .filter(|row| row.audit_type == "file")
-            .filter_map(|row| row.target.as_deref()),
-    )
-}
-
 fn build_session_top<'a>(
     db: &'a str,
     snapshot: &Snapshot,
@@ -1211,7 +1379,7 @@ fn build_session_top<'a>(
     let local_sessions = if options.pid.is_some() {
         Vec::new()
     } else {
-        local_sessions_from_snapshot(snapshot)
+        local_sessions::from_snapshot(snapshot)
             .into_iter()
             .filter(|session| local_session_matches_filter(session, options))
             .collect()
@@ -1682,6 +1850,7 @@ fn build_live_top<'a>(
     sample: &LiveSample,
     previous: Option<&LiveSample>,
     capture: Option<&LiveCaptureSnapshot>,
+    bindings: &mut LiveSessionBindings,
     limit: usize,
     options: &TopOptions,
 ) -> AgentTopOutput<'a> {
@@ -1689,6 +1858,7 @@ fn build_live_top<'a>(
     sort_agent_rows(&mut live_rows, "cpu");
     let local_sessions = discover_local_top_sessions(options, limit);
     let path_evidence = collect_live_session_path_evidence(&live_rows, sample, capture);
+    bindings.retain_live(&live_rows, sample);
     let mut used_live_pids = HashSet::new();
     let mut rows = Vec::new();
 
@@ -1700,7 +1870,9 @@ fn build_live_top<'a>(
             {
                 return None;
             }
-            local_session_link_trace(&session, row, &path_evidence).map(|trace| (idx, trace))
+            bindings
+                .link_trace(&session, row, sample, &path_evidence)
+                .map(|trace| (idx, trace))
         });
         let live =
             live_match.and_then(|(idx, trace)| live_rows.get(idx).cloned().map(|row| (row, trace)));
@@ -1761,9 +1933,11 @@ fn build_live_top<'a>(
     let has_local = rows.iter().any(|row| row.trace.contains("local"));
     let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
     let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
-    let has_session_file_link = rows
-        .iter()
-        .any(|row| row.trace.contains("ebpf_file") || row.trace.contains("proc_fd"));
+    let has_session_file_link = rows.iter().any(|row| {
+        row.trace.contains("ebpf_file")
+            || row.trace.contains("proc_fd")
+            || row.trace.contains("sticky")
+    });
     let mut notes = Vec::new();
     if has_local {
         notes.push("session tokens/tools come from local ~/.claude or ~/.codex logs".to_string());
@@ -1772,7 +1946,7 @@ fn build_live_top<'a>(
         notes.push("proc evidence uses /proc for CPU/RSS/process families".to_string());
     }
     if has_session_file_link {
-        notes.push("local sessions attach to live pids only when the process touches the matching JSONL log path".to_string());
+        notes.push("local sessions bind to live pids after the process touches the matching JSONL log path; binding stays until pid exits or a new session path is observed".to_string());
     }
     if has_ebpf {
         notes.push(
@@ -1866,18 +2040,6 @@ fn scan_proc_fd_session_paths(pid: u32) -> BTreeSet<PathBuf> {
     }
 
     out
-}
-
-fn local_session_link_trace(
-    session: &LocalSession,
-    row: &AgentTopRow,
-    path_evidence: &HashMap<u32, BTreeMap<PathBuf, &'static str>>,
-) -> Option<&'static str> {
-    let pid = row.pid?;
-    let path = local_sessions::normalize_session_log_path(&session.path);
-    path_evidence
-        .get(&pid)
-        .and_then(|evidence| evidence.get(&path).copied())
 }
 
 fn apply_live_capture(
@@ -2299,6 +2461,29 @@ mod tests {
         (temp, path)
     }
 
+    fn test_live_sample(pid: u32, starttime_ticks: u64) -> LiveSample {
+        LiveSample {
+            at: Instant::now(),
+            uptime_s: 100.0,
+            procs: BTreeMap::from([(
+                pid,
+                ProcInfo {
+                    pid,
+                    ppid: 0,
+                    session_id: pid,
+                    comm: "claude".to_string(),
+                    command: "claude".to_string(),
+                    ticks: 0,
+                    starttime_ticks,
+                    rss_kb: 0,
+                    rss_mb: 0,
+                    vsz_kb: 0,
+                    threads: 1,
+                },
+            )]),
+        }
+    }
+
     #[test]
     fn record_live_ebpf_event_tracks_only_resolved_session_paths() {
         let (_claude_temp, claude_path) = create_temp_session_path("claude");
@@ -2378,7 +2563,7 @@ mod tests {
     }
 
     #[test]
-    fn local_session_link_requires_jsonl_path_evidence() {
+    fn local_session_binding_sticks_after_initial_path_evidence() {
         let (_temp, path) = create_temp_session_path("claude");
 
         let session = local_sessions::parse_content(
@@ -2407,9 +2592,11 @@ mod tests {
             trace: "proc".to_string(),
             command: "claude".to_string(),
         };
+        let sample = test_live_sample(1, 10);
+        let mut bindings = LiveSessionBindings::default();
 
         assert_eq!(
-            local_session_link_trace(&session, &row, &HashMap::new()),
+            bindings.link_trace(&session, &row, &sample, &HashMap::new()),
             None
         );
 
@@ -2421,8 +2608,63 @@ mod tests {
         let path_evidence = HashMap::from([(1, evidence)]);
 
         assert_eq!(
-            local_session_link_trace(&session, &row, &path_evidence),
+            bindings.link_trace(&session, &row, &sample, &path_evidence),
             Some(TRACE_PROC_FD)
+        );
+        assert_eq!(
+            bindings.link_trace(&session, &row, &sample, &HashMap::new()),
+            Some(TRACE_STICKY_BINDING)
+        );
+        assert_eq!(
+            bindings.link_trace(&session, &row, &test_live_sample(1, 11), &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn tui_status_compacts_source_notes() {
+        let top = AgentTopOutput {
+            mode: "live sessions",
+            db: None,
+            duration_s: 0.0,
+            canonical_events: 0,
+            llm_calls: 0,
+            total_tokens: 15,
+            rows: vec![AgentTopRow {
+                session: "codex:test".to_string(),
+                agent: "codex".to_string(),
+                pid: Some(42),
+                model: Some("gpt-smoke".to_string()),
+                age_s: Some(1.0),
+                cpu_percent: 0.0,
+                rss_mb: 0,
+                processes: 1,
+                tokens: Some(15),
+                tools: 1,
+                execs: 0,
+                failures: 0,
+                files: 0,
+                network: 0,
+                unattributed: 0,
+                trace: "local+proc+ebpf_file".to_string(),
+                command: "codex".to_string(),
+            }],
+            sections: Vec::new(),
+            failures: Vec::new(),
+            notes: vec![
+                "session tokens/tools come from local ~/.claude or ~/.codex logs".to_string(),
+                "proc evidence uses /proc for CPU/RSS/process families".to_string(),
+                "live eBPF capture did not start: sudo unavailable".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            tui_status_line(&top),
+            "local logs | /proc | eBPF | session path linked | tokens 15"
+        );
+        assert_eq!(
+            tui_diagnostic_lines(&top, 1),
+            vec!["live eBPF capture did not start: sudo unavailable".to_string()]
         );
     }
 

@@ -215,7 +215,7 @@ impl SessionSummary {
             event_limit: 50_000,
             audit_limit: 50_000,
         })?;
-        let local_sessions = local_sessions_from_snapshot(&snap);
+        let local_sessions = local_sessions::from_snapshot(&snap);
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
@@ -397,17 +397,6 @@ impl SessionSummary {
             endpoints: vec![],
         }
     }
-}
-
-fn local_sessions_from_snapshot(
-    snap: &crate::framework::storage::sqlite::Snapshot,
-) -> Vec<LocalSession> {
-    local_sessions::sessions_from_path_strings(
-        snap.audit_events
-            .iter()
-            .filter(|row| row.audit_type == "file")
-            .filter_map(|row| row.target.as_deref()),
-    )
 }
 
 fn local_models(sessions: &[LocalSession]) -> Vec<(String, i64, i64, i64, i64)> {

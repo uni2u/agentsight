@@ -140,6 +140,9 @@ impl AgentTopRow {
         if self.trace.contains("proc_fd") {
             parts.push("fd");
         }
+        if self.trace.contains("sticky") {
+            parts.push("linked");
+        }
         if self.trace.contains("ebpf_file") {
             parts.push("eBPF:file");
         } else if self.trace.contains("ebpf") {

@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::framework::storage::sqlite::Snapshot;
+
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSession {
     pub(crate) agent: String,
@@ -106,6 +108,16 @@ pub(crate) fn sessions_from_path_strings<'a>(
             })?
         })
         .collect()
+}
+
+pub(crate) fn from_snapshot(snapshot: &Snapshot) -> Vec<LocalSession> {
+    sessions_from_path_strings(
+        snapshot
+            .audit_events
+            .iter()
+            .filter(|row| row.audit_type == "file")
+            .filter_map(|row| row.target.as_deref()),
+    )
 }
 
 pub(crate) fn count_local_sessions() -> Vec<(&'static str, PathBuf, usize, u64)> {

@@ -8,8 +8,10 @@
 #![allow(clippy::too_many_arguments)]
 
 use clap::{Parser, Subcommand};
+use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::{
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use tokio::signal;
@@ -49,6 +51,56 @@ use session::{resolve_db_or_latest, run_db_list};
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+static TUI_DIAGNOSTICS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+
+struct TuiDiagnosticWriter;
+
+impl Write for TuiDiagnosticWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            push_tui_diagnostic(line);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn push_tui_diagnostic(message: &str) {
+    const MAX_TUI_DIAGNOSTICS: usize = 8;
+    let diagnostics = TUI_DIAGNOSTICS.get_or_init(|| Mutex::new(VecDeque::new()));
+    let Ok(mut diagnostics) = diagnostics.lock() else {
+        return;
+    };
+    if diagnostics.back().is_some_and(|last| last == message) {
+        return;
+    }
+    diagnostics.push_back(message.to_string());
+    while diagnostics.len() > MAX_TUI_DIAGNOSTICS {
+        diagnostics.pop_front();
+    }
+}
+
+pub(crate) fn recent_tui_diagnostics(limit: usize) -> Vec<String> {
+    let Some(diagnostics) = TUI_DIAGNOSTICS.get() else {
+        return Vec::new();
+    };
+    let Ok(diagnostics) = diagnostics.lock() else {
+        return Vec::new();
+    };
+    diagnostics
+        .iter()
+        .rev()
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
 
 fn shutdown_notify() -> Arc<Notify> {
     SHUTDOWN_NOTIFY
@@ -81,7 +133,7 @@ fn init_logging(suppress_terminal_output: bool) {
     let mut builder = env_logger::Builder::from_default_env();
     builder.filter_level(log::LevelFilter::Warn);
     if suppress_terminal_output {
-        builder.target(env_logger::Target::Pipe(Box::new(std::io::sink())));
+        builder.target(env_logger::Target::Pipe(Box::new(TuiDiagnosticWriter)));
     }
     let _ = builder.try_init();
 }
