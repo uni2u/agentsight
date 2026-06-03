@@ -3,29 +3,20 @@
 
 use crate::framework::analyzers::{Analyzer, AnalyzerError};
 use crate::framework::runners::EventStream;
-use crate::framework::storage::sqlite::{SqliteStore, ViewProjector, ViewUpdateSink};
+use crate::view::MaterializedView;
+use crate::view::types::ViewUpdateSink;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub struct StorageAnalyzer {
-    store: Arc<Mutex<SqliteStore>>,
-    view: Arc<Mutex<ViewProjector>>,
+    view: Arc<Mutex<MaterializedView>>,
 }
 
 impl StorageAnalyzer {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Self {
-            store: Arc::new(Mutex::new(SqliteStore::open(path)?)),
-            view: Arc::new(Mutex::new(ViewProjector::new())),
-        })
-    }
-
-    pub fn in_memory() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Self {
-            store: Arc::new(Mutex::new(SqliteStore::open_in_memory()?)),
-            view: Arc::new(Mutex::new(ViewProjector::new())),
+            view: Arc::new(Mutex::new(MaterializedView::open_in_memory()?)),
         })
     }
 
@@ -40,14 +31,13 @@ impl StorageAnalyzer {
 #[async_trait]
 impl Analyzer for StorageAnalyzer {
     async fn process(&mut self, stream: EventStream) -> Result<EventStream, AnalyzerError> {
-        let store = Arc::clone(&self.store);
         let view = Arc::clone(&self.view);
 
         let processed = stream.map(move |event| {
-            if let (Ok(mut store), Ok(mut view)) = (store.lock(), view.lock())
-                && let Err(e) = store.insert_event(&event, &mut view)
+            if let Ok(mut view) = view.lock()
+                && let Err(e) = view.ingest_event(&event)
             {
-                log::warn!("StorageAnalyzer: failed to store event: {}", e);
+                log::warn!("StorageAnalyzer: failed to ingest event: {}", e);
             }
             event
         });

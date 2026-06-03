@@ -7,11 +7,12 @@ use crate::output::{
     print_token_summary, prompt_text_chars,
 };
 use crate::sources::session::{self as local_sessions, LocalSession};
+use crate::sources::sqlite::SqliteSource;
 use crate::view::MaterializedView;
 use crate::view::types::{Snapshot, SnapshotOptions};
 
 #[cfg(test)]
-use crate::framework::storage::{SqliteStore, ViewProjector};
+use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
 #[cfg(test)]
 use crate::view::types::{TokenUsageRow, ViewUpdate};
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,7 +40,7 @@ pub(crate) fn run_token_query(
     group_by: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = MaterializedView::open_sqlite(db)?;
+    let view = SqliteSource::open(db)?.into_view();
     let rows = view.token_summary(group_by)?;
     if json {
         print_json(&rows)?;
@@ -55,7 +56,7 @@ pub(crate) fn run_audit_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = MaterializedView::open_sqlite(db)?;
+    let view = SqliteSource::open(db)?.into_view();
     let rows = view.audit_rows(audit_type, limit)?;
     if json {
         print_json(&rows)?;
@@ -70,7 +71,7 @@ pub(crate) fn run_prompts_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = MaterializedView::open_sqlite(db)?;
+    let view = SqliteSource::open(db)?.into_view();
     let rows = view.llm_call_rows(limit)?;
     if json {
         print_json(&rows)?;
@@ -85,7 +86,7 @@ pub(crate) fn run_export(
     output: &str,
     audit_limit: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = MaterializedView::open_sqlite(db)?;
+    let view = SqliteSource::open(db)?.into_view();
     let snapshot = view.export_snapshot(SnapshotOptions { audit_limit })?;
     let json = serde_json::to_vec_pretty(&snapshot)?;
     if output == "-" {
@@ -101,7 +102,7 @@ pub(crate) fn run_export(
 
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let mut view = MaterializedView::open_sqlite(db)?;
+        let view = SqliteSource::open(db)?.into_view();
         let snap = view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
         })?;
@@ -395,8 +396,8 @@ mod tests {
 
         run_replay(input.to_str().unwrap(), db.to_str().unwrap()).unwrap();
 
-        let store = SqliteStore::open(&db).unwrap();
-        let rows = store.token_summary("model").unwrap();
+        let view = SqliteSource::open(&db).unwrap().into_view();
+        let rows = view.token_summary("model").unwrap();
         assert_eq!(rows[0].group, "claude-sonnet-4");
         assert_eq!(rows[0].total_tokens, 15);
     }
@@ -430,12 +431,13 @@ mod tests {
             )
             .unwrap();
 
-        let tokens = store.token_summary("model").unwrap();
+        let view = SqliteSource::open(&db).unwrap().into_view();
+        let tokens = view.token_summary("model").unwrap();
         assert_eq!(tokens[0].group, "claude-sonnet-4");
         assert_eq!(tokens[0].total_tokens, 15);
         assert_eq!(tokens[0].calls, 1);
 
-        let calls = store.llm_call_rows(10).unwrap();
+        let calls = view.llm_call_rows(10).unwrap();
         assert_eq!(calls[0].total_tokens, 15);
     }
 

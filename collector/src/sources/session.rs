@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::text::{short_session_id, truncate_text};
 use crate::view::types::Snapshot;
 
 #[derive(Debug, Clone)]
@@ -585,38 +586,4 @@ fn json_i64(value: &Value, key: &str) -> i64 {
 
 fn json_u64(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(|value| value.as_u64()).unwrap_or(0)
-}
-
-fn short_session_id(id: &str) -> String {
-    let id = id.trim();
-    if id.is_empty() {
-        return "session".to_string();
-    }
-    let compact = id
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(id)
-        .trim_end_matches(".jsonl");
-    const MAX_SESSION_ID_CHARS: usize = 12;
-    if compact.chars().count() <= MAX_SESSION_ID_CHARS {
-        return compact.to_string();
-    }
-    let head = compact.chars().take(6).collect::<String>();
-    let tail = compact
-        .chars()
-        .rev()
-        .take(5)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("{head}.{tail}")
-}
-
-fn truncate_text(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        text.chars().take(max.saturating_sub(1)).collect()
-    }
 }

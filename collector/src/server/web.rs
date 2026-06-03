@@ -2,7 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::server::assets::FrontendAssets;
-use crate::view::MaterializedView;
+use crate::sources::sqlite::SqliteSource;
 use crate::view::types::SnapshotOptions;
 use http_body_util::Full;
 use hyper::server::conn::http1;
@@ -220,7 +220,7 @@ async fn serve_sqlite_api(
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-            let view = MaterializedView::open_sqlite(&db_path)?;
+            let view = SqliteSource::open(&db_path)?.into_view();
             let options = SnapshotOptions { audit_limit };
             let value = match resource {
                 ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by)?)?,

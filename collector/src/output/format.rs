@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::framework::analyzers::common;
 use crate::framework::core::Event;
+use crate::text::truncate_with_ellipsis as truncate;
 use crate::view::types::{AuditRow, LlmCallRow, TokenSummary};
 
 #[derive(Debug, Default, Serialize)]
@@ -46,6 +47,29 @@ pub(crate) struct TopOptions {
     pub(crate) comm: Option<String>,
     pub(crate) sort: String,
     pub(crate) view: String,
+}
+
+impl TopOptions {
+    pub(crate) fn matches(
+        &self,
+        pid: Option<u32>,
+        comm: Option<&str>,
+        command: Option<&str>,
+    ) -> bool {
+        if let Some(wanted_pid) = self.pid {
+            return pid == Some(wanted_pid);
+        }
+        if let Some(wanted_comm) = &self.comm {
+            let wanted_comm = wanted_comm.to_ascii_lowercase();
+            return comm
+                .map(|comm| comm.to_ascii_lowercase().contains(&wanted_comm))
+                .unwrap_or(false)
+                || command
+                    .map(|command| command.to_ascii_lowercase().contains(&wanted_comm))
+                    .unwrap_or(false);
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -840,17 +864,6 @@ fn format_duration_compact(seconds: f64) -> String {
         format!("{}h", seconds / 3_600)
     } else {
         format!("{}d", seconds / 86_400)
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        format!(
-            "{}...",
-            s.chars().take(max.saturating_sub(3)).collect::<String>()
-        )
     }
 }
 

@@ -30,6 +30,7 @@ mod server;
 mod session;
 mod sinks;
 mod sources;
+mod text;
 mod view;
 
 use cli_db::{

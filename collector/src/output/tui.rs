@@ -2,6 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::output::{AgentTopOutput, AgentTopRow, TopOptions};
+use crate::text::truncate_text;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -589,13 +590,5 @@ fn format_compact_i64(value: i64) -> String {
         format!("{:.1}k", value as f64 / 1_000.0)
     } else {
         value.to_string()
-    }
-}
-
-fn truncate_text(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        text.chars().take(max.saturating_sub(1)).collect()
     }
 }

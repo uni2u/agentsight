@@ -11,7 +11,8 @@ use crate::output::{
 };
 use crate::sources::proc::{self as procfs, ProcInfo, ProcSnapshot as LiveSample};
 use crate::sources::session::{self as local_sessions, LocalSession};
-use crate::view::MaterializedView;
+use crate::sources::sqlite::SqliteSource;
+use crate::text::short_session_id;
 use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, StorageResult};
 use crossterm::{
     cursor::{Hide, Show},
@@ -145,12 +146,177 @@ impl LiveEbpfCapture {
         }
     }
 
-    fn start_note(&self) -> Option<String> {
-        self.start_note.clone()
-    }
-
     fn stop(self) {
         self.handle.abort();
+    }
+}
+
+#[derive(Default)]
+struct LiveView {
+    previous: Option<LiveSample>,
+    bindings: LiveSessionBindings,
+}
+
+impl LiveView {
+    fn refresh(
+        &mut self,
+        capture: Option<&LiveEbpfCapture>,
+        limit: usize,
+        options: &TopOptions,
+    ) -> io::Result<AgentTopOutput<'static>> {
+        let sample = LiveSample::collect()?;
+        let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
+        let mut top = self.build_top(&sample, capture_snapshot.as_ref(), limit, options);
+        if let Some(note) = capture.and_then(|capture| capture.start_note.clone()) {
+            top.notes.push(note);
+        }
+        self.previous = Some(sample);
+        Ok(top)
+    }
+
+    fn build_top<'a>(
+        &mut self,
+        sample: &LiveSample,
+        capture: Option<&LiveCaptureSnapshot>,
+        limit: usize,
+        options: &TopOptions,
+    ) -> AgentTopOutput<'a> {
+        let mut live_rows = live_process_rows(sample, self.previous.as_ref(), options);
+        sort_agent_rows(&mut live_rows, "cpu");
+        let local_sessions = discover_local_top_sessions(options, limit);
+        let path_evidence = collect_live_session_path_evidence(&live_rows, sample, capture);
+        self.bindings.retain_live(&live_rows, sample);
+        let mut used_live_pids = HashSet::new();
+        let mut rows = Vec::new();
+
+        for session in local_sessions {
+            let live_match = live_rows.iter().enumerate().find_map(|(idx, row)| {
+                if row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
+                    || row.agent != session.agent
+                    || !options.matches(row.pid, Some(&row.agent), Some(&row.command))
+                {
+                    return None;
+                }
+                self.bindings
+                    .link_trace(&session, row, sample, &path_evidence)
+                    .map(|trace| (idx, trace))
+            });
+            let live = live_match
+                .and_then(|(idx, trace)| live_rows.get(idx).cloned().map(|row| (row, trace)));
+            if let Some(pid) = live.as_ref().and_then(|(row, _)| row.pid) {
+                used_live_pids.insert(pid);
+            }
+            let command = session
+                .prompt_preview
+                .clone()
+                .or_else(|| live.as_ref().map(|(row, _)| row.command.clone()))
+                .unwrap_or_else(|| session.path.display().to_string());
+            let trace = if let Some((_, link_trace)) = &live {
+                format!("local+proc+{link_trace}")
+            } else {
+                "local".to_string()
+            };
+            let age_s = live
+                .as_ref()
+                .and_then(|(row, _)| row.age_s)
+                .or_else(|| session.age_s());
+            let tools = session.tools_total();
+            rows.push(AgentTopRow {
+                session: session.display_id,
+                agent: session.agent,
+                pid: live.as_ref().and_then(|(row, _)| row.pid),
+                model: session.model,
+                age_s,
+                cpu_percent: live
+                    .as_ref()
+                    .map(|(row, _)| row.cpu_percent)
+                    .unwrap_or_default(),
+                rss_mb: live.as_ref().map(|(row, _)| row.rss_mb).unwrap_or_default(),
+                processes: live
+                    .as_ref()
+                    .map(|(row, _)| row.processes)
+                    .unwrap_or_default(),
+                tokens: (session.total_tokens > 0).then_some(session.total_tokens),
+                tools,
+                execs: 0,
+                failures: 0,
+                files: 0,
+                network: 0,
+                unattributed: 0,
+                trace,
+                command,
+            });
+        }
+
+        rows.extend(live_rows.into_iter().filter(|row| {
+            row.pid
+                .map(|pid| !used_live_pids.contains(&pid))
+                .unwrap_or(true)
+        }));
+        if let Some(capture) = capture {
+            apply_live_capture(&mut rows, sample, capture);
+        }
+
+        let has_local = rows.iter().any(|row| row.trace.contains("local"));
+        let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
+        let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
+        let has_session_file_link = rows.iter().any(|row| {
+            row.trace.contains("ebpf_file")
+                || row.trace.contains("proc_fd")
+                || row.trace.contains("sticky")
+        });
+        let mut notes = Vec::new();
+        if has_local {
+            notes.push(
+                "session tokens/tools come from local ~/.claude or ~/.codex logs".to_string(),
+            );
+        }
+        if has_proc {
+            notes.push("proc evidence uses /proc for CPU/RSS/process families".to_string());
+        }
+        if has_session_file_link {
+            notes.push("local sessions bind to live pids after the process touches the matching JSONL log path; binding stays until pid exits or a new session path is observed".to_string());
+        }
+        if has_ebpf {
+            notes.push(
+                "ebpf evidence is live process capture; SSL/network/token details still require record/stat or local agent logs"
+                    .to_string(),
+            );
+        }
+        if let Some(capture) = capture
+            && capture.parse_errors > 0
+        {
+            notes.push(format!(
+                "ebpf process capture had {} parse errors",
+                capture.parse_errors
+            ));
+        }
+        if rows.is_empty() {
+            if options.pid.is_some() || options.comm.is_some() {
+                notes.push(
+                    "no active process or local session matched the filter; try another -p/-c value or inspect a saved session with --db"
+                        .to_string(),
+                );
+            } else {
+                notes.push(
+                    "no active known agent process or local Claude/Codex session found; use -c/-p, run an agent, or pass --db"
+                        .to_string(),
+                );
+            }
+        }
+
+        AgentTopOutput {
+            mode: "live sessions",
+            db: None,
+            duration_s: 0.0,
+            view_events: 0,
+            llm_calls: 0,
+            total_tokens: rows.iter().filter_map(|row| row.tokens).sum(),
+            rows,
+            sections: Vec::new(),
+            failures: Vec::new(),
+            notes,
+        }
     }
 }
 
@@ -398,35 +564,19 @@ pub(crate) async fn run_live_top_query(
     let interval = Duration::from_secs(interval_secs.max(1));
     let mut iterations = 0u32;
     let should_clear_screen = count != Some(1);
-    let mut previous: Option<LiveSample> = None;
-    let mut bindings = LiveSessionBindings::default();
+    let mut live_view = LiveView::default();
     let capture = start_live_ebpf_capture(binary_extractor, options).await;
 
     loop {
-        let sample = LiveSample::collect()?;
         if should_clear_screen {
             clear_screen();
         }
-        let capture_snapshot = capture.as_ref().map(LiveEbpfCapture::snapshot);
-        let mut top = build_live_top(
-            &sample,
-            previous.as_ref(),
-            capture_snapshot.as_ref(),
-            &mut bindings,
-            limit,
-            options,
-        );
-        if let Some(capture) = &capture
-            && let Some(note) = capture.start_note()
-        {
-            top.notes.push(note);
-        }
+        let mut top = live_view.refresh(capture.as_ref(), limit, options)?;
         sort_agent_rows(&mut top.rows, &options.sort);
         top.rows.truncate(limit);
         print_agent_top(&top);
         io::stdout().flush()?;
 
-        previous = Some(sample);
         iterations += 1;
         if count.is_some_and(|max| iterations >= max) || crate::shutdown_requested() {
             break;
@@ -488,8 +638,7 @@ fn run_live_top_tui_loop(
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut previous: Option<LiveSample> = None;
-    let mut bindings = LiveSessionBindings::default();
+    let mut live_view = LiveView::default();
     let mut current_top: Option<AgentTopOutput<'static>> = None;
     let mut selected = 0usize;
     let mut paused = false;
@@ -502,14 +651,11 @@ fn run_live_top_tui_loop(
         if force_refresh
             || (!paused && (current_top.is_none() || last_refresh.elapsed() >= interval))
         {
-            current_top = Some(refresh_live_top(
-                &mut previous,
-                capture,
-                &mut bindings,
-                display_limit,
-                &options,
-                &mut selected,
-            )?);
+            let mut top = live_view.refresh(capture, display_limit, &options)?;
+            sort_agent_rows(&mut top.rows, &options.sort);
+            top.rows.truncate(display_limit);
+            clamp_selected(&mut selected, top.rows.len());
+            current_top = Some(top);
             last_refresh = Instant::now();
             force_refresh = false;
         }
@@ -603,36 +749,6 @@ fn run_live_top_tui_loop(
     Ok(())
 }
 
-fn refresh_live_top(
-    previous: &mut Option<LiveSample>,
-    capture: Option<&LiveEbpfCapture>,
-    bindings: &mut LiveSessionBindings,
-    limit: usize,
-    options: &TopOptions,
-    selected: &mut usize,
-) -> io::Result<AgentTopOutput<'static>> {
-    let sample = LiveSample::collect()?;
-    let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
-    let mut top: AgentTopOutput<'static> = build_live_top(
-        &sample,
-        previous.as_ref(),
-        capture_snapshot.as_ref(),
-        bindings,
-        limit,
-        options,
-    );
-    if let Some(capture) = capture
-        && let Some(note) = capture.start_note()
-    {
-        top.notes.push(note);
-    }
-    sort_agent_rows(&mut top.rows, &options.sort);
-    top.rows.truncate(limit);
-    clamp_selected(selected, top.rows.len());
-    *previous = Some(sample);
-    Ok(top)
-}
-
 fn clamp_selected(selected: &mut usize, rows: usize) {
     if rows == 0 {
         *selected = 0;
@@ -667,7 +783,7 @@ fn next_sort_key(current: &str) -> String {
 }
 
 fn load_stat(db: &str) -> StorageResult<StatOutput> {
-    let mut view = MaterializedView::open_sqlite(db)?;
+    let view = SqliteSource::open(db)?.into_view();
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
     })?;
@@ -1034,7 +1150,7 @@ fn session_agent_rows(
 
     if rows.is_empty() && (!snapshot.sessions.is_empty() || !snapshot.agents.is_empty()) {
         for session in &snapshot.sessions {
-            if !matches_top_filter(session.pid, session.comm.as_deref(), None, options) {
+            if !options.matches(session.pid, session.comm.as_deref(), None) {
                 continue;
             }
             rows.push(AgentTopRow {
@@ -1067,11 +1183,10 @@ fn session_agent_rows(
 
     if rows.is_empty() && !local_sessions.is_empty() {
         for session in local_sessions {
-            if !matches_top_filter(
+            if !options.matches(
                 None,
                 Some(&session.agent),
                 session.prompt_preview.as_deref(),
-                options,
             ) {
                 continue;
             }
@@ -1112,11 +1227,10 @@ fn session_roots(processes: &BTreeMap<u32, ProcessMeta>, options: &TopOptions) -
     }
     let mut roots = Vec::new();
     for process in processes.values() {
-        if !matches_top_filter(
+        if !options.matches(
             Some(process.pid),
             Some(&process.comm),
             Some(&process.command),
-            options,
         ) {
             continue;
         }
@@ -1124,12 +1238,7 @@ fn session_roots(processes: &BTreeMap<u32, ProcessMeta>, options: &TopOptions) -
             .ppid
             .and_then(|ppid| processes.get(&ppid))
             .is_some_and(|parent| {
-                matches_top_filter(
-                    Some(parent.pid),
-                    Some(&parent.comm),
-                    Some(&parent.command),
-                    options,
-                )
+                options.matches(Some(parent.pid), Some(&parent.comm), Some(&parent.command))
             });
         if !parent_known {
             roots.push(process.pid);
@@ -1227,150 +1336,6 @@ fn session_tokens_by_pid(snapshot: &Snapshot) -> BTreeMap<u32, i64> {
         }
     }
     out
-}
-
-fn build_live_top<'a>(
-    sample: &LiveSample,
-    previous: Option<&LiveSample>,
-    capture: Option<&LiveCaptureSnapshot>,
-    bindings: &mut LiveSessionBindings,
-    limit: usize,
-    options: &TopOptions,
-) -> AgentTopOutput<'a> {
-    let mut live_rows = live_process_rows(sample, previous, options);
-    sort_agent_rows(&mut live_rows, "cpu");
-    let local_sessions = discover_local_top_sessions(options, limit);
-    let path_evidence = collect_live_session_path_evidence(&live_rows, sample, capture);
-    bindings.retain_live(&live_rows, sample);
-    let mut used_live_pids = HashSet::new();
-    let mut rows = Vec::new();
-
-    for session in local_sessions {
-        let live_match = live_rows.iter().enumerate().find_map(|(idx, row)| {
-            if row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
-                || row.agent != session.agent
-                || !matches_top_filter(row.pid, Some(&row.agent), Some(&row.command), options)
-            {
-                return None;
-            }
-            bindings
-                .link_trace(&session, row, sample, &path_evidence)
-                .map(|trace| (idx, trace))
-        });
-        let live =
-            live_match.and_then(|(idx, trace)| live_rows.get(idx).cloned().map(|row| (row, trace)));
-        if let Some(pid) = live.as_ref().and_then(|(row, _)| row.pid) {
-            used_live_pids.insert(pid);
-        }
-        let command = session
-            .prompt_preview
-            .clone()
-            .or_else(|| live.as_ref().map(|(row, _)| row.command.clone()))
-            .unwrap_or_else(|| session.path.display().to_string());
-        let trace = if let Some((_, link_trace)) = &live {
-            format!("local+proc+{link_trace}")
-        } else {
-            "local".to_string()
-        };
-        let age_s = live
-            .as_ref()
-            .and_then(|(row, _)| row.age_s)
-            .or_else(|| session.age_s());
-        let tools = session.tools_total();
-        rows.push(AgentTopRow {
-            session: session.display_id,
-            agent: session.agent,
-            pid: live.as_ref().and_then(|(row, _)| row.pid),
-            model: session.model,
-            age_s,
-            cpu_percent: live
-                .as_ref()
-                .map(|(row, _)| row.cpu_percent)
-                .unwrap_or_default(),
-            rss_mb: live.as_ref().map(|(row, _)| row.rss_mb).unwrap_or_default(),
-            processes: live
-                .as_ref()
-                .map(|(row, _)| row.processes)
-                .unwrap_or_default(),
-            tokens: (session.total_tokens > 0).then_some(session.total_tokens),
-            tools,
-            execs: 0,
-            failures: 0,
-            files: 0,
-            network: 0,
-            unattributed: 0,
-            trace,
-            command,
-        });
-    }
-
-    rows.extend(live_rows.into_iter().filter(|row| {
-        row.pid
-            .map(|pid| !used_live_pids.contains(&pid))
-            .unwrap_or(true)
-    }));
-    if let Some(capture) = capture {
-        apply_live_capture(&mut rows, sample, capture);
-    }
-
-    let has_local = rows.iter().any(|row| row.trace.contains("local"));
-    let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
-    let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
-    let has_session_file_link = rows.iter().any(|row| {
-        row.trace.contains("ebpf_file")
-            || row.trace.contains("proc_fd")
-            || row.trace.contains("sticky")
-    });
-    let mut notes = Vec::new();
-    if has_local {
-        notes.push("session tokens/tools come from local ~/.claude or ~/.codex logs".to_string());
-    }
-    if has_proc {
-        notes.push("proc evidence uses /proc for CPU/RSS/process families".to_string());
-    }
-    if has_session_file_link {
-        notes.push("local sessions bind to live pids after the process touches the matching JSONL log path; binding stays until pid exits or a new session path is observed".to_string());
-    }
-    if has_ebpf {
-        notes.push(
-            "ebpf evidence is live process capture; SSL/network/token details still require record/stat or local agent logs"
-                .to_string(),
-        );
-    }
-    if let Some(capture) = capture
-        && capture.parse_errors > 0
-    {
-        notes.push(format!(
-            "ebpf process capture had {} parse errors",
-            capture.parse_errors
-        ));
-    }
-    if rows.is_empty() {
-        if options.pid.is_some() || options.comm.is_some() {
-            notes.push(
-                "no active process or local session matched the filter; try another -p/-c value or inspect a saved session with --db"
-                    .to_string(),
-            );
-        } else {
-            notes.push(
-                "no active known agent process or local Claude/Codex session found; use -c/-p, run an agent, or pass --db"
-                    .to_string(),
-            );
-        }
-    }
-
-    AgentTopOutput {
-        mode: "live sessions",
-        db: None,
-        duration_s: 0.0,
-        view_events: 0,
-        llm_calls: 0,
-        total_tokens: rows.iter().filter_map(|row| row.tokens).sum(),
-        rows,
-        sections: Vec::new(),
-        failures: Vec::new(),
-        notes,
-    }
 }
 
 fn collect_live_session_path_evidence(
@@ -1611,27 +1576,6 @@ fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
     });
 }
 
-fn matches_top_filter(
-    pid: Option<u32>,
-    comm: Option<&str>,
-    command: Option<&str>,
-    options: &TopOptions,
-) -> bool {
-    if let Some(wanted_pid) = options.pid {
-        return pid == Some(wanted_pid);
-    }
-    if let Some(wanted_comm) = &options.comm {
-        let wanted_comm = wanted_comm.to_ascii_lowercase();
-        return comm
-            .map(|comm| comm.to_ascii_lowercase().contains(&wanted_comm))
-            .unwrap_or(false)
-            || command
-                .map(|command| command.to_ascii_lowercase().contains(&wanted_comm))
-                .unwrap_or(false);
-    }
-    true
-}
-
 fn discover_local_top_sessions(options: &TopOptions, limit: usize) -> Vec<LocalSession> {
     local_sessions::discover(limit)
         .into_iter()
@@ -1641,34 +1585,8 @@ fn discover_local_top_sessions(options: &TopOptions, limit: usize) -> Vec<LocalS
         .collect()
 }
 
-fn short_session_id(id: &str) -> String {
-    let id = id.trim();
-    if id.is_empty() {
-        return "session".to_string();
-    }
-    let compact = id
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(id)
-        .trim_end_matches(".jsonl");
-    const MAX_SESSION_ID_CHARS: usize = 12;
-    if compact.chars().count() <= MAX_SESSION_ID_CHARS {
-        return compact.to_string();
-    }
-    let head = compact.chars().take(6).collect::<String>();
-    let tail = compact
-        .chars()
-        .rev()
-        .take(5)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("{head}.{tail}")
-}
-
 fn load_snapshot_and_resources(db: &str) -> StorageResult<(Snapshot, ResourcePeaks)> {
-    let mut view = MaterializedView::open_sqlite(db)?;
+    let view = SqliteSource::open(db)?.into_view();
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
     })?;

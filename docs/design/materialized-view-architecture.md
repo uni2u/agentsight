@@ -6,12 +6,12 @@ AgentSight uses a live materialized view as the boundary between capture and
 consumption.
 
 ```
-Sources / analyzers                 View boundary                     Consumers
--------------------                 -------------                     ---------
-SSL / process / stdio / system  ->  StorageAnalyzer/ViewProjector  ->  FileLogger
-HTTPParser / SSEProcessor           SQLite materialized tables    ->  SQLite DB
-Proc + session sources              MaterializedView facade       ->  OTel
-TimestampNormalizer / filters       ViewUpdate stream             ->  CLI/API
+Sources / analyzers                 View boundary                 Consumers
+-------------------                 -------------                 ---------
+SSL / process / stdio / system  ->  StorageAnalyzer             ->  FileLogger
+HTTPParser / SSEProcessor       ->  MaterializedView            ->  SqliteSink
+Proc + session sources              ViewUpdate stream               OTel
+TimestampNormalizer / filters       in-memory query state           CLI/API
 ```
 
 The important rule is that persistent outputs are derived from the view, not
@@ -45,8 +45,8 @@ Runner event stream
   -> analyzer chain
   -> StorageAnalyzer
        -> normalize Event into CanonicalEvent
-       -> ViewProjector ingests CanonicalEvent
-       -> materialized rows are written/updated
+       -> ViewProjector produces ViewUpdate rows
+       -> MaterializedView updates in-memory state
        -> ViewUpdateSink consumers are notified
 ```
 
@@ -89,7 +89,7 @@ pub trait ViewUpdateSink: Send {
 Current consumers:
 
 - `FileLogger`: writes view-update JSONL for `record`/`trace`.
-- `SqliteStore`: persists materialized view tables when `--db` is provided.
+- `SqliteSink`: persists selected materialized view tables when `--db` is provided.
 - `OtelExporter`: exports completed `llm_call` rows as GenAI spans.
 
 The same `FileLogger` type still implements `Analyzer` for debug subcommands,
@@ -124,11 +124,12 @@ There are two restore inputs:
 
 `db import` tries `ViewUpdate` first. If a line is not a view update, it falls
 back to the legacy `Event` parser and rebuilds view rows through
-`StorageAnalyzer`/`ViewProjector`.
+`MaterializedView`/`ViewProjector`.
 
 `stat --db`, `report --db`, `top --db --once`, `prompts --db`, and
-`db export` read the materialized tables through the `MaterializedView` query
-facade. Command code does not reach through to `SqliteStore` internals.
+`db export` load SQLite through `SqliteSource`, then query the in-memory
+`MaterializedView`. Command code does not reach through to `SqliteStore`
+internals.
 
 ## API Role
 
@@ -141,27 +142,26 @@ facade. Command code does not reach through to `SqliteStore` internals.
 ### record / trace
 
 ```
-runners -> analyzers -> StorageAnalyzer/ViewProjector
+runners -> analyzers -> StorageAnalyzer/MaterializedView
                                 |-> FileLogger(view JSONL)
-                                |-> SQLite materialized tables (--db)
+                                |-> SqliteSink(--db)
                                 |-> OtelExporter (--otel)
 ```
 
-If `--db` is not provided, `StorageAnalyzer` uses an in-memory SQLite view so
-FileLogger and OTel still consume the same view rows.
+If `--db` is not provided, `StorageAnalyzer` still builds the same in-memory
+view and emits the same view rows; no SQLite database is opened.
 
 ### top
 
-Live `top` still uses the live process/session view in `cmd_perf.rs`; it does
-not require SQLite. The architectural target is the same: maintain aggregate
-state incrementally and render from that state rather than rescanning raw data
-each frame.
+Live `top` uses a `LiveView` that owns the previous `/proc` snapshot and sticky
+session bindings. It does not require SQLite; CLI and TUI render from the
+current materialized output instead of each maintaining their own live state.
 
 ### stat / report
 
-When a DB is provided, commands read `SqliteStore::export_snapshot()` and query
-materialized tables. Without a DB, local agent session JSONL remains available as
-a source for local-only summaries.
+When a DB is provided, commands load it through `SqliteSource` and then read
+through `MaterializedView`. Without a DB, local agent session JSONL remains
+available as a source for local-only summaries.
 
 ## Current Code Layout
 
@@ -169,22 +169,24 @@ a source for local-only summaries.
 collector/src/sources/
   proc.rs          /proc process/resource sampling source helpers
   session.rs       local Claude/Codex/Gemini/OpenClaw JSONL source helpers
+  sqlite.rs        SQLite source that materializes DB rows into MaterializedView
 
 collector/src/view/
-  mod.rs           MaterializedView: query/import facade over materialized data
-  types.rs         query-facing row/snapshot type exports
+  mod.rs           MaterializedView: in-memory aggregate/query state
+  types.rs         owned query-facing rows, snapshots, and ViewUpdate contracts
 
 collector/src/sinks/
   file_logger.rs   ViewUpdateSink for record/trace JSONL; raw Analyzer for debug
   otel.rs          ViewUpdateSink for completed LLM calls
+  sqlite.rs        ViewUpdateSink for SQLite persistence
 
 collector/src/output/
   format.rs        CLI formatting and output structs
   tui.rs           live top TUI rendering
 
 collector/src/framework/storage/
-  analyzer.rs      StorageAnalyzer: event-stream analyzer that owns the view
-  sqlite.rs        SqliteStore + ViewProjector + ViewUpdateSink rows
+  analyzer.rs      StorageAnalyzer: event-stream analyzer that drives the view
+  sqlite.rs        SQLite row store + Event-to-ViewUpdate projection
 
 collector/src/cmd_trace.rs
   builds runners/analyzers and attaches view sinks
@@ -196,10 +198,6 @@ collector/src/cli_db.rs
 
 ## Remaining Work
 
-The raw SQL adapter layer is gone and default recording no longer persists raw
-events. The command-facing module split is now in place. The remaining cleanup is
-mostly semantic consolidation inside the view:
-
-- move repeated local-session merge logic out of `cmd_perf.rs` and `cli_db.rs`;
-- optionally split `SqliteStore` into source/sink modules once the command
-  layer is thin enough to make that split useful.
+The raw SQL adapter layer is gone, default recording no longer persists raw
+events, SQLite is split into source/sink boundary modules, row/update types are
+owned by `view::types`, and live top has a `LiveView` state object.

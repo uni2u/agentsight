@@ -716,7 +716,7 @@ impl Analyzer for HTTPParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::storage::{SqliteStore, ViewProjector};
+    use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
     use futures::StreamExt;
     use hpack::Encoder as HpackEncoder;
     use serde_json::json;

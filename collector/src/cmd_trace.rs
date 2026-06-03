@@ -23,7 +23,7 @@ use crate::output::{
     print_web_server_error, print_web_server_start,
 };
 use crate::server::WebServer;
-use crate::sinks::{FileLogger, OtelExporter};
+use crate::sinks::{FileLogger, OtelExporter, SqliteSink};
 use crate::sources::proc::{PidSeed, ProcSnapshot};
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
@@ -342,14 +342,13 @@ pub(crate) fn build_trace_agent(
 
     // Add global materialized view. The file log and optional exporters consume
     // view updates, not raw runner events.
-    let mut storage = if let Some(path) = db_path {
-        StorageAnalyzer::new(path).map_err(|e| {
+    let mut storage = StorageAnalyzer::new()
+        .map_err(|e| RunnerError::from(format!("failed to initialize live view: {}", e)))?;
+    if let Some(path) = db_path {
+        storage = storage.add_view_sink(Box::new(SqliteSink::new(path).map_err(|e| {
             RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
-        })?
-    } else {
-        StorageAnalyzer::in_memory()
-            .map_err(|e| RunnerError::from(format!("failed to initialize live view: {}", e)))?
-    };
+        })?));
+    }
     storage = storage.add_view_sink(Box::new(make_file_logger(
         log_file,
         rotate_logs,

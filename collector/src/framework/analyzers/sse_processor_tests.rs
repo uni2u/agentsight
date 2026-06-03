@@ -8,7 +8,7 @@ mod sse_processor_tests {
     use super::super::sse_processor::SSEProcessor;
     use crate::framework::core::Event;
     use crate::framework::runners::EventStream;
-    use crate::framework::storage::{SqliteStore, ViewProjector};
+    use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
     use futures::stream;
     use futures::stream::StreamExt;
     use serde_json::json;
