@@ -832,6 +832,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 ssl_filter: vec!["data=0\\r\\n\\r\\n".to_string()],
                 ssl_http: true,
                 process: true,
+                stdio: pid.is_some(),
                 stdio_max_bytes: 8192,
                 system: true,
                 system_interval: 2,

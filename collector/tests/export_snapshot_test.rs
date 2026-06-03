@@ -361,9 +361,10 @@ fn top_without_db_uses_live_process_view() {
     assert!(top.contains("live sessions"), "{top}");
     assert!(top.contains("SESSION"), "{top}");
     assert!(top.contains("AGENT"), "{top}");
-    assert!(top.contains("PID"), "{top}");
-    assert!(top.contains("CPU%"), "{top}");
-    assert!(top.contains("TRACE"), "{top}");
+    assert!(top.contains("STATE"), "{top}");
+    assert!(top.contains("AGE"), "{top}");
+    assert!(top.contains("ACTIVITY"), "{top}");
+    assert!(top.contains("EVIDENCE"), "{top}");
 }
 
 #[test]
@@ -389,7 +390,8 @@ fn top_discovers_agent_native_local_sessions() {
     assert!(top.contains("live sessions"), "{top}");
     assert!(top.contains("codex:rollout-test"), "{top}");
     assert!(top.contains("TOKENS"), "{top}");
-    assert!(top.contains("TOOLS"), "{top}");
+    assert!(top.contains("ACTIVITY"), "{top}");
     assert!(top.contains("15"), "{top}");
+    assert!(top.contains("1 tool"), "{top}");
     assert!(top.contains("fix the test"), "{top}");
 }

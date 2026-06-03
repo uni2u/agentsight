@@ -141,7 +141,10 @@ pub fn builtin_adapters() -> Vec<SqlAdapter> {
                    WHEN EXISTS (
                      SELECT 1 FROM canonical_events
                      WHERE host LIKE '%datadoghq.com'
-                       AND attributes_json LIKE '%tengu_api_success%'
+                       AND (
+                         attributes_json LIKE '%tengu_api_success%'
+                         OR attributes_json LIKE '%tengu_tool_use_success%'
+                       )
                    ) THEN 1
                    ELSE 0
                  END",
@@ -190,6 +193,11 @@ pub fn builtin_adapters() -> Vec<SqlAdapter> {
                      WHERE json_extract(attributes_json, '$.program') = 'gemini'
                         OR host LIKE '%cloudcode-pa.googleapis.com%'
                         OR LOWER(attributes_json) LIKE '%geminicli/%'
+                        OR (
+                          source = 'stdio'
+                          AND LOWER(attributes_json) LIKE '%\"stats\"%'
+                          AND LOWER(attributes_json) LIKE '%\"models\"%'
+                        )
                    ) THEN 1
                    WHEN EXISTS (
                      SELECT 1 FROM llm_calls
@@ -199,10 +207,16 @@ pub fn builtin_adapters() -> Vec<SqlAdapter> {
                    ELSE 0
                  END",
             ),
-            sql_files: &[(
-                "project_sessions.sql",
-                include_str!("../../../adapters/sql/gemini-cli/project_sessions.sql"),
-            )],
+            sql_files: &[
+                (
+                    "project_stdio_tokens.sql",
+                    include_str!("../../../adapters/sql/gemini-cli/project_stdio_tokens.sql"),
+                ),
+                (
+                    "project_sessions.sql",
+                    include_str!("../../../adapters/sql/gemini-cli/project_sessions.sql"),
+                ),
+            ],
         },
     ]
 }
@@ -519,20 +533,108 @@ mod tests {
             42,
             "HTTP Client".to_string(),
             json!({
-                "data": "{\"message\":\"tengu_api_success\",\"input_tokens\":445,\"output_tokens\":13,\"cached_input_tokens\":0}"
+                "data": "{\"message\":\"tengu_api_success\",\"model\":\"claude-opus-4-6\",\"input_tokens\":445,\"output_tokens\":13,\"cached_input_tokens\":0}"
             }),
         );
         store.insert_event(&raw, &mut projector).unwrap();
 
         run_sql_adapters(&mut store, "claude-code").unwrap();
-        let (source, total): (String, i64) = store
+        let (source, model, total): (String, String, i64) = store
             .connection()
-            .query_row("SELECT source, total_tokens FROM token_usage", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT source, model, total_tokens FROM token_usage",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
         assert_eq!(source, "claude_telemetry_fallback");
+        assert_eq!(model, "claude-opus-4-6");
         assert_eq!(total, 458);
+    }
+
+    #[test]
+    fn claude_telemetry_projects_raw_tool_use() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut projector = GenericProjector::new();
+        let raw = Event::new_with_timestamp(
+            10,
+            "ssl".to_string(),
+            42,
+            "HTTP Client".to_string(),
+            json!({
+                "data": "{\"message\":\"tengu_tool_use_success\",\"tool_name\":\"Bash\",\"duration_ms\":59,\"request_id\":\"req_1\",\"tool_input_size_bytes\":31,\"tool_result_size_bytes\":23}"
+            }),
+        );
+        store.insert_event(&raw, &mut projector).unwrap();
+
+        run_sql_adapters(&mut store, "claude-code").unwrap();
+        let (tool_name, duration_ms): (String, i64) = store
+            .connection()
+            .query_row(
+                "SELECT tool_name, duration_ms FROM tool_calls WHERE adapter_id = 'claude-code'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tool_name, "Bash");
+        assert_eq!(duration_ms, 59);
+    }
+
+    #[test]
+    fn claude_adapter_projects_generic_http_client_tokens_by_target_pid() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut projector = GenericProjector::new();
+        let exec = Event::new_with_timestamp(
+            1,
+            "process".to_string(),
+            42,
+            "claude".to_string(),
+            json!({
+                "event": "EXEC",
+                "filename": "/home/user/.local/share/claude/versions/2.1.161"
+            }),
+        );
+        let req = Event::new_with_timestamp(
+            2,
+            "http_parser".to_string(),
+            42,
+            "HTTP Client".to_string(),
+            json!({
+                "tid": 7,
+                "message_type": "request",
+                "method": "POST",
+                "path": "/v1/messages",
+                "headers": { "host": "api.anthropic.com" },
+                "body": "{\"model\":\"claude-haiku-4-5-20251001\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            }),
+        );
+        let resp = Event::new_with_timestamp(
+            3,
+            "http_parser".to_string(),
+            42,
+            "HTTP Client".to_string(),
+            json!({
+                "tid": 7,
+                "message_type": "response",
+                "status_code": 200,
+                "body": "{\"usage\":{\"input_tokens\":11,\"output_tokens\":4}}"
+            }),
+        );
+        store.insert_event(&exec, &mut projector).unwrap();
+        store.insert_event(&req, &mut projector).unwrap();
+        store.insert_event(&resp, &mut projector).unwrap();
+
+        run_sql_adapters(&mut store, "claude-code").unwrap();
+        let (agent_type, total): (String, i64) = store
+            .connection()
+            .query_row(
+                "SELECT agent_type, total_tokens FROM agent_sessions WHERE agent_type = 'claude-code'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(agent_type, "claude-code");
+        assert_eq!(total, 15);
     }
 
     #[test]
@@ -613,6 +715,64 @@ mod tests {
         assert_eq!(agent_type, "gemini-cli");
         assert_eq!(model, "gemini-2.5-pro");
         assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn gemini_cli_adapter_projects_stdout_json_stats() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut projector = GenericProjector::new();
+        let req = Event::new_with_timestamp(
+            1,
+            "http_parser".to_string(),
+            77,
+            "MainThread".to_string(),
+            json!({
+                "tid": 7001,
+                "message_type": "request",
+                "method": "POST",
+                "path": "/v1internal:streamGenerateContent?alt=sse",
+                "headers": { "host": "cloudcode-pa.googleapis.com", "user-agent": "GeminiCLI/0.28.1" },
+                "body": "{\"model\":\"gemini-2.5-flash-lite\",\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]}]}"
+            }),
+        );
+        let stdout = Event::new_with_timestamp(
+            2,
+            "stdio".to_string(),
+            77,
+            "node".to_string(),
+            json!({
+                "direction": "WRITE",
+                "fd_role": "stdout",
+                "data": "{\"session_id\":\"s1\",\"response\":\"hi\",\"stats\":{\"models\":{\"gemini-2.5-flash-lite\":{\"api\":{\"totalRequests\":1,\"totalErrors\":0,\"totalLatencyMs\":1234},\"tokens\":{\"input\":8744,\"prompt\":8744,\"candidates\":6,\"total\":8850,\"cached\":0,\"thoughts\":100,\"tool\":0}}},\"tools\":{\"totalCalls\":0,\"totalSuccess\":0,\"totalFail\":0,\"totalDurationMs\":0,\"totalDecisions\":{\"accept\":0,\"reject\":0,\"modify\":0,\"auto_accept\":0},\"byName\":{}},\"files\":{\"totalLinesAdded\":0,\"totalLinesRemoved\":0}}}"
+            }),
+        );
+        store.insert_event(&req, &mut projector).unwrap();
+        store.insert_event(&stdout, &mut projector).unwrap();
+
+        run_sql_adapters(&mut store, "gemini-cli").unwrap();
+        let (source, model, input, output, total): (String, String, i64, i64, i64) = store
+            .connection()
+            .query_row(
+                "SELECT source, model, input_tokens, output_tokens, total_tokens FROM token_usage",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(source, "gemini_cli_stdout_stats");
+        assert_eq!(model, "gemini-2.5-flash-lite");
+        assert_eq!(input, 8744);
+        assert_eq!(output, 106);
+        assert_eq!(total, 8850);
+
+        let session_total: i64 = store
+            .connection()
+            .query_row(
+                "SELECT total_tokens FROM agent_sessions WHERE agent_type = 'gemini-cli'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_total, 8850);
     }
 
     #[test]

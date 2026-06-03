@@ -47,6 +47,8 @@ pub(crate) struct AgentTopRow {
     pub(crate) session: String,
     pub(crate) agent: String,
     pub(crate) pid: Option<u32>,
+    pub(crate) model: Option<String>,
+    pub(crate) age_s: Option<f64>,
     pub(crate) cpu_percent: f64,
     pub(crate) rss_mb: u64,
     pub(crate) processes: usize,
@@ -59,6 +61,94 @@ pub(crate) struct AgentTopRow {
     pub(crate) unattributed: usize,
     pub(crate) trace: String,
     pub(crate) command: String,
+}
+
+impl AgentTopRow {
+    pub(crate) fn state_label(&self) -> &'static str {
+        if self.failures > 0 {
+            "failed"
+        } else if self.trace.contains("proc") {
+            "live"
+        } else if self.trace.contains("local") {
+            "history"
+        } else if self.trace.contains("db") {
+            "saved"
+        } else {
+            "-"
+        }
+    }
+
+    pub(crate) fn age_label(&self) -> String {
+        self.age_s
+            .map(format_duration_compact)
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    pub(crate) fn token_label(&self) -> String {
+        self.tokens
+            .map(format_count)
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    pub(crate) fn model_label(&self) -> String {
+        self.model.clone().unwrap_or_else(|| "-".to_string())
+    }
+
+    pub(crate) fn activity_label(&self) -> String {
+        let mut parts = Vec::new();
+        if self.processes > 0 {
+            parts.push(format!("{} proc", self.processes));
+        }
+        if self.tools > 0 {
+            parts.push(format!("{} tool", self.tools));
+        }
+        if self.execs > 0 {
+            parts.push(format!("{} exec", self.execs));
+        }
+        if self.failures > 0 {
+            parts.push(format!("{} fail", self.failures));
+        }
+        if self.files > 0 {
+            parts.push(format!("{} file", self.files));
+        }
+        if self.network > 0 {
+            parts.push(format!("{} net", self.network));
+        }
+        if parts.is_empty() {
+            "-".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+
+    pub(crate) fn health_label(&self) -> String {
+        if self.cpu_percent == 0.0 && self.rss_mb == 0 {
+            "-".to_string()
+        } else {
+            format!("{:.1}% {}", self.cpu_percent, format_mb(self.rss_mb))
+        }
+    }
+
+    pub(crate) fn evidence_label(&self) -> String {
+        let mut parts = Vec::new();
+        if self.trace.contains("local") {
+            parts.push("logs");
+        }
+        if self.trace.contains("proc") {
+            parts.push("/proc");
+        }
+        if self.trace.contains("ebpf") {
+            parts.push("eBPF");
+        }
+        if self.trace.contains("db") {
+            parts.push("db");
+        }
+        if parts.is_empty() {
+            self.trace.clone()
+        } else {
+            parts.join("+")
+        }
+    }
 }
 
 pub(crate) struct AgentTopOutput<'a> {
@@ -296,50 +386,28 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     );
     println!();
     println!(
-        "{:<18} {:<10} {:>7} {:>6} {:>7} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} COMMAND",
-        "SESSION",
-        "AGENT",
-        "PID",
-        "CPU%",
-        "RSS",
-        "PROCS",
-        "TOKENS",
-        "TOOLS",
-        "EXECS",
-        "FAIL",
-        "FILES",
-        "NET",
-        "UNATTR",
-        "TRACE"
+        "{:<18} {:<10} {:<8} {:>6} {:<18} {:>8} {:<30} {:<12} {:<12} CONTEXT",
+        "SESSION", "AGENT", "STATE", "AGE", "MODEL", "TOKENS", "ACTIVITY", "HEALTH", "EVIDENCE"
     );
     for row in &top.rows {
         println!(
-            "{:<18} {:<10} {:>7} {:>6.1} {:>7} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} {}",
+            "{:<18} {:<10} {:<8} {:>6} {:<18} {:>8} {:<30} {:<12} {:<12} {}",
             truncate(&row.session, 18),
             truncate(&row.agent, 10),
-            row.pid
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            row.cpu_percent,
-            format_mb(row.rss_mb),
-            row.processes,
-            row.tokens
-                .map(format_count)
-                .unwrap_or_else(|| "-".to_string()),
-            row.tools,
-            row.execs,
-            row.failures,
-            row.files,
-            row.network,
-            row.unattributed,
-            truncate(&row.trace, 10),
-            truncate(&row.command, 80),
+            row.state_label(),
+            row.age_label(),
+            truncate(&row.model_label(), 18),
+            row.token_label(),
+            truncate(&row.activity_label(), 30),
+            truncate(&row.health_label(), 12),
+            truncate(&row.evidence_label(), 12),
+            truncate(&row.command, 48),
         );
     }
     if top.rows.is_empty() {
         println!(
-            "{:<18} {:<10} {:>7} {:>6} {:>7} {:>5} {:>8} {:>5} {:>6} {:>5} {:>5} {:>4} {:>6} {:<10} -",
-            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-"
+            "{:<18} {:<10} {:<8} {:>6} {:<18} {:>8} {:<30} {:<12} {:<12} -",
+            "-", "-", "-", "-", "-", "-", "-", "-", "-"
         );
     }
     println!();
@@ -661,6 +729,19 @@ fn format_mb(value: u64) -> String {
         format!("{:.1}G", value as f64 / 1024.0)
     } else {
         format!("{value}M")
+    }
+}
+
+fn format_duration_compact(seconds: f64) -> String {
+    let seconds = seconds.max(0.0).round() as u64;
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3_600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h", seconds / 3_600)
+    } else {
+        format!("{}d", seconds / 86_400)
     }
 }
 

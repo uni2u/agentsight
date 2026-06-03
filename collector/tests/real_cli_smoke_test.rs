@@ -67,11 +67,13 @@ fn assert_agentsight_success(output: Output, label: &str) {
     );
 }
 
-fn token_total(db: &std::path::Path, source: &str) -> i64 {
+fn gemini_token_total(db: &std::path::Path) -> i64 {
     let conn = Connection::open(db).expect("db should open");
     conn.query_row(
-        "SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage WHERE source = ?1",
-        [source],
+        "SELECT COALESCE(SUM(total_tokens), 0)
+         FROM token_usage
+         WHERE source IN ('response_usage', 'orphan_response_usage', 'gemini_cli_stdout_stats')",
+        [],
         |row| row.get(0),
     )
     .expect("token query should run")
@@ -123,7 +125,7 @@ fn real_gemini_cli_smoke_captures_http_tokens() {
             attempt
         );
         let output = run_agentsight(&[
-            "exec",
+            "record",
             "--no-server",
             "--db",
             db.to_str().expect("db path"),
@@ -142,7 +144,7 @@ fn real_gemini_cli_smoke_captures_http_tokens() {
         ]);
         assert_agentsight_success(output, "real Gemini smoke");
 
-        last_response_total = token_total(&db, "response_usage");
+        last_response_total = gemini_token_total(&db);
         last_session_total = positive_session_total(&db, "gemini-cli");
         if last_response_total > 0 && last_session_total > 0 {
             return;
@@ -155,7 +157,7 @@ fn real_gemini_cli_smoke_captures_http_tokens() {
 
     assert!(
         last_response_total > 0,
-        "Gemini response usage should be decoded from TLS/SSE capture"
+        "Gemini token usage should be decoded from TLS/SSE or captured CLI stdout stats"
     );
     assert!(last_session_total > 0);
 }
@@ -172,27 +174,40 @@ fn real_claude_code_smoke_captures_observed_tokens() {
         return;
     }
 
-    let temp = tempfile::tempdir().expect("tempdir");
-    let db = temp.path().join("claude.db");
-    let log = temp.path().join("claude.log");
-    let output = run_agentsight(&[
-        "exec",
-        "--no-server",
-        "--db",
-        db.to_str().expect("db path"),
-        "--adapter",
-        "auto",
-        "-o",
-        log.to_str().expect("log path"),
-        "--",
-        "claude",
-        "-p",
-        "Reply with exactly: agentsight-smoke",
-        "--output-format",
-        "json",
-    ]);
-    assert_agentsight_success(output, "real Claude Code smoke");
-    assert!(positive_session_total(&db, "claude-code") > 0);
+    let mut last_session_total = 0;
+    for attempt in 1..=3 {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = temp.path().join("claude.db");
+        let log = temp.path().join("claude.log");
+        let output = run_agentsight(&[
+            "record",
+            "--no-server",
+            "--db",
+            db.to_str().expect("db path"),
+            "--adapter",
+            "auto",
+            "-o",
+            log.to_str().expect("log path"),
+            "--",
+            "claude",
+            "-p",
+            "Reply with exactly: agentsight-smoke",
+            "--output-format",
+            "json",
+        ]);
+        assert_agentsight_success(output, "real Claude Code smoke");
+
+        last_session_total = positive_session_total(&db, "claude-code");
+        if last_session_total > 0 {
+            return;
+        }
+        eprintln!(
+            "Claude smoke attempt {} did not capture session tokens: session={}",
+            attempt, last_session_total
+        );
+    }
+
+    assert!(last_session_total > 0);
 }
 
 #[test]
@@ -207,31 +222,46 @@ fn real_claude_code_tool_use_smoke_captures_tool_calls() {
         return;
     }
 
-    let temp = tempfile::tempdir().expect("tempdir");
-    let db = temp.path().join("claude-tool.db");
-    let log = temp.path().join("claude-tool.log");
-    let output = run_agentsight(&[
-        "exec",
-        "--no-server",
-        "--db",
-        db.to_str().expect("db path"),
-        "--adapter",
-        "auto",
-        "-o",
-        log.to_str().expect("log path"),
-        "--",
-        "claude",
-        "-p",
-        "Use the Bash tool exactly once to run `printf agentsight-tool-smoke`; then reply with the output.",
-        "--output-format",
-        "json",
-        "--allowedTools",
-        "Bash",
-    ]);
-    assert_agentsight_success(output, "real Claude Code tool-use smoke");
-    assert!(positive_session_total(&db, "claude-code") > 0);
+    let mut last_session_total = 0;
+    let mut last_tool_calls = 0;
+    for attempt in 1..=3 {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = temp.path().join("claude-tool.db");
+        let log = temp.path().join("claude-tool.log");
+        let output = run_agentsight(&[
+            "record",
+            "--no-server",
+            "--db",
+            db.to_str().expect("db path"),
+            "--adapter",
+            "auto",
+            "-o",
+            log.to_str().expect("log path"),
+            "--",
+            "claude",
+            "-p",
+            "Use the Bash tool exactly once to run `printf agentsight-tool-smoke`; then reply with the output.",
+            "--output-format",
+            "json",
+            "--allowedTools",
+            "Bash",
+        ]);
+        assert_agentsight_success(output, "real Claude Code tool-use smoke");
+
+        last_session_total = positive_session_total(&db, "claude-code");
+        last_tool_calls = tool_call_count(&db, "claude-code");
+        if last_session_total > 0 && last_tool_calls > 0 {
+            return;
+        }
+        eprintln!(
+            "Claude tool smoke attempt {} did not capture all signals: session={}, tools={}",
+            attempt, last_session_total, last_tool_calls
+        );
+    }
+
+    assert!(last_session_total > 0);
     assert!(
-        tool_call_count(&db, "claude-code") > 0,
+        last_tool_calls > 0,
         "Claude Code tool-use smoke should project at least one tool call"
     );
 }

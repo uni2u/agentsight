@@ -2,7 +2,9 @@
 #include <argp.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <dirent.h>
 #include <errno.h>
+#include <ctype.h>
 #include <locale.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -27,12 +29,14 @@ static char *event_buf;
 
 struct env {
 	pid_t pid;
+	pid_t session_id;
 	int uid;
 	char *comm;
 	bool all_fds;
 	int max_bytes;
 } env = {
 	.pid = INVALID_PID,
+	.session_id = INVALID_PID,
 	.uid = INVALID_UID,
 	.comm = NULL,
 	.all_fds = false,
@@ -44,20 +48,23 @@ const char *argp_program_bug_address = "https://github.com/eunomia-bpf/agentsigh
 const char argp_program_doc[] =
 	"Capture stdin/stdout/stderr payloads for a target process and output JSON.\n"
 	"\n"
-	"USAGE: stdiocap -p PID [OPTIONS]\n"
+	"USAGE: stdiocap (-p PID | --session SID) [OPTIONS]\n"
 	"\n"
 	"EXAMPLES:\n"
 	"    ./stdiocap -p 12345\n"
+	"    ./stdiocap --session 12345\n"
 	"    ./stdiocap -p 12345 --all-fds\n"
 	"    ./stdiocap -p 12345 -c python\n";
 
 enum {
 	OPT_ALL_FDS = 1001,
 	OPT_MAX_BYTES,
+	OPT_SESSION,
 };
 
 static const struct argp_option opts[] = {
 	{"pid", 'p', "PID", 0, "Trace this PID only."},
+	{"session", OPT_SESSION, "SID", 0, "Trace all PIDs in this process session."},
 	{"uid", 'u', "UID", 0, "Trace this UID only."},
 	{"comm", 'c', "COMMAND", 0, "Trace only commands matching string."},
 	{"all-fds", OPT_ALL_FDS, NULL, 0, "Capture all FDs instead of only stdin/stdout/stderr."},
@@ -71,6 +78,9 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 	switch (key) {
 	case 'p':
 		env.pid = atoi(arg);
+		break;
+	case OPT_SESSION:
+		env.session_id = atoi(arg);
 		break;
 	case 'u':
 		env.uid = atoi(arg);
@@ -92,8 +102,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 			env.max_bytes = MAX_BUF_SIZE;
 		break;
 	case ARGP_KEY_END:
-		if (env.pid == INVALID_PID)
-			argp_error(state, "-p/--pid is required");
+		if (env.pid == INVALID_PID && env.session_id == INVALID_PID)
+			argp_error(state, "-p/--pid or --session is required");
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -186,6 +196,53 @@ static bool resolve_fd_target(pid_t pid, int fd, char *buf, size_t buf_size)
 
 	buf[len] = '\0';
 	return true;
+}
+
+static bool is_numeric_name(const char *name)
+{
+	if (!name || !*name)
+		return false;
+	for (const char *p = name; *p; p++) {
+		if (!isdigit((unsigned char)*p))
+			return false;
+	}
+	return true;
+}
+
+static int refresh_session_pids(int map_fd, pid_t session_id)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int count = 0;
+
+	if (map_fd < 0 || session_id <= 0)
+		return 0;
+
+	dir = opendir("/proc");
+	if (!dir)
+		return -errno;
+
+	while ((entry = readdir(dir)) != NULL) {
+		char *end = NULL;
+		unsigned long raw_pid;
+		__u32 pid;
+		__u64 present = 1;
+
+		if (!is_numeric_name(entry->d_name))
+			continue;
+		errno = 0;
+		raw_pid = strtoul(entry->d_name, &end, 10);
+		if (errno || !end || *end != '\0' || raw_pid == 0 || raw_pid > UINT32_MAX)
+			continue;
+		pid = (__u32)raw_pid;
+		if (getsid((pid_t)pid) != session_id)
+			continue;
+		if (bpf_map_update_elem(map_fd, &pid, &present, BPF_ANY) == 0)
+			count++;
+	}
+
+	closedir(dir);
+	return count;
 }
 
 static void print_json_escaped(const char *buf, unsigned int len)
@@ -298,6 +355,7 @@ int main(int argc, char **argv)
 	LIBBPF_OPTS(bpf_object_open_opts, open_opts);
 	struct stdiocap_bpf *obj = NULL;
 	struct ring_buffer *rb = NULL;
+	int tracked_pids_fd = -1;
 	int err;
 
 	err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -317,6 +375,7 @@ int main(int argc, char **argv)
 	obj->rodata->targ_uid = env.uid == INVALID_UID ? 0xffffffffU : (__u32)env.uid;
 	obj->rodata->trace_stdio_only = !env.all_fds;
 	obj->rodata->max_capture_bytes = (__u32)env.max_bytes;
+	obj->rodata->use_tracked_pids = env.session_id != INVALID_PID;
 
 	err = stdiocap_bpf__load(obj);
 	if (err) {
@@ -328,6 +387,13 @@ int main(int argc, char **argv)
 	if (err) {
 		warn("failed to attach BPF object: %d\n", err);
 		goto cleanup;
+	}
+
+	tracked_pids_fd = bpf_map__fd(obj->maps.tracked_pids);
+	if (env.session_id != INVALID_PID) {
+		err = refresh_session_pids(tracked_pids_fd, env.session_id);
+		if (err < 0)
+			warn("warning: failed to scan initial session PIDs: %s\n", strerror(-err));
 	}
 
 	event_buf = malloc(MAX_BUF_SIZE + 1);
@@ -351,6 +417,11 @@ int main(int argc, char **argv)
 	}
 
 	while (!exiting) {
+		if (env.session_id != INVALID_PID) {
+			int refreshed = refresh_session_pids(tracked_pids_fd, env.session_id);
+			if (refreshed < 0 && verbose)
+				warn("warning: failed to refresh session PIDs: %s\n", strerror(-refreshed));
+		}
 		err = ring_buffer__poll(rb, PERF_POLL_TIMEOUT_MS);
 		if (err == -EINTR) {
 			err = 0;

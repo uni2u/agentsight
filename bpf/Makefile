@@ -130,7 +130,7 @@ unit-test: test_process_utils test_process_filter test_process_ext_map_flush tes
 	@echo "Running process_ext types tests..."
 	@./test_process_ext_types
 
-runtime-test: process
+runtime-test: process stdiocap
 	@echo ""
 	@echo "Running process runtime tests..."
 	@if [ "$$(id -u)" -eq 0 ]; then \
@@ -139,6 +139,15 @@ runtime-test: process
 		sudo -n env PATH="$$PATH" python3 tests/test_process_runtime.py; \
 	else \
 		echo "SKIP: process runtime tests require root or cached sudo"; \
+	fi
+	@echo ""
+	@echo "Running stdiocap runtime tests..."
+	@if [ "$$(id -u)" -eq 0 ]; then \
+		python3 tests/test_stdiocap_runtime.py; \
+	elif sudo -n true >/dev/null 2>&1; then \
+		sudo -n env PATH="$$PATH" python3 tests/test_stdiocap_runtime.py; \
+	else \
+		echo "SKIP: stdiocap runtime tests require root or cached sudo"; \
 	fi
 
 .PHONY: integration-test

@@ -10,7 +10,7 @@ use crate::framework::core::Event;
 use crate::framework::runners::{ProcessRunner, Runner};
 use crate::framework::storage::{
     SnapshotOptions, SqliteStore,
-    sqlite::{Snapshot, StorageResult},
+    sqlite::{SessionRow, Snapshot, StorageResult},
 };
 use crossterm::{
     cursor::{Hide, Show},
@@ -622,17 +622,12 @@ fn render_session_table(
     let header = Row::new(vec![
         Cell::from("SESSION"),
         Cell::from("AGENT"),
-        Cell::from("PID"),
-        Cell::from("CPU"),
-        Cell::from("RSS"),
-        Cell::from("PROC"),
-        Cell::from("TOK"),
-        Cell::from("TOOLS"),
-        Cell::from("EXECS"),
-        Cell::from("FAIL"),
-        Cell::from("FILES"),
-        Cell::from("NET"),
-        Cell::from("TRACE"),
+        Cell::from("STATE"),
+        Cell::from("AGE"),
+        Cell::from("MODEL"),
+        Cell::from("TOKENS"),
+        Cell::from("HEALTH"),
+        Cell::from("ACTIVITY"),
     ])
     .style(
         Style::default()
@@ -643,41 +638,27 @@ fn render_session_table(
 
     let rows = top.rows.iter().map(|row| {
         Row::new(vec![
-            Cell::from(truncate_text(&row.session, 20)),
-            Cell::from(truncate_text(&row.agent, 10)),
-            Cell::from(
-                row.pid
-                    .map(|pid| pid.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-            ),
-            Cell::from(format!("{:.1}", row.cpu_percent)),
-            Cell::from(format!("{}m", row.rss_mb)),
-            Cell::from(row.processes.to_string()),
-            Cell::from(format_token_value(row.tokens)),
-            Cell::from(format_compact_usize(row.tools)),
-            Cell::from(format_compact_usize(row.execs)),
-            Cell::from(format_compact_usize(row.failures)),
-            Cell::from(format_compact_usize(row.files)),
-            Cell::from(format_compact_usize(row.network)),
-            Cell::from(truncate_text(&row.trace, 16)),
+            Cell::from(truncate_text(&row.session, 16)),
+            Cell::from(truncate_text(&row.agent, 8)),
+            Cell::from(row.state_label()),
+            Cell::from(row.age_label()),
+            Cell::from(truncate_text(&row.model_label(), 14)),
+            Cell::from(row.token_label()),
+            Cell::from(truncate_text(&row.health_label(), 10)),
+            Cell::from(truncate_text(&row.activity_label(), 40)),
         ])
         .style(row_style(row))
     });
 
     let widths = [
-        Constraint::Length(20),
-        Constraint::Length(10),
+        Constraint::Length(16),
         Constraint::Length(8),
         Constraint::Length(7),
-        Constraint::Length(7),
         Constraint::Length(6),
-        Constraint::Length(9),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(6),
-        Constraint::Length(7),
-        Constraint::Length(6),
-        Constraint::Min(10),
+        Constraint::Length(14),
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Min(12),
     ];
     let table = Table::new(rows, widths)
         .header(header)
@@ -770,13 +751,14 @@ fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'st
     match normalize_view_key(&options.view).as_str() {
         "processes" => vec![
             detail_line("session", row.session.clone()),
-            detail_line("agent", row.agent.clone()),
+            detail_line("agent", format!("{} ({})", row.agent, row.state_label())),
             detail_line(
                 "root pid",
                 row.pid
                     .map(|pid| pid.to_string())
                     .unwrap_or_else(|| "-".to_string()),
             ),
+            detail_line("age", row.age_label()),
             detail_line("processes", row.processes.to_string()),
             detail_line("cpu", format!("{:.1}%", row.cpu_percent)),
             detail_line("rss", format!("{} MB", row.rss_mb)),
@@ -784,25 +766,28 @@ fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'st
         ],
         "files" => vec![
             detail_line("session", row.session.clone()),
-            detail_line("trace", row.trace.clone()),
+            detail_line("evidence", row.evidence_label()),
             detail_line("execs", row.execs.to_string()),
             detail_line("failures", row.failures.to_string()),
             detail_line("file events", row.files.to_string()),
             detail_line("unattributed ebpf pids", row.unattributed.to_string()),
+            detail_line("trace", row.trace.clone()),
             detail_line("command", row.command.clone()),
         ],
         "network" => vec![
             detail_line("session", row.session.clone()),
-            detail_line("trace", row.trace.clone()),
+            detail_line("evidence", row.evidence_label()),
             detail_line("network events", row.network.to_string()),
             detail_line("tokens", format_token_value(row.tokens)),
             detail_line("tools", row.tools.to_string()),
+            detail_line("trace", row.trace.clone()),
             detail_line("command", row.command.clone()),
         ],
         "models" => vec![
             detail_line("session", row.session.clone()),
             detail_line("agent", row.agent.clone()),
-            detail_line("tokens", format_token_value(row.tokens)),
+            detail_line("model", row.model_label()),
+            detail_line("tokens", row.token_label()),
             detail_line("tools", row.tools.to_string()),
             detail_line("prompt or command", row.command.clone()),
         ],
@@ -811,14 +796,17 @@ fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'st
             detail_line(
                 "agent",
                 format!(
-                    "{}  pid={}  trace={}",
+                    "{}  state={}  pid={}",
                     row.agent,
+                    row.state_label(),
                     row.pid
                         .map(|pid| pid.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    row.trace
+                        .unwrap_or_else(|| "-".to_string())
                 ),
             ),
+            detail_line("model", row.model_label()),
+            detail_line("age", row.age_label()),
+            detail_line("evidence", row.evidence_label()),
             detail_line(
                 "resources",
                 format!(
@@ -828,17 +816,10 @@ fn session_detail_lines(row: &AgentTopRow, options: &TopOptions) -> Vec<Line<'st
             ),
             detail_line(
                 "activity",
-                format!(
-                    "tokens={} tools={} execs={} fail={} files={} net={} unattributed={}",
-                    format_token_value(row.tokens),
-                    row.tools,
-                    row.execs,
-                    row.failures,
-                    row.files,
-                    row.network,
-                    row.unattributed
-                ),
+                format!("tokens={} {}", row.token_label(), row.activity_label()),
             ),
+            detail_line("unattributed ebpf pids", row.unattributed.to_string()),
+            detail_line("trace", row.trace.clone()),
             detail_line("prompt or command", row.command.clone()),
         ],
     }
@@ -988,16 +969,6 @@ fn format_compact_i64(value: i64) -> String {
     if abs >= 1_000_000 {
         format!("{:.1}m", value as f64 / 1_000_000.0)
     } else if abs >= 10_000 {
-        format!("{:.1}k", value as f64 / 1_000.0)
-    } else {
-        value.to_string()
-    }
-}
-
-fn format_compact_usize(value: usize) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}m", value as f64 / 1_000_000.0)
-    } else if value >= 10_000 {
         format!("{:.1}k", value as f64 / 1_000.0)
     } else {
         value.to_string()
@@ -1186,6 +1157,8 @@ fn session_agent_rows(
     resources: &ResourcePeaks,
     options: &TopOptions,
 ) -> Vec<AgentTopRow> {
+    let top_model = dominant_model(snapshot);
+    let db_age_s = snapshot_age_s(snapshot);
     let mut processes = BTreeMap::<u32, ProcessMeta>::new();
     for row in &snapshot.audit_events {
         let Some(pid) = row.pid else { continue };
@@ -1279,6 +1252,8 @@ fn session_agent_rows(
             session: format!("db:{root_pid}"),
             agent,
             pid: Some(root_pid),
+            model: top_model.clone(),
+            age_s: db_age_s,
             cpu_percent: if rows.is_empty() {
                 resources.max_cpu_percent
             } else {
@@ -1316,6 +1291,8 @@ fn session_agent_rows(
                     .clone()
                     .unwrap_or_else(|| session.agent_type.clone()),
                 pid: session.pid,
+                model: session.model.clone().or_else(|| top_model.clone()),
+                age_s: session_age_s(session, snapshot),
                 cpu_percent: resources.max_cpu_percent,
                 rss_mb: resources.max_rss_mb,
                 processes: 1,
@@ -1539,6 +1516,8 @@ fn build_live_top<'a>(
             session: session.display_id,
             agent: session.agent,
             pid: live.as_ref().and_then(|row| row.pid),
+            model: session.model,
+            age_s: live.as_ref().and_then(|row| row.age_s).or(session.age_s),
             cpu_percent: live.as_ref().map(|row| row.cpu_percent).unwrap_or_default(),
             rss_mb: live.as_ref().map(|row| row.rss_mb).unwrap_or_default(),
             processes: live.as_ref().map(|row| row.processes).unwrap_or_default(),
@@ -1698,6 +1677,8 @@ fn live_process_rows(
             session: format!("proc:{root_pid}"),
             agent,
             pid: Some(root_pid),
+            model: None,
+            age_s: root.map(|proc_info| process_age_s(proc_info, sample)),
             cpu_percent,
             rss_mb,
             processes: family.len(),
@@ -1807,6 +1788,11 @@ fn process_cpu_percent(
     let process_start_s = proc_info.starttime_ticks as f64 / ticks_per_second;
     let elapsed_s = (sample.uptime_s - process_start_s).max(0.001);
     (proc_info.ticks as f64 / ticks_per_second) / elapsed_s * 100.0
+}
+
+fn process_age_s(proc_info: &ProcInfo, sample: &LiveSample) -> f64 {
+    let process_start_s = proc_info.starttime_ticks as f64 / ticks_per_second();
+    (sample.uptime_s - process_start_s).max(0.0)
 }
 
 fn live_roots(sample: &LiveSample, options: &TopOptions) -> Vec<u32> {
@@ -1988,6 +1974,7 @@ struct LocalTopSession {
     display_id: String,
     path: PathBuf,
     model: Option<String>,
+    age_s: Option<f64>,
     total_tokens: i64,
     tools: usize,
     prompt_preview: Option<String>,
@@ -2007,13 +1994,17 @@ fn discover_local_top_sessions(options: &TopOptions, limit: usize) -> Vec<LocalT
     let mut seen_sessions = HashSet::new();
     let target_sessions = limit.clamp(1, 25);
     let candidate_scan = target_sessions.saturating_mul(3).clamp(10, 75);
-    for (_, agent, path) in candidates.into_iter().take(candidate_scan) {
+    for (updated, agent, path) in candidates.into_iter().take(candidate_scan) {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        let Some(session) = parse_local_top_session(agent, &path, &content) else {
+        let Some(mut session) = parse_local_top_session(agent, &path, &content) else {
             continue;
         };
+        session.age_s = SystemTime::now()
+            .duration_since(updated)
+            .ok()
+            .map(|duration| duration.as_secs_f64());
         if !local_session_matches_filter(&session, options) {
             continue;
         }
@@ -2178,6 +2169,7 @@ fn parse_local_top_session(agent: &str, path: &Path, content: &str) -> Option<Lo
         display_id: format!("{agent}:{}", short_session_id(&session_id)),
         path: path.to_path_buf(),
         model,
+        age_s: None,
         total_tokens,
         tools,
         prompt_preview,
@@ -2391,6 +2383,33 @@ fn duration_s(snapshot: &Snapshot) -> f64 {
         (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
         _ => 0.0,
     }
+}
+
+fn snapshot_age_s(snapshot: &Snapshot) -> Option<f64> {
+    let duration = duration_s(snapshot);
+    (duration > 0.0).then_some(duration)
+}
+
+fn session_age_s(session: &SessionRow, snapshot: &Snapshot) -> Option<f64> {
+    let end = session
+        .end_timestamp_ms
+        .or(snapshot.summary.end_timestamp_ms)
+        .unwrap_or(session.start_timestamp_ms);
+    (end > session.start_timestamp_ms).then(|| (end - session.start_timestamp_ms) as f64 / 1000.0)
+}
+
+fn dominant_model(snapshot: &Snapshot) -> Option<String> {
+    snapshot
+        .token_summary
+        .iter()
+        .find(|row| row.group != "unknown" && row.total_tokens > 0)
+        .map(|row| row.group.clone())
+        .or_else(|| {
+            snapshot
+                .sessions
+                .iter()
+                .find_map(|session| session.model.clone())
+        })
 }
 
 fn number_or_string(value: Option<&Value>) -> Option<f64> {

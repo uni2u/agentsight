@@ -135,8 +135,13 @@ pub(crate) async fn run_exec(
         }
     }
 
-    let mut command_builder = tokio::process::Command::new(program);
-    command_builder.args(prog_args);
+    let mut command_builder = tokio::process::Command::new("/bin/sh");
+    command_builder
+        .arg("-c")
+        .arg("target=$1; shift; kill -STOP $$; exec \"$target\" \"$@\"")
+        .arg("agentsight-target")
+        .arg(program)
+        .args(prog_args);
     let target_ids = target_user_ids();
     if let Some((uid, gid)) = target_ids {
         println!("✓ Dropping child to uid={} gid={}", uid, gid);
@@ -152,9 +157,6 @@ pub(crate) async fn run_exec(
                 }
             }
             if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::raise(libc::SIGSTOP) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -177,6 +179,7 @@ pub(crate) async fn run_exec(
         ssl_filter: vec!["data=0\\r\\n\\r\\n".to_string()],
         ssl_http: true,
         process: true,
+        stdio: true,
         stdio_max_bytes: 8192,
         system: true,
         system_interval: 2,
@@ -218,6 +221,7 @@ pub(crate) async fn run_exec(
     println!("▶ Launching: {}", command.join(" "));
     println!("{}", "=".repeat(60));
 
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
     if let Err(e) = continue_child(child_pid) {
         stop_child(&mut child).await;
         return Err(e);

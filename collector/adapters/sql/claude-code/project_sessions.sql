@@ -54,6 +54,54 @@ WHERE adapter_id = 'claude-code'
   )
 GROUP BY pid, comm;
 
+INSERT OR REPLACE INTO agent_sessions (
+  id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
+  status, model, input_tokens, output_tokens, total_tokens, adapter_id, confidence,
+  attributes_json
+)
+SELECT
+  'claude-code-pid-' || t.pid,
+  'claude-code',
+  'Claude Code',
+  t.pid,
+  COALESCE((
+    SELECT a.comm
+    FROM audit_events a
+    WHERE a.audit_type = 'process'
+      AND a.pid = t.pid
+      AND (a.comm LIKE 'claude%' OR a.target LIKE '%/claude%')
+    ORDER BY a.timestamp_ms
+    LIMIT 1
+  ), MAX(t.comm)),
+  MIN(t.timestamp_ms),
+  MAX(t.timestamp_ms),
+  'observed',
+  COALESCE(
+    MAX(NULLIF(t.model, 'unknown')),
+    MAX((
+      SELECT NULLIF(c.model, 'unknown')
+      FROM llm_calls c
+      WHERE c.id = t.llm_call_id
+    )),
+    'unknown'
+  ),
+  COALESCE(SUM(t.input_tokens), 0),
+  COALESCE(SUM(t.output_tokens), 0),
+  COALESCE(SUM(t.total_tokens), 0),
+  'claude-code',
+  0.70,
+  json_object('projection', 'pid-token-window')
+FROM token_usage t
+WHERE t.total_tokens > 0
+  AND EXISTS (
+    SELECT 1
+    FROM audit_events a
+    WHERE a.audit_type = 'process'
+      AND a.pid = t.pid
+      AND (a.comm LIKE 'claude%' OR a.target LIKE '%/claude%')
+  )
+GROUP BY t.pid;
+
 INSERT OR REPLACE INTO conversations (
   id, session_id, start_timestamp_ms, end_timestamp_ms, model,
   input_tokens, output_tokens, total_tokens, status, attributes_json

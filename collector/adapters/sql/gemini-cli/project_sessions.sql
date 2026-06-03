@@ -72,6 +72,38 @@ WHERE c.kind = 'llm.request'
   )
 GROUP BY c.pid, c.comm;
 
+INSERT OR REPLACE INTO agent_sessions (
+  id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
+  status, model, input_tokens, output_tokens, total_tokens, adapter_id, confidence,
+  attributes_json
+)
+SELECT
+  'gemini-cli-pid-' || t.pid,
+  'gemini-cli',
+  'Gemini CLI',
+  t.pid,
+  COALESCE((
+    SELECT c.comm
+    FROM llm_calls c
+    WHERE c.pid = t.pid
+      AND c.host LIKE '%cloudcode-pa.googleapis.com%'
+    ORDER BY c.start_timestamp_ms
+    LIMIT 1
+  ), MAX(t.comm)),
+  MIN(t.timestamp_ms),
+  MAX(t.timestamp_ms),
+  'observed',
+  MAX(t.model),
+  COALESCE(SUM(t.input_tokens), 0),
+  COALESCE(SUM(t.output_tokens), 0),
+  COALESCE(SUM(t.total_tokens), 0),
+  'gemini-cli',
+  0.80,
+  json_object('projection', 'stdout-stats')
+FROM token_usage t
+WHERE t.source = 'gemini_cli_stdout_stats'
+GROUP BY t.pid;
+
 INSERT OR REPLACE INTO conversations (
   id, session_id, start_timestamp_ms, end_timestamp_ms, model,
   input_tokens, output_tokens, total_tokens, status, attributes_json

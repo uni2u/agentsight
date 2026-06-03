@@ -88,7 +88,13 @@ parsed AS (
     pid,
     comm,
     'anthropic' AS provider,
-    'unknown' AS model,
+    CASE WHEN instr(body, '"model":"') > 0
+      THEN substr(
+        substr(body, instr(body, '"model":"') + length('"model":"')),
+        1,
+        instr(substr(body, instr(body, '"model":"') + length('"model":"')), '"') - 1
+      )
+      ELSE 'unknown' END AS model,
     CASE WHEN instr(body, '"input_tokens":') > 0
       THEN CAST(substr(body, instr(body, '"input_tokens":') + length('"input_tokens":')) AS INTEGER)
       ELSE 0 END AS input_tokens,

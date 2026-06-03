@@ -241,13 +241,16 @@ pub(crate) fn build_trace_agent(
             pid.ok_or_else(|| RunnerError::from("stdio capture currently requires --pid"))?;
         let mut stdio_runner =
             StdioRunner::from_binary_extractor(binary_extractor.get_stdiocap_path()?);
-        let stdio_args = build_stdio_args(
+        let mut stdio_args = build_stdio_args(
             pid_filter,
             stdio_uid,
             stdio_comm,
             stdio_all_fds,
             stdio_max_bytes,
         );
+        if let Some(session_filter) = session_id {
+            stdio_args.extend(["--session".to_string(), session_filter.to_string()]);
+        }
 
         stdio_runner = stdio_runner.with_args(&stdio_args);
         stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
