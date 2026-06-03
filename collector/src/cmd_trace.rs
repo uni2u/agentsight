@@ -6,7 +6,6 @@ use futures::stream::StreamExt;
 use crate::binary_resolver::{
     binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
 };
-use crate::cli_db::run_capture_adapters;
 use crate::cli_output::{
     print_event_json, print_trace_container_binary_resolved, print_trace_header,
     print_trace_shutdown, print_trace_ssl_binary_discovered, print_trace_start,
@@ -79,7 +78,6 @@ pub(crate) struct TraceConfig {
     pub(crate) binary_path: Option<String>,
     pub(crate) log_file: String,
     pub(crate) db_path: Option<String>,
-    pub(crate) adapter: Option<String>,
     pub(crate) quiet: bool,
     pub(crate) rotate_logs: bool,
     pub(crate) max_log_size: u64,
@@ -250,15 +248,6 @@ pub(crate) fn build_trace_agent(
             if !disable_auth_removal {
                 ssl_runner = ssl_runner.add_analyzer(Box::new(AuthHeaderRemover::new()));
             }
-
-            // Export GenAI spans to an OpenTelemetry Collector if requested.
-            // Placed last so it observes fully-parsed (and auth-scrubbed) events.
-            if let Some(otel_config) = otel {
-                ssl_runner = ssl_runner.add_analyzer(Box::new(OtelExporter::new(
-                    otel_config.endpoint.clone(),
-                    otel_config.capture_content,
-                )));
-            }
         }
 
         agent = agent.add_runner(Box::new(ssl_runner));
@@ -351,20 +340,28 @@ pub(crate) fn build_trace_agent(
         );
     }
 
-    // Add global analyzers (HTTP filter is now added to SSL runner instead)
-
-    agent = agent.add_global_analyzer(Box::new(make_file_logger(
+    // Add global materialized view. The file log and optional exporters consume
+    // view updates, not raw runner events.
+    let mut storage = if let Some(path) = db_path {
+        StorageAnalyzer::new(path).map_err(|e| {
+            RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
+        })?
+    } else {
+        StorageAnalyzer::in_memory()
+            .map_err(|e| RunnerError::from(format!("failed to initialize live view: {}", e)))?
+    };
+    storage = storage.add_view_sink(Box::new(make_file_logger(
         log_file,
         rotate_logs,
         max_log_size,
     )?));
-
-    if let Some(path) = db_path {
-        let storage = StorageAnalyzer::new(path).map_err(|e| {
-            RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
-        })?;
-        agent = agent.add_global_analyzer(Box::new(storage));
+    if let Some(otel_config) = otel {
+        storage = storage.add_view_sink(Box::new(OtelExporter::new(
+            otel_config.endpoint.clone(),
+            otel_config.capture_content,
+        )));
     }
+    agent = agent.add_global_analyzer(Box::new(storage));
 
     Ok(agent)
 }
@@ -419,7 +416,6 @@ pub(crate) async fn run_trace(
     let server_port = cfg.server_port;
     let log_file = cfg.log_file.clone();
     let db_path = cfg.db_path.clone();
-    let adapter = cfg.adapter.clone();
 
     prepare_process_seeds(&mut cfg)?;
     let mut agent = build_trace_agent(binary_extractor, &cfg)?;
@@ -443,8 +439,6 @@ pub(crate) async fn run_trace(
     drive_stream_until_shutdown(&mut stream, !cfg.quiet).await;
     drop(stream);
     drop(agent);
-
-    run_capture_adapters(db_path.as_deref(), adapter.as_deref())?;
 
     Ok(())
 }

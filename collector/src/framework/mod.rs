@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-pub mod adapters;
 pub mod analyzers;
 pub mod binary_extractor;
 pub mod capture;

@@ -33,51 +33,12 @@ pub enum EventKind {
     Unknown,
 }
 
-impl EventKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            EventKind::HttpRequest => "http.request",
-            EventKind::HttpResponse => "http.response",
-            EventKind::LlmRequest => "llm.request",
-            EventKind::LlmResponse => "llm.response",
-            EventKind::LlmError => "llm.error",
-            EventKind::TokenUsage => "token.usage",
-            EventKind::ProcessExec => "process.exec",
-            EventKind::ProcessExit => "process.exit",
-            EventKind::ProcessSignal => "process.signal",
-            EventKind::FsOpen => "fs.open",
-            EventKind::FsWrite => "fs.write",
-            EventKind::FsMutation => "fs.mutation",
-            EventKind::StdioMessage => "stdio.message",
-            EventKind::StdioRpc => "stdio.rpc",
-            EventKind::ResourceSample => "resource.sample",
-            EventKind::AgentStatus => "agent.status",
-            EventKind::SessionStart => "session.start",
-            EventKind::SessionEnd => "session.end",
-            EventKind::ToolCall => "tool.call",
-            EventKind::Interruption => "interruption",
-            EventKind::Unknown => "unknown",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
     Debug,
     Info,
     Warning,
     Error,
-}
-
-impl Severity {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Severity::Debug => "debug",
-            Severity::Info => "info",
-            Severity::Warning => "warning",
-            Severity::Error => "error",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,8 +69,6 @@ pub struct CanonicalEvent {
     pub session_id: Option<String>,
     pub conversation_id: Option<String>,
     pub parent_event_id: Option<String>,
-    pub adapter_id: Option<String>,
-    pub adapter_version: Option<String>,
     pub confidence: Option<f32>,
     pub attributes: Value,
 }
@@ -252,8 +211,6 @@ pub fn normalize_event(
         session_id: None,
         conversation_id: None,
         parent_event_id: None,
-        adapter_id: None,
-        adapter_version: None,
         confidence: Some(0.75),
         attributes: data.clone(),
     }

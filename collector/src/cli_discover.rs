@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 pub(crate) struct DiscoveryRow {
     pub(crate) id: &'static str,
     pub(crate) name: &'static str,
-    pub(crate) adapter: &'static str,
     pub(crate) command: &'static str,
     pub(crate) available: bool,
     pub(crate) path: Option<String>,
@@ -32,23 +31,20 @@ fn discover_rows() -> Vec<DiscoveryRow> {
         row(
             "claude-code",
             "Claude Code",
-            "claude-code",
             "claude",
-            "agentsight record --db record.db --adapter claude-code -- claude -p 'hello' --output-format json",
+            "agentsight record --db record.db -- claude -p 'hello' --output-format json",
         ),
         row(
             "gemini-cli",
             "Gemini CLI",
-            "gemini-cli",
             "gemini",
-            "agentsight record --db record.db --adapter gemini-cli -- gemini --prompt 'hello' --json",
+            "agentsight record --db record.db -- gemini --prompt 'hello' --json",
         ),
         row(
             "openclaw",
             "OpenClaw",
-            "openclaw",
             "docker",
-            "agentsight record -c node --db record.db --adapter openclaw --binary-path docker://<container>",
+            "agentsight record -c node --db record.db --binary-path docker://<container>",
         ),
     ]
 }
@@ -56,7 +52,6 @@ fn discover_rows() -> Vec<DiscoveryRow> {
 fn row(
     id: &'static str,
     name: &'static str,
-    adapter: &'static str,
     command: &'static str,
     recommended_capture: &'static str,
 ) -> DiscoveryRow {
@@ -64,7 +59,6 @@ fn row(
     DiscoveryRow {
         id,
         name,
-        adapter,
         command,
         available: path.is_some(),
         path: path.map(|p| p.display().to_string()),
@@ -104,7 +98,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovery_rows_include_supported_agent_adapters() {
+    fn discovery_rows_include_supported_agent_views() {
         let rows = discover_rows();
         let ids: Vec<_> = rows.iter().map(|row| row.id).collect();
         assert!(ids.contains(&"claude-code"));

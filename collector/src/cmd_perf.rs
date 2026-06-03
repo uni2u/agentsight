@@ -1298,24 +1298,21 @@ fn load_stat(db: &str) -> StorageResult<StatOutput> {
     }
 
     let network_hosts = snapshot
-        .events
+        .network_targets
         .iter()
-        .filter_map(|event| event.host.clone())
+        .map(|target| target.host.clone())
         .collect::<BTreeSet<_>>()
         .len();
     let http_errors = snapshot
-        .events
+        .network_targets
         .iter()
-        .filter(|event| {
-            event.kind == "llm.error" || event.status_code.map(|code| code >= 400).unwrap_or(false)
-        })
-        .count();
+        .map(|target| target.error_count.max(0) as usize)
+        .sum();
 
     Ok(StatOutput {
         db: db.to_string(),
         duration_s: duration_s(&snapshot),
-        raw_events: snapshot.summary.raw_events,
-        canonical_events: snapshot.summary.canonical_events,
+        view_events: snapshot.summary.view_events,
         llm_calls: snapshot.summary.llm_calls,
         input_tokens,
         output_tokens,
@@ -1401,7 +1398,7 @@ fn build_session_top<'a>(
         mode: "static session",
         db: Some(db),
         duration_s: duration_s(snapshot),
-        canonical_events: snapshot.summary.canonical_events,
+        view_events: snapshot.summary.view_events,
         llm_calls: snapshot.summary.llm_calls,
         total_tokens: if local_total_tokens > 0 {
             local_total_tokens
@@ -1465,13 +1462,7 @@ fn top_sections(
         (
             "Network",
             "events",
-            top_counts(
-                snapshot
-                    .events
-                    .iter()
-                    .filter_map(|event| event.host.clone()),
-                limit,
-            ),
+            sorted_counts(network_target_counts(snapshot), limit),
         ),
         ("Models", "tokens", sorted_counts(model_counts, limit)),
     ];
@@ -1824,14 +1815,22 @@ fn process_command(audit_type: &str, details: &Value, target: Option<&str>) -> O
 
 fn hosts_by_pid(snapshot: &Snapshot) -> BTreeMap<u32, BTreeSet<String>> {
     let mut out = BTreeMap::new();
-    for event in &snapshot.events {
-        if let (Some(pid), Some(host)) = (event.pid, event.host.as_ref()) {
+    for target in &snapshot.network_targets {
+        if let Some(pid) = target.pid {
             out.entry(pid)
                 .or_insert_with(BTreeSet::new)
-                .insert(host.clone());
+                .insert(target.host.clone());
         }
     }
     out
+}
+
+fn network_target_counts(snapshot: &Snapshot) -> BTreeMap<String, i64> {
+    let mut counts = BTreeMap::new();
+    for target in &snapshot.network_targets {
+        *counts.entry(target.host.clone()).or_default() += target.count.max(0);
+    }
+    counts
 }
 
 fn session_tokens_by_pid(snapshot: &Snapshot) -> BTreeMap<u32, i64> {
@@ -1980,7 +1979,7 @@ fn build_live_top<'a>(
         mode: "live sessions",
         db: None,
         duration_s: 0.0,
-        canonical_events: 0,
+        view_events: 0,
         llm_calls: 0,
         total_tokens: rows.iter().filter_map(|row| row.tokens).sum(),
         rows,
@@ -2317,7 +2316,6 @@ fn truncate_text(text: &str, max: usize) -> String {
 fn load_snapshot_and_resources(db: &str) -> StorageResult<(Snapshot, ResourcePeaks)> {
     let mut store = SqliteStore::open(db)?;
     let snapshot = store.export_snapshot(SnapshotOptions {
-        event_limit: 50_000,
         audit_limit: 50_000,
     })?;
     let resources = load_resource_peaks(&mut store)?;
@@ -2335,26 +2333,22 @@ fn load_resource_peaks(store: &mut SqliteStore) -> StorageResult<ResourcePeaks> 
     let mut peaks = ResourcePeaks::default();
     let mut stmt = store
         .connection_mut()
-        .prepare("SELECT raw_json FROM raw_events WHERE source = 'system'")?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        .prepare("SELECT cpu_percent, rss_mb FROM resource_samples")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<i64>>(1)?))
+    })?;
 
     for row in rows {
-        let raw_json = row?;
-        let Ok(raw) = serde_json::from_str::<Value>(&raw_json) else {
-            continue;
-        };
-        let data = raw.get("data").unwrap_or(&raw);
-
-        if let Some(cpu) = number_or_string(data.get("cpu").and_then(|v| v.get("percent")))
+        let (cpu, rss_mb) = row?;
+        if let Some(cpu) = cpu
             && cpu >= peaks.max_cpu_percent
         {
             peaks.max_cpu_percent = cpu;
         }
-        if let Some(rss_mb) = number_or_string(data.get("memory").and_then(|v| v.get("rss_mb"))) {
-            let rss_mb = rss_mb.max(0.0) as u64;
-            if rss_mb >= peaks.max_rss_mb {
-                peaks.max_rss_mb = rss_mb;
-            }
+        if let Some(rss_mb) = rss_mb.map(|v| v.max(0) as u64)
+            && rss_mb >= peaks.max_rss_mb
+        {
+            peaks.max_rss_mb = rss_mb;
         }
         peaks.samples += 1;
     }
@@ -2428,13 +2422,6 @@ fn dominant_model(snapshot: &Snapshot) -> Option<String> {
                 .iter()
                 .find_map(|session| session.model.clone())
         })
-}
-
-fn number_or_string(value: Option<&Value>) -> Option<f64> {
-    value.and_then(|v| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-    })
 }
 
 #[cfg(test)]
@@ -2627,7 +2614,7 @@ mod tests {
             mode: "live sessions",
             db: None,
             duration_s: 0.0,
-            canonical_events: 0,
+            view_events: 0,
             llm_calls: 0,
             total_tokens: 15,
             rows: vec![AgentTopRow {
@@ -2675,8 +2662,7 @@ mod tests {
             generated_at: "now".to_string(),
             summary: crate::framework::storage::sqlite::SnapshotSummary {
                 source: "sqlite".to_string(),
-                raw_events: 0,
-                canonical_events: 0,
+                view_events: 0,
                 llm_calls: 1,
                 token_usage_rows: 0,
                 audit_events: 0,
@@ -2687,11 +2673,10 @@ mod tests {
                 total_tokens: 0,
                 start_timestamp_ms: None,
                 end_timestamp_ms: None,
-                event_limit: 0,
                 audit_limit: 0,
             },
             token_summary: Vec::new(),
-            events: Vec::new(),
+            network_targets: Vec::new(),
             audit_events: Vec::new(),
             sessions: vec![SessionRow {
                 id: "session-1".to_string(),
@@ -2706,7 +2691,7 @@ mod tests {
                 input_tokens: 3,
                 output_tokens: 10,
                 total_tokens: 27667,
-                adapter_id: "claude-code".to_string(),
+                view_source: "claude-code".to_string(),
                 confidence: Some(0.9),
                 attributes: serde_json::json!({}),
             }],
@@ -2731,8 +2716,7 @@ mod tests {
             generated_at: "now".to_string(),
             summary: crate::framework::storage::sqlite::SnapshotSummary {
                 source: "sqlite".to_string(),
-                raw_events: 0,
-                canonical_events: 0,
+                view_events: 0,
                 llm_calls: 1,
                 token_usage_rows: 1,
                 audit_events: 1,
@@ -2743,11 +2727,10 @@ mod tests {
                 total_tokens: 13,
                 start_timestamp_ms: None,
                 end_timestamp_ms: None,
-                event_limit: 0,
                 audit_limit: 0,
             },
             token_summary: Vec::new(),
-            events: Vec::new(),
+            network_targets: Vec::new(),
             audit_events: vec![crate::framework::storage::sqlite::AuditEventRow {
                 id: "audit-1".to_string(),
                 timestamp_ms: 1_000,

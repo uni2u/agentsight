@@ -214,17 +214,13 @@ async fn serve_sqlite_api(
             "sqlite database is not configured; pass --db or set AGENTSIGHT_DB_PATH",
         ));
     };
-    let event_limit = query_param_usize(query, "event_limit").unwrap_or(10_000);
     let audit_limit = query_param_usize(query, "audit_limit").unwrap_or(10_000);
     let group_by = query_param(query, "group_by").unwrap_or_else(|| "model".to_string());
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
             let store = SqliteStore::open(&db_path)?;
-            let options = SnapshotOptions {
-                event_limit,
-                audit_limit,
-            };
+            let options = SnapshotOptions { audit_limit };
             let value = match resource {
                 ApiResource::TokenSummary => serde_json::to_value(store.token_summary(&group_by)?)?,
                 ApiResource::Snapshot => serde_json::to_value(store.export_snapshot(options)?)?,
@@ -232,7 +228,7 @@ async fn serve_sqlite_api(
                     serde_json::to_value(store.export_snapshot(options)?.summary)?
                 }
                 ApiResource::Events => {
-                    serde_json::to_value(store.export_snapshot(options)?.events)?
+                    serde_json::to_value(store.export_snapshot(options)?.network_targets)?
                 }
                 ApiResource::AuditEvents => {
                     serde_json::to_value(store.export_snapshot(options)?.audit_events)?
@@ -313,9 +309,8 @@ mod tests {
 
     #[test]
     fn parses_api_query_parameters() {
-        let query = Some("event_limit=25&audit_limit=9&group_by=provider");
+        let query = Some("audit_limit=9&group_by=provider");
 
-        assert_eq!(query_param_usize(query, "event_limit"), Some(25));
         assert_eq!(query_param_usize(query, "audit_limit"), Some(9));
         assert_eq!(query_param(query, "group_by").as_deref(), Some("provider"));
         assert_eq!(query_param(query, "missing"), None);

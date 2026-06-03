@@ -2,40 +2,17 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::cli_output::{
-    FileAccessSummary, SessionSummary, SummaryStats, print_adapter_run, print_adapters,
-    print_audit_rows, print_capture_adapters, print_exported_snapshot, print_json,
-    print_llm_prompts, print_local_audit, print_replay, print_session_summary, print_token_summary,
-    prompt_text_chars,
+    FileAccessSummary, SessionSummary, SummaryStats, print_audit_rows, print_exported_snapshot,
+    print_json, print_llm_prompts, print_local_audit, print_replay, print_session_summary,
+    print_token_summary, prompt_text_chars,
 };
 use crate::framework::{
-    adapters::{builtin_adapters, run_sql_adapters},
     core::Event,
-    runners::RunnerError,
-    storage::{GenericProjector, SnapshotOptions, SqliteStore},
+    storage::{SnapshotOptions, SqliteStore, ViewProjector, ViewUpdate},
 };
 use crate::local_sessions::{self, LocalSession};
-use clap::Subcommand;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-
-#[derive(Subcommand)]
-pub(crate) enum AdapterCommand {
-    /// List built-in SQL adapters
-    List {
-        /// Emit JSON output
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run SQL adapters on an existing SQLite database
-    Run {
-        /// SQLite database path
-        #[arg(long)]
-        db: String,
-        /// SQL adapter to run: auto, anthropic, claude-code, openclaw, gemini-cli
-        #[arg(long, default_value = "auto")]
-        adapter: String,
-    },
-}
 
 pub(crate) fn configured_db_path(cli_value: &Option<String>) -> Option<String> {
     cli_value
@@ -46,11 +23,10 @@ pub(crate) fn configured_db_path(cli_value: &Option<String>) -> Option<String> {
 pub(crate) fn run_replay(
     input: &str,
     db: &str,
-    adapter: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(input)?;
     let mut store = SqliteStore::open(db)?;
-    let mut projector = GenericProjector::new();
+    let mut view = ViewProjector::new();
     let mut inserted = 0usize;
 
     for (idx, line) in content.lines().enumerate() {
@@ -58,18 +34,17 @@ pub(crate) fn run_replay(
         if trimmed.is_empty() {
             continue;
         }
-        let event: Event = serde_json::from_str(trimmed)
-            .map_err(|e| format!("failed to parse JSONL line {}: {}", idx + 1, e))?;
-        store.insert_event(&event, &mut projector)?;
+        if let Ok(update) = serde_json::from_str::<ViewUpdate>(trimmed) {
+            store.apply_view_update(&update)?;
+        } else {
+            let event: Event = serde_json::from_str(trimmed)
+                .map_err(|e| format!("failed to parse JSONL line {}: {}", idx + 1, e))?;
+            store.insert_event(&event, &mut view)?;
+        }
         inserted += 1;
     }
 
-    if let Some(adapter) = adapter {
-        run_sql_adapters(&mut store, adapter)?;
-        print_replay(db, inserted, Some(adapter));
-    } else {
-        print_replay(db, inserted, None);
-    }
+    print_replay(db, inserted);
     Ok(())
 }
 
@@ -122,14 +97,10 @@ pub(crate) fn run_prompts_query(
 pub(crate) fn run_export(
     db: &str,
     output: &str,
-    event_limit: usize,
     audit_limit: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let store = SqliteStore::open(db)?;
-    let snapshot = store.export_snapshot(SnapshotOptions {
-        event_limit,
-        audit_limit,
-    })?;
+    let snapshot = store.export_snapshot(SnapshotOptions { audit_limit })?;
     let json = serde_json::to_vec_pretty(&snapshot)?;
     if output == "-" {
         let mut stdout = std::io::stdout().lock();
@@ -142,77 +113,10 @@ pub(crate) fn run_export(
     Ok(())
 }
 
-pub(crate) fn run_adapters_command(
-    parent_json: bool,
-    command: &Option<AdapterCommand>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    match command {
-        Some(AdapterCommand::List { json }) => run_adapters_list(parent_json || *json),
-        Some(AdapterCommand::Run { db, adapter }) => run_adapters_on_db(db, adapter),
-        None => run_adapters_list(parent_json),
-    }
-}
-
-pub(crate) fn run_capture_adapters(
-    db_path: Option<&str>,
-    adapter: Option<&str>,
-) -> Result<(), RunnerError> {
-    let Some(db_path) = db_path else {
-        return Ok(());
-    };
-    let Some(adapter) = adapter else {
-        return Ok(());
-    };
-    let mut store = SqliteStore::open(db_path).map_err(|e| {
-        RunnerError::from(format!(
-            "failed to open SQLite database '{}': {}",
-            db_path, e
-        ))
-    })?;
-    run_sql_adapters(&mut store, adapter).map_err(|e| {
-        RunnerError::from(format!("failed to run SQL adapter '{}': {}", adapter, e))
-    })?;
-    print_capture_adapters(db_path, adapter);
-    Ok(())
-}
-
-fn run_adapters_on_db(
-    db: &str,
-    adapter: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut store = SqliteStore::open(db)?;
-    run_sql_adapters(&mut store, adapter)?;
-    print_adapter_run(db, adapter);
-    Ok(())
-}
-
-fn run_adapters_list(json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let adapters = builtin_adapters();
-    if json {
-        let rows: Vec<_> = adapters
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "id": a.id,
-                    "version": a.version,
-                    "type": a.adapter_type,
-                    "supports_detect": a.supports_detect(),
-                    "sql_files": a.sql_files.iter().map(|(name, _)| *name).collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        print_json(&rows)?;
-    } else {
-        print_adapters(&adapters);
-    }
-    Ok(())
-}
-
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut store = SqliteStore::open(db)?;
         let snap = store.export_snapshot(SnapshotOptions {
-            event_limit: 50_000,
             audit_limit: 50_000,
         })?;
         let local_sessions = local_sessions::from_snapshot(&snap);
@@ -300,17 +204,15 @@ impl SessionSummary {
 
         let mut endpoint_counts = BTreeMap::new();
         let mut network_events = 0usize;
-        for event in &snap.events {
-            if let Some(host) = event.host.as_ref() {
-                network_events += 1;
-                let endpoint = event
-                    .path
-                    .as_ref()
-                    .filter(|path| !path.is_empty())
-                    .map(|path| format!("{host}{path}"))
-                    .unwrap_or_else(|| host.clone());
-                *endpoint_counts.entry(endpoint).or_default() += 1;
-            }
+        for target in &snap.network_targets {
+            network_events += target.count.max(0) as usize;
+            let endpoint = target
+                .path
+                .as_ref()
+                .filter(|path| !path.is_empty())
+                .map(|path| format!("{}{}", target.host, path))
+                .unwrap_or_else(|| target.host.clone());
+            *endpoint_counts.entry(endpoint).or_default() += target.count.max(0) as usize;
         }
         let endpoints = top_counts(endpoint_counts, 8)
             .into_iter()
@@ -536,14 +438,86 @@ pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::storage::TokenUsageRow;
     use serde_json::json;
+
+    #[test]
+    fn replay_accepts_view_update_jsonl() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("view-log.db");
+        let input = temp.path().join("view.log");
+        let line = serde_json::to_string(&ViewUpdate::TokenUsage(TokenUsageRow {
+            id: "token-1".to_string(),
+            llm_call_id: "llm-1".to_string(),
+            timestamp_ms: 1_000,
+            pid: Some(42),
+            comm: Some("claude".to_string()),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-sonnet-4".to_string()),
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 15,
+            source: "response_usage".to_string(),
+            view_source: "view".to_string(),
+            confidence: Some(0.95),
+        }))
+        .unwrap();
+        std::fs::write(&input, format!("{line}\n")).unwrap();
+
+        run_replay(input.to_str().unwrap(), db.to_str().unwrap()).unwrap();
+
+        let store = SqliteStore::open(&db).unwrap();
+        let rows = store.token_summary("model").unwrap();
+        assert_eq!(rows[0].group, "claude-sonnet-4");
+        assert_eq!(rows[0].total_tokens, 15);
+    }
+
+    #[test]
+    fn token_queries_use_highest_priority_source_per_llm_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("token-priority.db");
+        let mut store = SqliteStore::open(&db).unwrap();
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO llm_calls (
+                    id, start_timestamp_ms, end_timestamp_ms, pid, comm, model, view_source
+                 ) VALUES ('llm-1', 1000, 1200, 42, 'claude', 'claude-sonnet-4', 'view')",
+                [],
+            )
+            .unwrap();
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO token_usage (
+                    id, llm_call_id, timestamp_ms, pid, comm, model,
+                    input_tokens, output_tokens, total_tokens, source, confidence
+                 ) VALUES
+                 ('token-response', 'llm-1', 1200, 42, 'claude', 'claude-sonnet-4',
+                    10, 5, 15, 'response_usage', 0.95),
+                 ('token-telemetry', 'llm-1', 1201, 42, 'claude', 'claude-sonnet-4',
+                    100, 50, 150, 'claude_telemetry', 0.80)",
+                [],
+            )
+            .unwrap();
+
+        let tokens = store.token_summary("model").unwrap();
+        assert_eq!(tokens[0].group, "claude-sonnet-4");
+        assert_eq!(tokens[0].total_tokens, 15);
+        assert_eq!(tokens[0].calls, 1);
+
+        let calls = store.llm_call_rows(10).unwrap();
+        assert_eq!(calls[0].total_tokens, 15);
+    }
 
     #[test]
     fn sqlite_summary_reports_timeline_prompt_and_access_scope() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("summary.db");
         let mut store = SqliteStore::open(&db).unwrap();
-        let mut projector = GenericProjector::new();
+        let mut view = ViewProjector::new();
 
         for event in [
             Event::new_with_timestamp(
@@ -596,7 +570,7 @@ mod tests {
                 json!({"event": "FILE_WRITE", "path": "/tmp/agentsight-summary/sub/b.txt"}),
             ),
         ] {
-            store.insert_event(&event, &mut projector).unwrap();
+            store.insert_event(&event, &mut view).unwrap();
         }
 
         store
@@ -604,7 +578,7 @@ mod tests {
             .execute(
                 "INSERT INTO tool_calls (
                     id, timestamp_ms, start_timestamp_ms, end_timestamp_ms,
-                    duration_ms, tool_name, adapter_id
+                    duration_ms, tool_name, view_source
                  ) VALUES ('tool-1', 1500, 1500, 1650, 150, 'Bash', 'claude-code')",
                 [],
             )
@@ -644,7 +618,7 @@ mod tests {
                 "INSERT INTO agent_sessions (
                     id, agent_type, agent_name, start_timestamp_ms, end_timestamp_ms,
                     status, model, input_tokens, output_tokens, total_tokens,
-                    adapter_id, confidence, attributes_json
+                    view_source, confidence, attributes_json
                  ) VALUES (
                     'session-1', 'claude-code', 'claude', 1000, 2000,
                     'completed', 'claude-opus-4-6', 3, 10, 27667,

@@ -54,7 +54,7 @@ fn top_level_help_surfaces_perf_strace_flow() {
 }
 
 #[test]
-fn replay_no_adapters_skips_adapter_runs() {
+fn replay_import_materializes_view_tables() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db = temp.path().join("record.db");
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -67,13 +67,9 @@ fn replay_no_adapters_skips_adapter_runs() {
         fixture.to_str().expect("fixture path"),
         "--db",
         db.to_str().expect("db path"),
-        "--no-adapters",
     ]);
 
     let conn = Connection::open(db).expect("db should open");
-    let adapter_runs: i64 = conn
-        .query_row("SELECT COUNT(*) FROM adapter_runs", [], |row| row.get(0))
-        .expect("adapter_runs query should work");
     let generic_tokens: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage",
@@ -82,7 +78,6 @@ fn replay_no_adapters_skips_adapter_runs() {
         )
         .expect("token query should work");
 
-    assert_eq!(adapter_runs, 0);
     assert_eq!(generic_tokens, 15);
 }
 
@@ -101,8 +96,6 @@ fn replay_then_export_snapshot_for_static_web() {
         fixture.to_str().expect("fixture path"),
         "--db",
         db.to_str().expect("db path"),
-        "--adapter",
-        "auto",
     ]);
     run_agentsight(&[
         "db",
@@ -122,7 +115,11 @@ fn replay_then_export_snapshot_for_static_web() {
     assert_eq!(data["summary"]["total_tokens"], 15);
     assert_eq!(data["token_summary"][0]["group"], "gemini-2.5-pro");
     assert_eq!(data["token_summary"][0]["total_tokens"], 15);
-    assert_eq!(data["events"].as_array().expect("events").len(), 2);
+    assert_eq!(
+        data["network_targets"][0]["host"],
+        "cloudcode-pa.googleapis.com"
+    );
+    assert_eq!(data["network_targets"][0]["count"], 1);
     assert_eq!(data["sessions"][0]["agent_type"], "gemini-cli");
     assert_eq!(data["sessions"][0]["total_tokens"], 15);
     assert_eq!(data["agents"][0]["agent_type"], "gemini-cli");
@@ -148,7 +145,6 @@ fn summary_omits_tokens_when_usage_is_unobserved() {
         fixture.to_str().expect("fixture path"),
         "--db",
         db.to_str().expect("db path"),
-        "--no-adapters",
     ]);
 
     let summary = agentsight_stdout(&["report", "--db", db.to_str().expect("db path")]);
@@ -199,7 +195,6 @@ fn default_agent_run_summary_commands_are_real() {
         fixture.to_str().expect("fixture path"),
         "--db",
         db.to_str().expect("db path"),
-        "--no-adapters",
     ]);
 
     let summary = agentsight_stdout(&["report", "--db", db.to_str().expect("db path")]);

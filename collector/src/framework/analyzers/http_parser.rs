@@ -716,7 +716,7 @@ impl Analyzer for HTTPParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::storage::{GenericProjector, SqliteStore};
+    use crate::framework::storage::{SqliteStore, ViewProjector};
     use futures::StreamExt;
     use hpack::Encoder as HpackEncoder;
     use serde_json::json;
@@ -812,9 +812,9 @@ mod tests {
         );
 
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
+        let mut view = ViewProjector::new();
         for event in output {
-            store.insert_event(&event, &mut projector).unwrap();
+            store.insert_event(&event, &mut view).unwrap();
         }
         let total: i64 = store
             .connection()

@@ -3,6 +3,10 @@
 
 use super::{Analyzer, AnalyzerError};
 use crate::framework::runners::EventStream;
+use crate::framework::storage::{
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
+    ToolCallRow, ViewUpdate, ViewUpdateSink,
+};
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use log::debug;
@@ -176,6 +180,70 @@ impl FileLogger {
                 );
             }
         }
+    }
+
+    fn check_rotation(&self) {
+        let Some(config) = &self.rotation_config else {
+            return;
+        };
+        let mut count = self.event_count.lock().unwrap();
+        *count += 1;
+        if (*count).is_multiple_of(config.size_check_interval)
+            && let Ok(metadata) = std::fs::metadata(&self.file_path)
+            && metadata.len() > config.max_file_size
+        {
+            Self::perform_rotation(&self.file_handle, &self.file_path, config);
+        }
+    }
+
+    fn write_line(&self, line: &str) {
+        self.check_rotation();
+        if let Ok(mut file) = self.file_handle.lock() {
+            if let Err(e) = file.write_all(line.as_bytes()) {
+                eprintln!("FileLogger: Failed to write to {}: {}", self.file_path, e);
+            } else if let Err(e) = file.flush() {
+                eprintln!("FileLogger: Failed to flush {}: {}", self.file_path, e);
+            }
+        }
+    }
+
+    fn write_view_update(&self, update: ViewUpdate) {
+        match serde_json::to_string(&update) {
+            Ok(json) => self.write_line(&format!("{json}\n")),
+            Err(e) => self.write_line(&format!(
+                "{{\"kind\":\"error\",\"row\":{{\"message\":\"Failed to serialize view update: {e}\"}}}}\n"
+            )),
+        }
+    }
+}
+
+impl ViewUpdateSink for FileLogger {
+    fn llm_call(&mut self, call: &LlmCallRow) {
+        self.write_view_update(ViewUpdate::LlmCall(call.clone()));
+    }
+
+    fn token_usage(&mut self, token: &TokenUsageRow) {
+        self.write_view_update(ViewUpdate::TokenUsage(token.clone()));
+    }
+
+    fn audit_event(&mut self, audit: &AuditEventRow) {
+        self.write_view_update(ViewUpdate::AuditEvent(audit.clone()));
+    }
+
+    fn tool_call(&mut self, tool: &ToolCallRow) {
+        self.write_view_update(ViewUpdate::ToolCall(tool.clone()));
+    }
+
+    fn session(&mut self, session: &SessionRow) {
+        self.write_view_update(ViewUpdate::Session(session.clone()));
+    }
+
+    fn network_target(&mut self, target: &NetworkTargetRow) {
+        self.write_view_update(ViewUpdate::NetworkTarget(target.clone()));
+    }
+
+    fn resource_sample(&mut self, sample: &ResourceSampleRow) {
+        self.write_view_update(ViewUpdate::ResourceSample(sample.clone()));
     }
 }
 
@@ -522,5 +590,51 @@ mod tests {
         // Should not have rotated yet due to interval optimization
         let rotated_path = format!("{}.1", log_path.to_string_lossy());
         assert!(!std::path::Path::new(&rotated_path).exists());
+    }
+
+    #[test]
+    fn test_file_logger_writes_view_updates() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut logger = FileLogger::new(temp_file.path()).unwrap();
+
+        logger.llm_call(&LlmCallRow {
+            id: "llm-1".to_string(),
+            start_timestamp_ms: 1_000,
+            end_timestamp_ms: Some(1_200),
+            pid: Some(42),
+            comm: Some("claude".to_string()),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-sonnet-4".to_string()),
+            host: Some("api.anthropic.com".to_string()),
+            path: Some("/v1/messages".to_string()),
+            status_code: Some(200),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            request: json!({"model": "claude-sonnet-4"}),
+            response: json!({"usage": {"input_tokens": 10, "output_tokens": 5}}),
+        });
+        logger.token_usage(&TokenUsageRow {
+            id: "token-1".to_string(),
+            llm_call_id: "llm-1".to_string(),
+            timestamp_ms: 1_200,
+            pid: Some(42),
+            comm: Some("claude".to_string()),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-sonnet-4".to_string()),
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 15,
+            source: "response_usage".to_string(),
+            view_source: "view".to_string(),
+            confidence: Some(0.95),
+        });
+
+        let content = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(content.contains(r#""kind":"llm_call""#));
+        assert!(content.contains(r#""kind":"token_usage""#));
+        assert!(content.contains("claude-sonnet-4"));
     }
 }

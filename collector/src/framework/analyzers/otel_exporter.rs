@@ -21,29 +21,21 @@
 //!
 //! [`HTTPParser`]: super::http_parser::HTTPParser
 
-use super::{Analyzer, AnalyzerError};
-use crate::framework::runners::EventStream;
-use async_trait::async_trait;
-use futures::stream::StreamExt;
+use super::AnalyzerError;
+use crate::framework::storage::ViewUpdateSink;
+use crate::framework::storage::sqlite::LlmCallRow;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Default OTLP/HTTP receiver endpoint (OpenTelemetry Collector).
 const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4318";
 
-/// Drop a pending request that never got a matching response after this long,
-/// bounding the correlation map for dropped/aborted/never-answered requests.
-const PENDING_REQUEST_TIMEOUT_NANOS: u128 = 5 * 60 * 1_000_000_000; // 5 minutes
-
-/// A request that is waiting for its matching response so a full span can be
-/// emitted. Keyed by `(pid, tid)` in the exporter's pending map.
 #[derive(Clone)]
-struct PendingRequest {
+struct SpanInput {
     start_unix_nano: u128,
     provider: String,
     server_address: String,
@@ -63,6 +55,7 @@ pub struct OtelExporter {
     service_name: String,
     /// Whether to attach prompt/completion content (`gen_ai.{input,output}.messages`).
     capture_content: bool,
+    client: Arc<Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>>,
 }
 
 impl OtelExporter {
@@ -87,6 +80,7 @@ impl OtelExporter {
             traces_url,
             service_name,
             capture_content,
+            client: Arc::new(Client::builder(TokioExecutor::new()).build_http()),
         }
     }
 }
@@ -109,17 +103,6 @@ fn provider_from_host(host: &str) -> String {
     } else {
         host.to_string()
     }
-}
-
-/// True if a request path targets a chat/completions-style LLM endpoint. Matches
-/// the OpenAI, OpenAI-Responses, Anthropic, and Gemini URL shapes.
-fn is_llm_path(path: &str) -> bool {
-    path.contains("/chat/completions")
-        || path.contains("/v1/messages")
-        || path.contains("/v1/responses")
-        || path.ends_with("/v1/completions")
-        || path.contains(":generateContent")
-        || path.contains(":streamGenerateContent")
 }
 
 /// Pull an integer token count from a usage object, tolerating both the
@@ -187,7 +170,7 @@ fn build_otlp_payload(
     service_name: &str,
     trace_id: &str,
     span_id: &str,
-    req: &PendingRequest,
+    req: &SpanInput,
     end_unix_nano: u128,
     status_code: Option<u16>,
     response_body: Option<&Value>,
@@ -280,136 +263,65 @@ fn new_ids() -> (String, String) {
     (trace, span)
 }
 
-/// Parse a JSON body string into a `Value`, returning `None` if it isn't valid
-/// JSON (e.g. an SSE-streamed body that wasn't fully reassembled).
-fn parse_body(data: &Value) -> Option<Value> {
-    let body = data.get("body").and_then(|v| v.as_str())?;
-    serde_json::from_str(body).ok()
+impl SpanInput {
+    fn from_call(call: &LlmCallRow, capture_content: bool) -> Self {
+        let request = &call.request;
+        let host = call.host.as_deref().unwrap_or_default();
+        Self {
+            start_unix_nano: (call.start_timestamp_ms as u128) * 1_000_000,
+            provider: call
+                .provider
+                .clone()
+                .unwrap_or_else(|| provider_from_host(host)),
+            server_address: host.to_string(),
+            model: call.model.clone().or_else(|| {
+                request
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            }),
+            max_tokens: request
+                .get("max_tokens")
+                .or_else(|| request.get("max_output_tokens"))
+                .and_then(Value::as_i64),
+            temperature: request.get("temperature").and_then(Value::as_f64),
+            top_p: request.get("top_p").and_then(Value::as_f64),
+            input_messages: capture_content
+                .then(|| {
+                    request
+                        .get("messages")
+                        .or_else(|| request.get("input"))
+                        .map(Value::to_string)
+                })
+                .flatten(),
+        }
+    }
 }
 
-#[async_trait]
-impl Analyzer for OtelExporter {
-    async fn process(&mut self, stream: EventStream) -> Result<EventStream, AnalyzerError> {
-        let client: Arc<Client<_, Full<Bytes>>> =
-            Arc::new(Client::builder(TokioExecutor::new()).build_http());
-        let traces_url = self.traces_url.clone();
-        let service_name = self.service_name.clone();
-        let capture_content = self.capture_content;
-
-        log::info!("OtelExporter: exporting GenAI spans to {}", traces_url);
-
-        // Correlate requests with responses by (pid, tid). `.map` takes an
-        // FnMut, so this map persists across the whole stream.
-        let mut pending: HashMap<(u32, u64), PendingRequest> = HashMap::new();
-
-        let processed = stream.map(move |event| {
-            if event.source != "http_parser" {
-                return event;
+impl ViewUpdateSink for OtelExporter {
+    fn llm_call(&mut self, call: &LlmCallRow) {
+        let Some(end_ms) = call.end_timestamp_ms else {
+            return;
+        };
+        let span_input = SpanInput::from_call(call, self.capture_content);
+        let (trace_id, span_id) = new_ids();
+        let payload = build_otlp_payload(
+            &self.service_name,
+            &trace_id,
+            &span_id,
+            &span_input,
+            (end_ms as u128) * 1_000_000,
+            call.status_code,
+            Some(&call.response),
+            self.capture_content,
+        );
+        let client = self.client.clone();
+        let url = self.traces_url.clone();
+        tokio::spawn(async move {
+            if let Err(e) = post_otlp(&client, &url, payload).await {
+                log::warn!("OtelExporter: failed to export span: {}", e);
             }
-            let data = &event.data;
-            let tid = data.get("tid").and_then(|v| v.as_u64()).unwrap_or(0);
-            let key = (event.pid, tid);
-            let msg_type = data
-                .get("message_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let unix_nano = (event.timestamp as u128) * 1_000_000; // ms -> ns
-
-            // Evict requests that never got a matching response so `pending`
-            // can't grow without bound (dropped connections, killed agents,
-            // responses on a different tid, …).
-            pending.retain(|_, req| {
-                unix_nano.saturating_sub(req.start_unix_nano) <= PENDING_REQUEST_TIMEOUT_NANOS
-            });
-
-            match msg_type {
-                "request" => {
-                    let host = data
-                        .get("headers")
-                        .and_then(|h| h.get("host"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                    if is_llm_path(path) {
-                        let body = parse_body(data);
-                        let model = body
-                            .as_ref()
-                            .and_then(|b| b.get("model"))
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        let max_tokens = body
-                            .as_ref()
-                            .and_then(|b| {
-                                b.get("max_tokens").or_else(|| b.get("max_output_tokens"))
-                            })
-                            .and_then(|v| v.as_i64());
-                        let temperature = body
-                            .as_ref()
-                            .and_then(|b| b.get("temperature"))
-                            .and_then(|v| v.as_f64());
-                        let top_p = body
-                            .as_ref()
-                            .and_then(|b| b.get("top_p"))
-                            .and_then(|v| v.as_f64());
-                        let input_messages = if capture_content {
-                            body.as_ref().and_then(|b| {
-                                b.get("messages")
-                                    .or_else(|| b.get("input"))
-                                    .map(|m| m.to_string())
-                            })
-                        } else {
-                            None
-                        };
-                        pending.insert(
-                            key,
-                            PendingRequest {
-                                start_unix_nano: unix_nano,
-                                provider: provider_from_host(host),
-                                server_address: host.to_string(),
-                                model,
-                                max_tokens,
-                                temperature,
-                                top_p,
-                                input_messages,
-                            },
-                        );
-                    }
-                }
-                "response" => {
-                    if let Some(req) = pending.remove(&key) {
-                        let status_code = data
-                            .get("status_code")
-                            .and_then(|v| v.as_u64())
-                            .map(|c| c as u16);
-                        let response_body = parse_body(data);
-                        let (trace_id, span_id) = new_ids();
-                        let payload = build_otlp_payload(
-                            &service_name,
-                            &trace_id,
-                            &span_id,
-                            &req,
-                            unix_nano,
-                            status_code,
-                            response_body.as_ref(),
-                            capture_content,
-                        );
-
-                        // Fire the OTLP POST without blocking the event stream.
-                        let client = client.clone();
-                        let url = traces_url.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = post_otlp(&client, &url, payload).await {
-                                log::warn!("OtelExporter: failed to export span: {}", e);
-                            }
-                        });
-                    }
-                }
-                _ => {}
-            }
-            event
         });
-
-        Ok(Box::pin(processed))
     }
 }
 
@@ -439,17 +351,6 @@ async fn post_otlp(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn detects_llm_paths() {
-        assert!(is_llm_path("/v1/chat/completions"));
-        assert!(is_llm_path("/v1/messages"));
-        assert!(is_llm_path("/v1/responses"));
-        assert!(is_llm_path("/openai/deployments/gpt4/chat/completions"));
-        assert!(is_llm_path("/v1beta/models/gemini-pro:generateContent"));
-        assert!(!is_llm_path("/v1/rgstr"));
-        assert!(!is_llm_path("/health"));
-    }
 
     #[test]
     fn maps_providers() {
@@ -498,7 +399,7 @@ mod tests {
 
     #[test]
     fn builds_payload_with_gen_ai_attributes() {
-        let req = PendingRequest {
+        let req = SpanInput {
             start_unix_nano: 1_000_000_000,
             provider: "openai".to_string(),
             server_address: "api.openai.com".to_string(),
@@ -563,7 +464,7 @@ mod tests {
 
     #[test]
     fn error_status_marks_span_error() {
-        let req = PendingRequest {
+        let req = SpanInput {
             start_unix_nano: 1,
             provider: "openai".to_string(),
             server_address: "api.openai.com".to_string(),

@@ -8,7 +8,7 @@ mod sse_processor_tests {
     use super::super::sse_processor::SSEProcessor;
     use crate::framework::core::Event;
     use crate::framework::runners::EventStream;
-    use crate::framework::storage::{GenericProjector, SqliteStore};
+    use crate::framework::storage::{SqliteStore, ViewProjector};
     use futures::stream;
     use futures::stream::StreamExt;
     use serde_json::json;
@@ -65,7 +65,7 @@ mod sse_processor_tests {
         assert_eq!(collected[0].source, "sse_processor");
 
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
+        let mut view = ViewProjector::new();
         let req = Event::new_with_timestamp(
             1,
             "http_parser".to_string(),
@@ -80,8 +80,8 @@ mod sse_processor_tests {
                 "body": "{\"model\":\"gemini-2.5-pro\"}"
             }),
         );
-        store.insert_event(&req, &mut projector).unwrap();
-        store.insert_event(&collected[0], &mut projector).unwrap();
+        store.insert_event(&req, &mut view).unwrap();
+        store.insert_event(&collected[0], &mut view).unwrap();
 
         let total: i64 = store
             .connection()

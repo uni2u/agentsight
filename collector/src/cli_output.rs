@@ -6,7 +6,6 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::framework::adapters::sql_adapter::SqlAdapter;
 use crate::framework::analyzers::common;
 use crate::framework::core::Event;
 use crate::framework::storage::sqlite::{AuditRow, LlmCallRow, TokenSummary};
@@ -22,8 +21,7 @@ pub(crate) struct ResourcePeaks {
 pub(crate) struct StatOutput {
     pub(crate) db: String,
     pub(crate) duration_s: f64,
-    pub(crate) raw_events: i64,
-    pub(crate) canonical_events: i64,
+    pub(crate) view_events: i64,
     pub(crate) llm_calls: i64,
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
@@ -163,7 +161,7 @@ pub(crate) struct AgentTopOutput<'a> {
     pub(crate) mode: &'a str,
     pub(crate) db: Option<&'a str>,
     pub(crate) duration_s: f64,
-    pub(crate) canonical_events: i64,
+    pub(crate) view_events: i64,
     pub(crate) llm_calls: i64,
     pub(crate) total_tokens: i64,
     pub(crate) rows: Vec<AgentTopRow>,
@@ -362,42 +360,12 @@ pub(crate) fn print_record_kill_error(error: impl std::fmt::Display) {
     println!("⚠ Failed to kill target process: {error}");
 }
 
-pub(crate) fn print_replay(db: &str, inserted: usize, adapter: Option<&str>) {
-    match adapter {
-        Some(adapter) => {
-            println!("Replayed {inserted} events into {db} and ran adapter '{adapter}'")
-        }
-        None => println!("Replayed {inserted} events into {db} without SQL adapters"),
-    }
+pub(crate) fn print_replay(db: &str, inserted: usize) {
+    println!("Replayed {inserted} events into {db} view tables");
 }
 
 pub(crate) fn print_exported_snapshot(output: &str) {
     println!("Exported snapshot to {output}");
-}
-
-pub(crate) fn print_capture_adapters(db_path: &str, adapter: &str) {
-    println!("✓ SQL adapters projected: {adapter} ({db_path})");
-}
-
-pub(crate) fn print_adapter_run(db: &str, adapter: &str) {
-    println!("Ran SQL adapter '{adapter}' on {db}");
-}
-
-pub(crate) fn print_adapters(adapters: &[SqlAdapter]) {
-    println!("{:<16} {:<10} {:<8} detect", "id", "version", "type");
-    for adapter in adapters {
-        println!(
-            "{:<16} {:<10} {:<8} {}",
-            adapter.id,
-            adapter.version,
-            adapter.adapter_type,
-            if adapter.supports_detect() {
-                "yes"
-            } else {
-                "no"
-            }
-        );
-    }
 }
 
 pub(crate) fn print_token_summary(group_by: &str, rows: &[TokenSummary]) {
@@ -464,8 +432,7 @@ pub(crate) fn print_stat(stat: &StatOutput) {
     println!("AgentSight stat");
     field("db", &stat.db);
     field("elapsed time", format!("{:.3} s", stat.duration_s));
-    field("raw events", stat.raw_events);
-    field("canonical events", stat.canonical_events);
+    field("view events", stat.view_events);
     field("LLM calls", stat.llm_calls);
     field(
         "tokens",
@@ -504,7 +471,7 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
         top.mode,
         generated_at,
         top.duration_s,
-        top.canonical_events,
+        top.view_events,
         top.llm_calls,
         format_count(top.total_tokens)
     );
@@ -745,14 +712,13 @@ pub(crate) fn print_discovery(
     local: &[(&'static str, std::path::PathBuf, usize, u64)],
 ) {
     println!(
-        "{:<14} {:<10} {:<10} {:<9} recommended",
-        "id", "adapter", "command", "available"
+        "{:<14} {:<10} {:<9} recommended",
+        "id", "command", "available"
     );
     for row in rows {
         println!(
-            "{:<14} {:<10} {:<10} {:<9} {}",
+            "{:<14} {:<10} {:<9} {}",
             row.id,
-            row.adapter,
             row.command,
             if row.available { "yes" } else { "no" },
             row.recommended_capture

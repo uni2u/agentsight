@@ -4,7 +4,6 @@
 use futures::stream::StreamExt;
 
 use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
-use crate::cli_db::run_capture_adapters;
 use crate::cli_output::{
     SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
     print_record_data_url, print_record_drop_user, print_record_header, print_record_kill_error,
@@ -66,7 +65,6 @@ pub(crate) async fn run_exec(
     binary_path_override: Option<&str>,
     log_file: &str,
     db_path: Option<String>,
-    adapter: Option<&str>,
     rotate_logs: bool,
     max_log_size: u64,
     enable_server: bool,
@@ -80,17 +78,17 @@ pub(crate) async fn run_exec(
     let prog_args = &command[1..];
 
     // Auto-create a session database when the user didn't specify --db.
-    let (db_path, adapter) = if db_path.is_some() {
-        (db_path, adapter)
+    let db_path = if db_path.is_some() {
+        db_path
     } else {
         match default_session_db_path() {
             Ok(p) => {
                 crate::session::cleanup_old_sessions();
-                (Some(p), Some(adapter.unwrap_or("auto")))
+                Some(p)
             }
             Err(e) => {
                 print_record_session_db_error(e);
-                (None, adapter)
+                None
             }
         }
     };
@@ -179,7 +177,7 @@ pub(crate) async fn run_exec(
         .ok_or_else(|| RunnerError::from("failed to get target child PID"))?;
     print_record_attribution_session(child_pid);
 
-    let db_path_for_adapters = db_path.clone();
+    let db_path_for_summary = db_path.clone();
     let mut cfg = TraceConfig {
         ssl: true,
         pid: Some(child_pid),
@@ -195,7 +193,6 @@ pub(crate) async fn run_exec(
         binary_path: ssl_binary_path,
         log_file: log_file.to_string(),
         db_path,
-        adapter: adapter.map(str::to_string),
         quiet: true,
         rotate_logs,
         max_log_size,
@@ -211,7 +208,7 @@ pub(crate) async fn run_exec(
         server_listen,
         server_port,
         log_file,
-        db_path_for_adapters.as_deref(),
+        db_path_for_summary.as_deref(),
     )
     .await
     .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
@@ -274,9 +271,7 @@ pub(crate) async fn run_exec(
 
     print_global_http_filter_metrics();
     print_global_ssl_filter_metrics();
-    run_capture_adapters(db_path_for_adapters.as_deref(), adapter)?;
-
-    if print_summary && let Some(ref db) = db_path_for_adapters {
+    if print_summary && let Some(ref db) = db_path_for_summary {
         print_session_summary(db);
     }
 
@@ -284,7 +279,7 @@ pub(crate) async fn run_exec(
         print_record_data_url(&server.url, log_file);
     }
 
-    Ok(db_path_for_adapters)
+    Ok(db_path_for_summary)
 }
 
 fn continue_child(pid: u32) -> Result<(), RunnerError> {

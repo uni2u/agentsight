@@ -32,8 +32,8 @@ mod server;
 mod session;
 
 use cli_db::{
-    AdapterCommand, configured_db_path, run_adapters_command, run_audit_query, run_db_summary,
-    run_export, run_prompts_query, run_replay, run_token_query,
+    configured_db_path, run_audit_query, run_db_summary, run_export, run_prompts_query, run_replay,
+    run_token_query,
 };
 use cli_discover::run_discover;
 use cli_output::print_record_session_db_error;
@@ -199,12 +199,6 @@ enum Commands {
         /// Log file for output and server when tracing a command
         #[arg(short = 'o', long, default_value = "record.log")]
         log_file: String,
-        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
-        #[arg(long, default_value = "auto")]
-        adapter: String,
-        /// Do not run SQL adapters after capture
-        #[arg(long)]
-        no_adapters: bool,
         /// Enable log rotation
         #[arg(long, default_value = "true")]
         rotate_logs: bool,
@@ -269,15 +263,9 @@ enum Commands {
         /// Log file for output and server
         #[arg(short = 'o', long, default_value = "record.log")]
         log_file: String,
-        /// SQLite database path for production queries and adapters
+        /// SQLite database path for view snapshots
         #[arg(long)]
         db: Option<String>,
-        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
-        #[arg(long, default_value = "auto")]
-        adapter: String,
-        /// Do not run SQL adapters after capture
-        #[arg(long)]
-        no_adapters: bool,
         /// Enable log rotation
         #[arg(long, default_value = "true")]
         rotate_logs: bool,
@@ -323,7 +311,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Database operations: query tokens, audit events, import/export, adapters
+    /// Database operations: query tokens, audit events, import/export
     #[command(subcommand)]
     Db(DbCommands),
     /// Low-level debugging tools: raw SSL/process/stdio/system/trace monitors
@@ -389,14 +377,11 @@ enum DbCommands {
         /// Output snapshot path, or '-' for stdout
         #[arg(short, long)]
         output: String,
-        /// Maximum canonical events to include
-        #[arg(long, default_value = "10000")]
-        event_limit: usize,
         /// Maximum audit events to include
         #[arg(long, default_value = "10000")]
         audit_limit: usize,
     },
-    /// Import a JSONL capture into SQLite and run generic projections/adapters
+    /// Import a JSONL capture into SQLite view tables
     Import {
         /// Input JSONL log file
         #[arg(short, long)]
@@ -404,20 +389,6 @@ enum DbCommands {
         /// SQLite database path
         #[arg(long)]
         db: String,
-        /// SQL adapter to run after import: auto, anthropic, claude-code, openclaw, gemini-cli
-        #[arg(long, default_value = "auto")]
-        adapter: String,
-        /// Do not run SQL adapters after import
-        #[arg(long)]
-        no_adapters: bool,
-    },
-    /// List or run built-in SQL adapters
-    Adapters {
-        /// Emit JSON output when listing adapters
-        #[arg(long)]
-        json: bool,
-        #[command(subcommand)]
-        command: Option<AdapterCommand>,
     },
     /// List session databases
     List,
@@ -607,15 +578,9 @@ enum DebugCommands {
         /// Log file for output and server
         #[arg(short = 'o', long, default_value = "trace.log")]
         log_file: String,
-        /// SQLite database path for production queries and adapters
+        /// SQLite database path for view snapshots
         #[arg(long)]
         db: Option<String>,
-        /// SQL adapter to run after capture when --db is set: auto, anthropic, claude-code, openclaw, gemini-cli
-        #[arg(long, default_value = "auto")]
-        adapter: String,
-        /// Do not run SQL adapters after capture
-        #[arg(long)]
-        no_adapters: bool,
         /// Suppress console output
         #[arg(short, long)]
         quiet: bool,
@@ -703,12 +668,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     };
                     run_db_summary(resolved.as_deref())?;
                 }
-                DbCommands::Import {
-                    input,
-                    db,
-                    adapter,
-                    no_adapters,
-                } => run_replay(input, db, (!*no_adapters).then_some(adapter.as_str()))?,
+                DbCommands::Import { input, db } => run_replay(input, db)?,
                 DbCommands::Token { db, group_by, json } => {
                     let db = resolve_db_or_latest(db)?;
                     run_token_query(&db, group_by, *json)?;
@@ -732,13 +692,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 DbCommands::Export {
                     db,
                     output,
-                    event_limit,
                     audit_limit,
                 } => {
                     let db = resolve_db_or_latest(db)?;
-                    run_export(&db, output, *event_limit, *audit_limit)?;
+                    run_export(&db, output, *audit_limit)?;
                 }
-                DbCommands::Adapters { json, command } => run_adapters_command(*json, command)?,
                 DbCommands::List => run_db_list()?,
             }
             return Ok(());
@@ -806,8 +764,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             log_file,
             db,
             json,
-            adapter,
-            no_adapters,
             rotate_logs,
             max_log_size,
             no_server,
@@ -826,7 +782,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 binary_path.as_deref(),
                 log_file,
                 configured_db_path(db),
-                (!*no_adapters).then_some(adapter.as_str()),
                 *rotate_logs,
                 *max_log_size,
                 !*no_server,
@@ -847,8 +802,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             binary_path,
             log_file,
             db,
-            adapter,
-            no_adapters,
             rotate_logs,
             max_log_size,
             no_server,
@@ -867,7 +820,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     binary_path.as_deref(),
                     log_file,
                     configured_db_path(db),
-                    (!*no_adapters).then_some(adapter.as_str()),
                     *rotate_logs,
                     *max_log_size,
                     !*no_server,
@@ -916,7 +868,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 binary_path: binary_path.clone(),
                 log_file: log_file.clone(),
                 db_path,
-                adapter: (!*no_adapters).then_some(adapter.clone()),
                 quiet: true,
                 rotate_logs: *rotate_logs,
                 max_log_size: *max_log_size,
@@ -1073,8 +1024,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 binary_path,
                 log_file,
                 db,
-                adapter,
-                no_adapters,
                 quiet,
                 rotate_logs,
                 max_log_size,
@@ -1111,7 +1060,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     binary_path: binary_path.clone(),
                     log_file: log_file.clone(),
                     db_path: configured_db_path(db),
-                    adapter: (!*no_adapters).then_some(adapter.clone()),
                     quiet: *quiet,
                     rotate_logs: *rotate_logs,
                     max_log_size: *max_log_size,

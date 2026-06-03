@@ -16,9 +16,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type StorageResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+const EFFECTIVE_TOKEN_USAGE_CTE: &str = r#"
+WITH ranked_token_usage AS (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY COALESCE(NULLIF(llm_call_id, ''), id)
+           ORDER BY
+             CASE source
+               WHEN 'response_usage' THEN 0
+               WHEN 'orphan_response_usage' THEN 0
+               WHEN 'gemini_cli_stdout_stats' THEN 1
+               WHEN 'claude_telemetry' THEN 2
+               ELSE 3
+             END,
+             COALESCE(confidence, 0) DESC,
+             id
+         ) AS rn
+  FROM token_usage
+),
+effective_token_usage AS (
+  SELECT * FROM ranked_token_usage WHERE rn = 1
+)
+"#;
+
 #[derive(Debug, Clone)]
 struct PendingRequest {
-    canonical_event_id: String,
+    event_id: String,
     timestamp_ms: u64,
     pid: u32,
     comm: String,
@@ -39,6 +62,25 @@ pub struct TokenSummary {
     pub cache_read_tokens: i64,
     pub total_tokens: i64,
     pub calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageRow {
+    pub id: String,
+    pub llm_call_id: String,
+    pub timestamp_ms: u64,
+    pub pid: Option<u32>,
+    pub comm: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub total_tokens: i64,
+    pub source: String,
+    pub view_source: String,
+    pub confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,14 +118,12 @@ pub struct LlmCallRow {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SnapshotOptions {
-    pub event_limit: usize,
     pub audit_limit: usize,
 }
 
 impl Default for SnapshotOptions {
     fn default() -> Self {
         Self {
-            event_limit: 10_000,
             audit_limit: 10_000,
         }
     }
@@ -95,7 +135,7 @@ pub struct Snapshot {
     pub generated_at: String,
     pub summary: SnapshotSummary,
     pub token_summary: Vec<TokenSummary>,
-    pub events: Vec<EventRow>,
+    pub network_targets: Vec<NetworkTargetRow>,
     pub audit_events: Vec<AuditEventRow>,
     pub sessions: Vec<SessionRow>,
     pub agents: Vec<AgentRow>,
@@ -105,8 +145,7 @@ pub struct Snapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotSummary {
     pub source: String,
-    pub raw_events: i64,
-    pub canonical_events: i64,
+    pub view_events: i64,
     pub llm_calls: i64,
     pub token_usage_rows: i64,
     pub audit_events: i64,
@@ -117,30 +156,28 @@ pub struct SnapshotSummary {
     pub total_tokens: i64,
     pub start_timestamp_ms: Option<u64>,
     pub end_timestamp_ms: Option<u64>,
-    pub event_limit: usize,
     pub audit_limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventRow {
-    pub id: String,
-    pub timestamp_ms: u64,
-    pub source: String,
-    pub kind: String,
-    pub severity: String,
-    pub summary: Option<String>,
+pub struct NetworkTargetRow {
     pub pid: Option<u32>,
     pub comm: Option<String>,
-    pub host: Option<String>,
-    pub method: Option<String>,
+    pub host: String,
     pub path: Option<String>,
-    pub status_code: Option<u16>,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub session_id: Option<String>,
-    pub conversation_id: Option<String>,
-    pub adapter_id: Option<String>,
-    pub confidence: Option<f64>,
+    pub count: i64,
+    pub error_count: i64,
+    pub first_timestamp_ms: Option<u64>,
+    pub last_timestamp_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceSampleRow {
+    pub timestamp_ms: u64,
+    pub pid: Option<u32>,
+    pub comm: Option<String>,
+    pub cpu_percent: Option<f64>,
+    pub rss_mb: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +196,26 @@ pub struct AuditEventRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRow {
+    pub id: String,
+    pub session_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub timestamp_ms: u64,
+    pub tool_name: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub start_timestamp_ms: Option<u64>,
+    pub end_timestamp_ms: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub status: Option<String>,
+    pub input: Value,
+    pub output: Value,
+    pub related_pid: Option<u32>,
+    pub related_event_id: Option<String>,
+    pub view_source: String,
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRow {
     pub id: String,
     pub agent_type: String,
@@ -172,7 +229,7 @@ pub struct SessionRow {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
-    pub adapter_id: String,
+    pub view_source: String,
     pub confidence: Option<f64>,
     pub attributes: Value,
 }
@@ -199,8 +256,30 @@ pub struct InterruptionRow {
     pub status: String,
     pub reason: String,
     pub evidence: Value,
-    pub adapter_id: Option<String>,
+    pub view_source: Option<String>,
     pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "row", rename_all = "snake_case")]
+pub enum ViewUpdate {
+    LlmCall(LlmCallRow),
+    TokenUsage(TokenUsageRow),
+    AuditEvent(AuditEventRow),
+    ToolCall(ToolCallRow),
+    Session(SessionRow),
+    NetworkTarget(NetworkTargetRow),
+    ResourceSample(ResourceSampleRow),
+}
+
+pub trait ViewUpdateSink: Send {
+    fn llm_call(&mut self, _call: &LlmCallRow) {}
+    fn token_usage(&mut self, _token: &TokenUsageRow) {}
+    fn audit_event(&mut self, _audit: &AuditEventRow) {}
+    fn tool_call(&mut self, _tool: &ToolCallRow) {}
+    fn session(&mut self, _session: &SessionRow) {}
+    fn network_target(&mut self, _target: &NetworkTargetRow) {}
+    fn resource_sample(&mut self, _sample: &ResourceSampleRow) {}
 }
 
 pub struct SqliteStore {
@@ -211,12 +290,12 @@ pub struct SqliteStore {
 impl SqliteStore {
     pub fn open(path: impl AsRef<Path>) -> StorageResult<Self> {
         let conn = Connection::open(path)?;
+        reject_legacy_raw_schema(&conn)?;
         let mut store = Self { conn, next_seq: 0 };
         store.init()?;
         Ok(store)
     }
 
-    #[cfg(test)]
     pub fn open_in_memory() -> StorageResult<Self> {
         let conn = Connection::open_in_memory()?;
         let mut store = Self { conn, next_seq: 0 };
@@ -237,121 +316,234 @@ impl SqliteStore {
         self.conn.pragma_update(None, "journal_mode", "WAL").ok();
         self.conn.pragma_update(None, "foreign_keys", "ON")?;
         self.conn.execute_batch(SCHEMA)?;
-        self.migrate_schema()?;
         Ok(())
-    }
-
-    fn migrate_schema(&self) -> StorageResult<()> {
-        self.add_column_if_missing("tool_calls", "start_timestamp_ms", "INTEGER")?;
-        self.add_column_if_missing("tool_calls", "end_timestamp_ms", "INTEGER")?;
-        self.add_column_if_missing("tool_calls", "duration_ms", "INTEGER")?;
-        Ok(())
-    }
-
-    fn add_column_if_missing(
-        &self,
-        table: &str,
-        column: &str,
-        definition: &str,
-    ) -> StorageResult<()> {
-        if self.column_exists(table, column)? {
-            return Ok(());
-        }
-        self.conn.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
-            [],
-        )?;
-        Ok(())
-    }
-
-    fn column_exists(&self, table: &str, column: &str) -> StorageResult<bool> {
-        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        for row in rows {
-            if row? == column {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     pub fn insert_event(
         &mut self,
         event: &Event,
-        projector: &mut GenericProjector,
+        view: &mut ViewProjector,
     ) -> StorageResult<CanonicalEvent> {
         self.next_seq += 1;
         let raw_id = format!(
-            "raw-{}-{}-{}-{}",
+            "event-{}-{}-{}-{}",
             event.timestamp,
             sanitize_id(&event.source),
             event.pid,
             self.next_seq
         );
-        let ingest_ms = now_ms();
-        let canonical = normalize_event(event, raw_id.clone(), ingest_ms);
-        let raw_json = serde_json::to_string(event)?;
-        let attrs_json = serde_json::to_string(&canonical.attributes)?;
-
-        self.conn.execute(
-            "INSERT OR REPLACE INTO raw_events (id, timestamp_ms, source, pid, comm, raw_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                raw_id,
-                event.timestamp as i64,
-                event.source,
-                event.pid as i64,
-                event.comm,
-                raw_json
-            ],
-        )?;
-
-        self.insert_canonical(&canonical, &attrs_json)?;
-        projector.process(self, &canonical)?;
+        let canonical = normalize_event(event, raw_id, now_ms());
+        self.increment_stat("ingested_events", 1)?;
+        if let Some(sample) = self.ingest_resource_sample(&canonical)? {
+            view.emit_resource_sample(&sample);
+        }
+        if let Some(target) = self.ingest_network_target(&canonical)? {
+            view.emit_network_target(&target);
+        }
+        view.ingest(self, &canonical)?;
         Ok(canonical)
     }
 
-    fn insert_canonical(&self, event: &CanonicalEvent, attrs_json: &str) -> StorageResult<()> {
+    pub fn apply_view_update(&mut self, update: &ViewUpdate) -> StorageResult<()> {
+        self.increment_stat("ingested_events", 1)?;
+        match update {
+            ViewUpdate::LlmCall(row) => self.insert_llm_call(&LlmCallInsert {
+                id: &row.id,
+                request_event_id: None,
+                response_event_id: None,
+                start_timestamp_ms: row.start_timestamp_ms,
+                end_timestamp_ms: row.end_timestamp_ms,
+                pid: row.pid.unwrap_or_default(),
+                comm: row.comm.as_deref().unwrap_or_default(),
+                provider: row.provider.as_deref(),
+                model: row.model.as_deref(),
+                host: row.host.as_deref(),
+                path: row.path.as_deref(),
+                status_code: row.status_code,
+                error_type: None,
+                error_message: None,
+                request_body_json: Some(&row.request.to_string()),
+                response_body_json: Some(&row.response.to_string()),
+                view_source: "view_jsonl",
+                confidence: 1.0,
+            }),
+            ViewUpdate::TokenUsage(row) => self.insert_token_usage(&TokenInsert {
+                id: &row.id,
+                llm_call_id: &row.llm_call_id,
+                timestamp_ms: row.timestamp_ms,
+                pid: row.pid.unwrap_or_default(),
+                comm: row.comm.as_deref().unwrap_or_default(),
+                provider: row.provider.as_deref(),
+                model: row.model.as_deref(),
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_creation_tokens: row.cache_creation_tokens,
+                cache_read_tokens: row.cache_read_tokens,
+                total_tokens: row.total_tokens,
+                source: &row.source,
+                view_source: &row.view_source,
+                confidence: row.confidence.unwrap_or(1.0),
+            }),
+            ViewUpdate::AuditEvent(row) => self.insert_audit_event(&AuditInsert {
+                id: &row.id,
+                timestamp_ms: row.timestamp_ms,
+                audit_type: &row.audit_type,
+                pid: row.pid,
+                comm: row.comm.as_deref(),
+                subject: row.subject.as_deref(),
+                action: row.action.as_deref(),
+                target: row.target.as_deref(),
+                status: row.status.as_deref(),
+                summary: row.summary.as_deref(),
+                details_json: &row.details.to_string(),
+            }),
+            ViewUpdate::ToolCall(row) => self.insert_tool_call(&ToolCallInsert {
+                id: &row.id,
+                session_id: row.session_id.as_deref(),
+                conversation_id: row.conversation_id.as_deref(),
+                timestamp_ms: row.timestamp_ms,
+                tool_name: row.tool_name.as_deref(),
+                tool_call_id: row.tool_call_id.as_deref(),
+                start_timestamp_ms: row.start_timestamp_ms,
+                end_timestamp_ms: row.end_timestamp_ms,
+                duration_ms: row.duration_ms,
+                status: row.status.as_deref(),
+                input_json: Some(&row.input.to_string()),
+                output_json: Some(&row.output.to_string()),
+                related_pid: row.related_pid,
+                related_event_id: row.related_event_id.as_deref(),
+                view_source: &row.view_source,
+                confidence: row.confidence.unwrap_or(1.0),
+            }),
+            ViewUpdate::Session(row) => self.upsert_session(&SessionUpsert {
+                id: &row.id,
+                agent_type: &row.agent_type,
+                agent_name: row.agent_name.as_deref(),
+                pid: row.pid,
+                comm: row.comm.as_deref(),
+                start_timestamp_ms: row.start_timestamp_ms,
+                end_timestamp_ms: row.end_timestamp_ms,
+                model: row.model.as_deref(),
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                total_tokens: row.total_tokens,
+                view_source: &row.view_source,
+                confidence: row.confidence.unwrap_or(1.0) as f32,
+                attributes_json: &row.attributes.to_string(),
+            }),
+            ViewUpdate::NetworkTarget(row) => self.upsert_network_target(row),
+            ViewUpdate::ResourceSample(row) => self.insert_resource_sample(row),
+        }
+    }
+
+    fn increment_stat(&self, key: &str, delta: i64) -> StorageResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO canonical_events (
-                id, raw_event_id, schema_version, timestamp_ms, ingest_timestamp_ms,
-                source, kind, severity, summary, pid, tid, ppid, uid, comm, container_id,
-                host, method, path, status_code, provider, model, request_id, trace_id,
-                session_id, conversation_id, parent_event_id, adapter_id, adapter_version,
-                confidence, attributes_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                       ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+            "INSERT INTO view_stats (key, value)
+             VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = value + excluded.value",
+            params![key, delta],
+        )?;
+        Ok(())
+    }
+
+    fn view_stat(&self, key: &str) -> StorageResult<i64> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT COALESCE(value, 0) FROM view_stats WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .unwrap_or(0))
+    }
+
+    fn ingest_network_target(
+        &self,
+        event: &CanonicalEvent,
+    ) -> StorageResult<Option<NetworkTargetRow>> {
+        let Some(host) = event.host.as_deref().filter(|host| !host.is_empty()) else {
+            return Ok(None);
+        };
+        let path = event.path.as_deref().filter(|path| !path.is_empty());
+        let error_count = i64::from(
+            event.kind == EventKind::LlmError
+                || event.status_code.map(|code| code >= 400).unwrap_or(false),
+        );
+        let row = NetworkTargetRow {
+            pid: event.pid,
+            comm: event.comm.clone(),
+            host: host.to_string(),
+            path: path.map(str::to_string),
+            count: 1,
+            error_count,
+            first_timestamp_ms: Some(event.timestamp_ms),
+            last_timestamp_ms: Some(event.timestamp_ms),
+        };
+        self.upsert_network_target(&row)?;
+        Ok(Some(row))
+    }
+
+    fn ingest_resource_sample(
+        &self,
+        event: &CanonicalEvent,
+    ) -> StorageResult<Option<ResourceSampleRow>> {
+        if event.kind != EventKind::ResourceSample {
+            return Ok(None);
+        }
+        let cpu = number_or_string(event.attributes.get("cpu").and_then(|v| v.get("percent")));
+        let rss_mb = number_or_string(event.attributes.get("memory").and_then(|v| v.get("rss_mb")));
+        let row = ResourceSampleRow {
+            timestamp_ms: event.timestamp_ms,
+            pid: event.pid,
+            comm: event.comm.clone(),
+            cpu_percent: cpu,
+            rss_mb: rss_mb.map(|v| v.max(0.0) as i64),
+        };
+        self.insert_resource_sample(&row)?;
+        Ok(Some(row))
+    }
+
+    fn upsert_network_target(&self, target: &NetworkTargetRow) -> StorageResult<()> {
+        let id = format!(
+            "net-{}-{}-{}",
+            target.pid.unwrap_or(0),
+            sanitize_id(&target.host),
+            sanitize_id(target.path.as_deref().unwrap_or(""))
+        );
+        self.conn.execute(
+            "INSERT INTO network_targets (
+                id, pid, comm, host, path, count, error_count, first_timestamp_ms, last_timestamp_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+                count = count + excluded.count,
+                error_count = error_count + excluded.error_count,
+                first_timestamp_ms = MIN(first_timestamp_ms, excluded.first_timestamp_ms),
+                last_timestamp_ms = MAX(last_timestamp_ms, excluded.last_timestamp_ms)",
             params![
-                event.event_id,
-                event.raw_event_id,
-                event.schema_version as i64,
-                event.timestamp_ms as i64,
-                event.ingest_timestamp_ms as i64,
-                event.source,
-                event.kind.as_str(),
-                event.severity.as_str(),
-                event.summary,
-                event.pid.map(|v| v as i64),
-                event.tid.map(|v| v as i64),
-                event.ppid.map(|v| v as i64),
-                event.uid.map(|v| v as i64),
-                event.comm,
-                event.container_id,
-                event.host,
-                event.method,
-                event.path,
-                event.status_code.map(|v| v as i64),
-                event.provider,
-                event.model,
-                event.request_id,
-                event.trace_id,
-                event.session_id,
-                event.conversation_id,
-                event.parent_event_id,
-                event.adapter_id,
-                event.adapter_version,
-                event.confidence,
-                attrs_json,
+                id,
+                target.pid.map(|v| v as i64),
+                target.comm.as_deref(),
+                target.host.as_str(),
+                target.path.as_deref(),
+                target.count,
+                target.error_count,
+                target.first_timestamp_ms.map(|v| v as i64),
+                target.last_timestamp_ms.map(|v| v as i64),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn insert_resource_sample(&self, sample: &ResourceSampleRow) -> StorageResult<()> {
+        self.conn.execute(
+            "INSERT INTO resource_samples (timestamp_ms, pid, comm, cpu_percent, rss_mb)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                sample.timestamp_ms as i64,
+                sample.pid.map(|v| v as i64),
+                sample.comm.as_deref(),
+                sample.cpu_percent,
+                sample.rss_mb,
             ],
         )?;
         Ok(())
@@ -362,7 +554,7 @@ impl SqliteStore {
             "INSERT OR REPLACE INTO llm_calls (
                 id, request_event_id, response_event_id, start_timestamp_ms, end_timestamp_ms,
                 pid, comm, provider, model, host, path, status_code, error_type, error_message,
-                request_body_json, response_body_json, adapter_id, confidence
+                request_body_json, response_body_json, view_source, confidence
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 call.id,
@@ -381,7 +573,7 @@ impl SqliteStore {
                 call.error_message,
                 call.request_body_json,
                 call.response_body_json,
-                call.adapter_id,
+                call.view_source,
                 call.confidence,
             ],
         )?;
@@ -393,7 +585,7 @@ impl SqliteStore {
             "INSERT OR REPLACE INTO token_usage (
                 id, llm_call_id, timestamp_ms, pid, comm, provider, model,
                 input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                total_tokens, source, adapter_id, confidence
+                total_tokens, source, view_source, confidence
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 token.id,
@@ -409,7 +601,7 @@ impl SqliteStore {
                 token.cache_read_tokens,
                 token.total_tokens,
                 token.source,
-                token.adapter_id,
+                token.view_source,
                 token.confidence,
             ],
         )?;
@@ -419,12 +611,11 @@ impl SqliteStore {
     fn insert_audit_event(&self, audit: &AuditInsert<'_>) -> StorageResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO audit_events (
-                id, canonical_event_id, timestamp_ms, audit_type, pid, comm, subject,
+                id, timestamp_ms, audit_type, pid, comm, subject,
                 action, target, status, summary, details_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 audit.id,
-                audit.canonical_event_id,
                 audit.timestamp_ms as i64,
                 audit.audit_type,
                 audit.pid.map(|v| v as i64),
@@ -440,21 +631,65 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn insert_interruption(&self, interruption: &InterruptionInsert<'_>) -> StorageResult<()> {
+    fn insert_tool_call(&self, tool: &ToolCallInsert<'_>) -> StorageResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO interruptions (
-                id, timestamp_ms, session_id, conversation_id, severity, category,
-                status, reason, evidence_json, adapter_id, confidence
-             ) VALUES (?1, ?2, NULL, NULL, ?3, ?4, 'open', ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO tool_calls (
+                id, session_id, conversation_id, timestamp_ms, tool_name, tool_call_id,
+                start_timestamp_ms, end_timestamp_ms, duration_ms, status, input_json,
+                output_json, related_pid, related_event_id, view_source, confidence
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
-                interruption.id,
-                interruption.timestamp_ms as i64,
-                interruption.severity,
-                interruption.category,
-                interruption.reason,
-                interruption.evidence_json,
-                interruption.adapter_id,
-                interruption.confidence,
+                tool.id,
+                tool.session_id,
+                tool.conversation_id,
+                tool.timestamp_ms as i64,
+                tool.tool_name,
+                tool.tool_call_id,
+                tool.start_timestamp_ms.map(|v| v as i64),
+                tool.end_timestamp_ms.map(|v| v as i64),
+                tool.duration_ms.map(|v| v as i64),
+                tool.status,
+                tool.input_json,
+                tool.output_json,
+                tool.related_pid.map(|v| v as i64),
+                tool.related_event_id,
+                tool.view_source,
+                tool.confidence,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn upsert_session(&self, session: &SessionUpsert<'_>) -> StorageResult<()> {
+        self.conn.execute(
+            "INSERT INTO agent_sessions (
+                id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
+                status, model, input_tokens, output_tokens, total_tokens, view_source, confidence,
+                attributes_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'observed', ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+                start_timestamp_ms = MIN(start_timestamp_ms, excluded.start_timestamp_ms),
+                end_timestamp_ms = MAX(COALESCE(end_timestamp_ms, 0), COALESCE(excluded.end_timestamp_ms, 0)),
+                model = COALESCE(NULLIF(excluded.model, 'unknown'), model, excluded.model),
+                input_tokens = input_tokens + excluded.input_tokens,
+                output_tokens = output_tokens + excluded.output_tokens,
+                total_tokens = total_tokens + excluded.total_tokens,
+                confidence = MAX(COALESCE(confidence, 0), COALESCE(excluded.confidence, 0))",
+            params![
+                session.id,
+                session.agent_type,
+                session.agent_name,
+                session.pid.map(|v| v as i64),
+                session.comm,
+                session.start_timestamp_ms as i64,
+                session.end_timestamp_ms.map(|v| v as i64),
+                session.model,
+                session.input_tokens,
+                session.output_tokens,
+                session.total_tokens,
+                session.view_source,
+                session.confidence,
+                session.attributes_json,
             ],
         )?;
         Ok(())
@@ -468,14 +703,15 @@ impl SqliteStore {
             _ => "COALESCE(model, 'unknown')",
         };
         let sql = format!(
-            "SELECT {group_expr} AS grp,
+            "{EFFECTIVE_TOKEN_USAGE_CTE}
+             SELECT {group_expr} AS grp,
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(cache_creation_tokens), 0),
                     COALESCE(SUM(cache_read_tokens), 0),
                     COALESCE(SUM(total_tokens), 0),
                     COUNT(*)
-             FROM token_usage
+             FROM effective_token_usage
              GROUP BY grp
              ORDER BY SUM(total_tokens) DESC"
         );
@@ -491,11 +727,7 @@ impl SqliteStore {
                 calls: row.get(6)?,
             })
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        collect_rows(rows)
     }
 
     pub fn audit_rows(
@@ -526,36 +758,33 @@ impl SqliteStore {
                 details: parse_json_value(&row.get::<_, String>(9)?),
             })
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        collect_rows(rows)
     }
 
     pub fn llm_call_rows(&self, limit: usize) -> StorageResult<Vec<LlmCallRow>> {
-        let limit = limit.clamp(1, 10_000) as i64;
-        let mut stmt = self.conn.prepare(
-            "SELECT
+        let sql = format!(
+            "{EFFECTIVE_TOKEN_USAGE_CTE}
+             SELECT
                 l.id, l.start_timestamp_ms, l.end_timestamp_ms, l.pid, l.comm,
                 l.provider, l.model, l.host, l.path, l.status_code,
                 COALESCE(t.input_tokens, 0), COALESCE(t.output_tokens, 0),
                 COALESCE(t.total_tokens, 0),
-                COALESCE(l.request_body_json, '{}'),
-                COALESCE(l.response_body_json, '{}')
+                COALESCE(l.request_body_json, '{{}}'),
+                COALESCE(l.response_body_json, '{{}}')
              FROM llm_calls l
              LEFT JOIN (
                 SELECT llm_call_id,
                        SUM(input_tokens) AS input_tokens,
                        SUM(output_tokens) AS output_tokens,
                        SUM(total_tokens) AS total_tokens
-                FROM token_usage
+                FROM effective_token_usage
                 GROUP BY llm_call_id
              ) t ON t.llm_call_id = l.id
              ORDER BY l.start_timestamp_ms DESC
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], |row| {
+             LIMIT ?1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit.clamp(1, 10_000) as i64], |row| {
             let request_json: String = row.get(13)?;
             let response_json: String = row.get(14)?;
             Ok(LlmCallRow {
@@ -576,11 +805,7 @@ impl SqliteStore {
                 response: parse_json_value(&response_json),
             })
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        collect_rows(rows)
     }
 
     pub fn export_snapshot(&self, options: SnapshotOptions) -> StorageResult<Snapshot> {
@@ -589,7 +814,7 @@ impl SqliteStore {
             generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             summary: self.snapshot_summary(options)?,
             token_summary: self.token_summary("model")?,
-            events: self.snapshot_events(options.event_limit)?,
+            network_targets: self.snapshot_network_targets()?,
             audit_events: self.snapshot_audit_events(options.audit_limit)?,
             sessions: self.snapshot_sessions()?,
             agents: self.snapshot_agents()?,
@@ -598,25 +823,36 @@ impl SqliteStore {
     }
 
     fn snapshot_summary(&self, options: SnapshotOptions) -> StorageResult<SnapshotSummary> {
-        let (input_tokens, output_tokens, total_tokens): (i64, i64, i64) = self.conn.query_row(
-            "SELECT COALESCE(SUM(input_tokens), 0),
+        let sql = format!(
+            "{EFFECTIVE_TOKEN_USAGE_CTE}
+             SELECT COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_tokens), 0)
-             FROM token_usage",
+             FROM effective_token_usage"
+        );
+        let (input_tokens, output_tokens, total_tokens): (i64, i64, i64) =
+            self.conn
+                .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let (start_timestamp_ms, end_timestamp_ms): (Option<i64>, Option<i64>) = self.conn.query_row(
+            "SELECT MIN(ts), MAX(ts)
+             FROM (
+                SELECT start_timestamp_ms AS ts FROM llm_calls
+                UNION ALL SELECT end_timestamp_ms FROM llm_calls WHERE end_timestamp_ms IS NOT NULL
+                UNION ALL SELECT timestamp_ms FROM token_usage
+                UNION ALL SELECT timestamp_ms FROM audit_events
+                UNION ALL SELECT timestamp_ms FROM tool_calls
+                UNION ALL SELECT first_timestamp_ms FROM network_targets
+                UNION ALL SELECT last_timestamp_ms FROM network_targets
+                UNION ALL SELECT start_timestamp_ms FROM agent_sessions
+                UNION ALL SELECT end_timestamp_ms FROM agent_sessions WHERE end_timestamp_ms IS NOT NULL
+                UNION ALL SELECT timestamp_ms FROM resource_samples
+             )",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let (start_timestamp_ms, end_timestamp_ms): (Option<i64>, Option<i64>) =
-            self.conn.query_row(
-                "SELECT MIN(timestamp_ms), MAX(timestamp_ms) FROM canonical_events",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-
         Ok(SnapshotSummary {
             source: "sqlite".to_string(),
-            raw_events: self.count_table("raw_events")?,
-            canonical_events: self.count_table("canonical_events")?,
+            view_events: self.count_table("view_events")?,
             llm_calls: self.count_table("llm_calls")?,
             token_usage_rows: self.count_table("token_usage")?,
             audit_events: self.count_table("audit_events")?,
@@ -627,15 +863,15 @@ impl SqliteStore {
             total_tokens,
             start_timestamp_ms: start_timestamp_ms.map(|v| v as u64),
             end_timestamp_ms: end_timestamp_ms.map(|v| v as u64),
-            event_limit: options.event_limit,
             audit_limit: options.audit_limit,
         })
     }
 
     fn count_table(&self, table: &str) -> StorageResult<i64> {
+        if table == "view_events" {
+            return self.view_stat("ingested_events");
+        }
         let sql = match table {
-            "raw_events" => "SELECT COUNT(*) FROM raw_events",
-            "canonical_events" => "SELECT COUNT(*) FROM canonical_events",
             "llm_calls" => "SELECT COUNT(*) FROM llm_calls",
             "token_usage" => "SELECT COUNT(*) FROM token_usage",
             "audit_events" => "SELECT COUNT(*) FROM audit_events",
@@ -646,35 +882,22 @@ impl SqliteStore {
         Ok(self.conn.query_row(sql, [], |r| r.get(0))?)
     }
 
-    fn snapshot_events(&self, limit: usize) -> StorageResult<Vec<EventRow>> {
+    fn snapshot_network_targets(&self) -> StorageResult<Vec<NetworkTargetRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp_ms, source, kind, severity, summary, pid, comm,
-                    host, method, path, status_code, provider, model, session_id,
-                    conversation_id, adapter_id, confidence
-             FROM canonical_events
-             ORDER BY timestamp_ms, id
-             LIMIT ?1",
+            "SELECT pid, comm, host, path, count, error_count, first_timestamp_ms, last_timestamp_ms
+             FROM network_targets
+             ORDER BY count DESC, host, path",
         )?;
-        let rows = stmt.query_map(params![bounded_limit(limit)], |row| {
-            Ok(EventRow {
-                id: row.get(0)?,
-                timestamp_ms: row.get::<_, i64>(1)? as u64,
-                source: row.get(2)?,
-                kind: row.get(3)?,
-                severity: row.get(4)?,
-                summary: row.get(5)?,
-                pid: row.get::<_, Option<i64>>(6)?.map(|v| v as u32),
-                comm: row.get(7)?,
-                host: row.get(8)?,
-                method: row.get(9)?,
-                path: row.get(10)?,
-                status_code: row.get::<_, Option<i64>>(11)?.map(|v| v as u16),
-                provider: row.get(12)?,
-                model: row.get(13)?,
-                session_id: row.get(14)?,
-                conversation_id: row.get(15)?,
-                adapter_id: row.get(16)?,
-                confidence: row.get(17)?,
+        let rows = stmt.query_map([], |row| {
+            Ok(NetworkTargetRow {
+                pid: row.get::<_, Option<i64>>(0)?.map(|v| v as u32),
+                comm: row.get(1)?,
+                host: row.get(2)?,
+                path: row.get(3)?,
+                count: row.get(4)?,
+                error_count: row.get(5)?,
+                first_timestamp_ms: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
+                last_timestamp_ms: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
             })
         })?;
         collect_rows(rows)
@@ -710,8 +933,8 @@ impl SqliteStore {
     fn snapshot_sessions(&self) -> StorageResult<Vec<SessionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, agent_type, agent_name, pid, comm, start_timestamp_ms,
-                    end_timestamp_ms, status, model, input_tokens, output_tokens,
-                    total_tokens, adapter_id, confidence, attributes_json
+                    NULLIF(end_timestamp_ms, 0), status, model, input_tokens, output_tokens,
+                    total_tokens, view_source, confidence, attributes_json
              FROM agent_sessions
              ORDER BY start_timestamp_ms, id",
         )?;
@@ -730,7 +953,7 @@ impl SqliteStore {
                 input_tokens: row.get(9)?,
                 output_tokens: row.get(10)?,
                 total_tokens: row.get(11)?,
-                adapter_id: row.get(12)?,
+                view_source: row.get(12)?,
                 confidence: row.get(13)?,
                 attributes: parse_json_value(&attributes_json),
             })
@@ -746,7 +969,7 @@ impl SqliteStore {
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_tokens), 0),
-                    MAX(COALESCE(end_timestamp_ms, start_timestamp_ms))
+                    MAX(COALESCE(NULLIF(end_timestamp_ms, 0), start_timestamp_ms))
              FROM agent_sessions
              GROUP BY agent_type
              ORDER BY agent_type",
@@ -768,7 +991,7 @@ impl SqliteStore {
     fn snapshot_interruptions(&self) -> StorageResult<Vec<InterruptionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp_ms, session_id, conversation_id, severity,
-                    category, status, reason, evidence_json, adapter_id, confidence
+                    category, status, reason, evidence_json, view_source, confidence
              FROM interruptions
              ORDER BY timestamp_ms, id",
         )?;
@@ -784,12 +1007,967 @@ impl SqliteStore {
                 status: row.get(6)?,
                 reason: row.get(7)?,
                 evidence: parse_json_value(&evidence_json),
-                adapter_id: row.get(9)?,
+                view_source: row.get(9)?,
                 confidence: row.get(10)?,
             })
         })?;
         collect_rows(rows)
     }
+}
+
+#[derive(Default)]
+pub struct ViewProjector {
+    pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
+    sinks: Vec<Box<dyn ViewUpdateSink>>,
+}
+
+impl ViewProjector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_sink(&mut self, sink: Box<dyn ViewUpdateSink>) {
+        self.sinks.push(sink);
+    }
+
+    fn emit_llm_call(&mut self, call: &LlmCallRow) {
+        for sink in &mut self.sinks {
+            sink.llm_call(call);
+        }
+    }
+
+    fn emit_token_usage(&mut self, token: &TokenUsageRow) {
+        for sink in &mut self.sinks {
+            sink.token_usage(token);
+        }
+    }
+
+    fn emit_audit_event(&mut self, audit: &AuditEventRow) {
+        for sink in &mut self.sinks {
+            sink.audit_event(audit);
+        }
+    }
+
+    fn emit_tool_call(&mut self, tool: &ToolCallRow) {
+        for sink in &mut self.sinks {
+            sink.tool_call(tool);
+        }
+    }
+
+    fn emit_session(&mut self, session: &SessionRow) {
+        for sink in &mut self.sinks {
+            sink.session(session);
+        }
+    }
+
+    fn emit_network_target(&mut self, target: &NetworkTargetRow) {
+        for sink in &mut self.sinks {
+            sink.network_target(target);
+        }
+    }
+
+    fn emit_resource_sample(&mut self, sample: &ResourceSampleRow) {
+        for sink in &mut self.sinks {
+            sink.resource_sample(sample);
+        }
+    }
+
+    fn insert_llm_call(
+        &mut self,
+        store: &SqliteStore,
+        call: &LlmCallInsert<'_>,
+    ) -> StorageResult<LlmCallRow> {
+        store.insert_llm_call(call)?;
+        Ok(call.to_row())
+    }
+
+    fn insert_token_usage(
+        &mut self,
+        store: &SqliteStore,
+        token: &TokenInsert<'_>,
+    ) -> StorageResult<TokenUsageRow> {
+        store.insert_token_usage(token)?;
+        let row = token.to_row();
+        self.emit_token_usage(&row);
+        Ok(row)
+    }
+
+    fn insert_audit_event(
+        &mut self,
+        store: &SqliteStore,
+        audit: &AuditInsert<'_>,
+    ) -> StorageResult<AuditEventRow> {
+        store.insert_audit_event(audit)?;
+        let row = audit.to_row();
+        self.emit_audit_event(&row);
+        Ok(row)
+    }
+
+    fn insert_tool_call(
+        &mut self,
+        store: &SqliteStore,
+        tool: &ToolCallInsert<'_>,
+    ) -> StorageResult<ToolCallRow> {
+        store.insert_tool_call(tool)?;
+        let row = tool.to_row();
+        self.emit_tool_call(&row);
+        Ok(row)
+    }
+
+    fn upsert_session(
+        &mut self,
+        store: &SqliteStore,
+        session: &SessionUpsert<'_>,
+    ) -> StorageResult<SessionRow> {
+        store.upsert_session(session)?;
+        let row = session.to_row();
+        self.emit_session(&row);
+        Ok(row)
+    }
+
+    fn ingest(&mut self, store: &SqliteStore, event: &CanonicalEvent) -> StorageResult<()> {
+        self.ingest_agent_specific_event(store, event)?;
+        match event.kind {
+            EventKind::LlmRequest => self.ingest_llm_request(store, event)?,
+            EventKind::HttpResponse | EventKind::LlmResponse | EventKind::LlmError => {
+                self.ingest_llm_response(store, event)?
+            }
+            EventKind::ProcessExec => self.ingest_process_audit(store, event, "exec")?,
+            EventKind::ProcessExit => self.ingest_process_audit(store, event, "exit")?,
+            EventKind::FsOpen if is_writable_open(event) => self.ingest_file_audit(store, event)?,
+            EventKind::FsWrite | EventKind::FsMutation => self.ingest_file_audit(store, event)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn ingest_llm_request(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        let (Some(pid), Some(tid)) = (event.pid, event.tid) else {
+            return Ok(());
+        };
+        let req = PendingRequest {
+            event_id: event.event_id.clone(),
+            timestamp_ms: event.timestamp_ms,
+            pid,
+            comm: event.comm.clone().unwrap_or_default(),
+            provider: event.provider.clone(),
+            model: event.model.clone(),
+            host: event.host.clone(),
+            path: event.path.clone(),
+            request_id: event.request_id.clone(),
+            body_json: body_json(&event.attributes),
+        };
+        self.insert_orphan_llm_request(store, &req)?;
+        self.pending.entry((pid, tid)).or_default().push_back(req);
+        Ok(())
+    }
+
+    fn ingest_llm_response(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        let Some(pid) = event.pid else {
+            return Ok(());
+        };
+        if let Some(tid) = event.tid
+            && let Some((req, confidence)) = self.take_matching_request(pid, tid, event)
+        {
+            return self.upsert_llm_pair(store, req, event, confidence);
+        }
+        self.insert_orphan_llm_response(store, event)
+    }
+
+    fn take_matching_request(
+        &mut self,
+        pid: u32,
+        tid: u64,
+        resp: &CanonicalEvent,
+    ) -> Option<(PendingRequest, f32)> {
+        let requests = self.pending.get_mut(&(pid, tid))?;
+        let (req, confidence) = if let Some(resp_request_id) = resp.request_id.as_deref() {
+            let pos = requests
+                .iter()
+                .position(|req| req.request_id.as_deref() == Some(resp_request_id))?;
+            (requests.remove(pos)?, 0.95)
+        } else if requests.len() == 1 {
+            (requests.pop_front()?, 0.75)
+        } else {
+            return None;
+        };
+        if requests.is_empty() {
+            self.pending.remove(&(pid, tid));
+        }
+        Some((req, confidence))
+    }
+
+    fn upsert_llm_pair(
+        &mut self,
+        store: &SqliteStore,
+        req: PendingRequest,
+        resp: &CanonicalEvent,
+        confidence: f32,
+    ) -> StorageResult<()> {
+        let response_body = response_body_json(resp);
+        let model = req
+            .model
+            .clone()
+            .or_else(|| response_body.as_ref().and_then(extract_model))
+            .or_else(|| resp.model.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider = req
+            .provider
+            .clone()
+            .or_else(|| req.host.as_deref().map(provider_from_host));
+        let llm_call_id = format!("llm-{}", req.event_id);
+        let request_body_json = req.body_json.as_ref().map(Value::to_string);
+        let response_body_json = response_body.as_ref().map(Value::to_string);
+        let status_code = resp.status_code;
+        let error_type = status_code
+            .filter(|c| *c >= 400)
+            .map(|c| format!("http_{c}"));
+
+        let mut call_row = self.insert_llm_call(
+            store,
+            &LlmCallInsert {
+                id: &llm_call_id,
+                request_event_id: Some(req.event_id.as_str()),
+                response_event_id: Some(resp.event_id.as_str()),
+                start_timestamp_ms: req.timestamp_ms,
+                end_timestamp_ms: Some(resp.timestamp_ms),
+                pid: req.pid,
+                comm: &req.comm,
+                provider: provider.as_deref(),
+                model: Some(&model),
+                host: req.host.as_deref(),
+                path: req.path.as_deref(),
+                status_code,
+                error_type: error_type.as_deref(),
+                error_message: error_type.as_deref(),
+                request_body_json: request_body_json.as_deref(),
+                response_body_json: response_body_json.as_deref(),
+                view_source: "view",
+                confidence,
+            },
+        )?;
+        if let Some(usage) = self.ingest_response_usage_and_tools(
+            store,
+            resp,
+            &llm_call_id,
+            req.pid,
+            &req.comm,
+            provider.as_deref(),
+            &model,
+            req.host.as_deref(),
+            request_body_json.as_deref(),
+            response_body_json.as_deref(),
+            confidence,
+        )? {
+            call_row.input_tokens = usage.input_tokens;
+            call_row.output_tokens = usage.output_tokens;
+            call_row.total_tokens = usage.total_tokens;
+        }
+        self.insert_audit_event(
+            store,
+            &AuditInsert {
+                id: &format!("audit-{llm_call_id}"),
+                timestamp_ms: resp.timestamp_ms,
+                audit_type: "llm",
+                pid: Some(req.pid),
+                comm: Some(&req.comm),
+                subject: Some(&model),
+                action: Some("call"),
+                target: req.host.as_deref(),
+                status: Some(if status_code.map(|c| c >= 400).unwrap_or(false) {
+                    "failure"
+                } else {
+                    "success"
+                }),
+                summary: Some("LLM call"),
+                details_json: response_body_json.as_deref().unwrap_or("{}"),
+            },
+        )?;
+        self.emit_llm_call(&call_row);
+        Ok(())
+    }
+
+    fn insert_orphan_llm_request(
+        &mut self,
+        store: &SqliteStore,
+        req: &PendingRequest,
+    ) -> StorageResult<()> {
+        let llm_call_id = format!("llm-{}", req.event_id);
+        let provider = req
+            .provider
+            .clone()
+            .or_else(|| req.host.as_deref().map(provider_from_host));
+        let request_body_json = req.body_json.as_ref().map(Value::to_string);
+        let call_row = self.insert_llm_call(
+            store,
+            &LlmCallInsert {
+                id: &llm_call_id,
+                request_event_id: Some(req.event_id.as_str()),
+                response_event_id: None,
+                start_timestamp_ms: req.timestamp_ms,
+                end_timestamp_ms: None,
+                pid: req.pid,
+                comm: &req.comm,
+                provider: provider.as_deref(),
+                model: req.model.as_deref(),
+                host: req.host.as_deref(),
+                path: req.path.as_deref(),
+                status_code: None,
+                error_type: None,
+                error_message: None,
+                request_body_json: request_body_json.as_deref(),
+                response_body_json: None,
+                view_source: "view",
+                confidence: 0.40,
+            },
+        )?;
+        self.insert_audit_event(
+            store,
+            &AuditInsert {
+                id: &format!("audit-{llm_call_id}"),
+                timestamp_ms: req.timestamp_ms,
+                audit_type: "llm",
+                pid: Some(req.pid),
+                comm: Some(&req.comm),
+                subject: req.model.as_deref(),
+                action: Some("request"),
+                target: req.host.as_deref(),
+                status: Some("orphan_request"),
+                summary: Some("LLM request"),
+                details_json: request_body_json.as_deref().unwrap_or("{}"),
+            },
+        )?;
+        self.emit_llm_call(&call_row);
+        Ok(())
+    }
+
+    fn insert_orphan_llm_response(
+        &mut self,
+        store: &SqliteStore,
+        resp: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        let response_body = response_body_json(resp);
+        let response_body_text = response_body.as_ref().map(Value::to_string);
+        let model = resp
+            .model
+            .clone()
+            .or_else(|| response_body.as_ref().and_then(extract_model))
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider = resp
+            .provider
+            .clone()
+            .or_else(|| resp.host.as_deref().map(provider_from_host));
+        let pid = resp.pid.unwrap_or(0);
+        let comm = resp.comm.clone().unwrap_or_default();
+        let llm_call_id = format!("llm-orphan-{}", resp.event_id);
+        let mut call_row = self.insert_llm_call(
+            store,
+            &LlmCallInsert {
+                id: &llm_call_id,
+                request_event_id: None,
+                response_event_id: Some(resp.event_id.as_str()),
+                start_timestamp_ms: resp.timestamp_ms,
+                end_timestamp_ms: Some(resp.timestamp_ms),
+                pid,
+                comm: &comm,
+                provider: provider.as_deref(),
+                model: Some(&model),
+                host: resp.host.as_deref(),
+                path: resp.path.as_deref(),
+                status_code: resp.status_code,
+                error_type: None,
+                error_message: None,
+                request_body_json: None,
+                response_body_json: response_body_text.as_deref(),
+                view_source: "view",
+                confidence: 0.35,
+            },
+        )?;
+        if let Some(usage) = self.ingest_response_usage_and_tools(
+            store,
+            resp,
+            &llm_call_id,
+            pid,
+            &comm,
+            provider.as_deref(),
+            &model,
+            resp.host.as_deref(),
+            None,
+            response_body_text.as_deref(),
+            0.35,
+        )? {
+            call_row.input_tokens = usage.input_tokens;
+            call_row.output_tokens = usage.output_tokens;
+            call_row.total_tokens = usage.total_tokens;
+        }
+        self.insert_audit_event(
+            store,
+            &AuditInsert {
+                id: &format!("audit-{llm_call_id}"),
+                timestamp_ms: resp.timestamp_ms,
+                audit_type: "llm",
+                pid: Some(pid),
+                comm: Some(&comm),
+                subject: Some(&model),
+                action: Some("response"),
+                target: resp.host.as_deref(),
+                status: Some("orphan_response"),
+                summary: Some("LLM response"),
+                details_json: response_body_text.as_deref().unwrap_or("{}"),
+            },
+        )?;
+        self.emit_llm_call(&call_row);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ingest_response_usage_and_tools(
+        &mut self,
+        store: &SqliteStore,
+        resp: &CanonicalEvent,
+        llm_call_id: &str,
+        pid: u32,
+        comm: &str,
+        provider: Option<&str>,
+        model: &str,
+        host: Option<&str>,
+        request_body_json: Option<&str>,
+        response_body_json: Option<&str>,
+        confidence: f32,
+    ) -> StorageResult<Option<TokenUsageRow>> {
+        let response_body =
+            response_body_json.and_then(|text| serde_json::from_str::<Value>(text).ok());
+        let usage = if resp.source == "sse_processor" {
+            extract_token_usage_from_sse(&resp.attributes)
+        } else {
+            response_body
+                .as_ref()
+                .map(extract_token_usage)
+                .unwrap_or_default()
+        };
+        let mut usage_row = None;
+        if !usage.is_empty() {
+            let token_id = format!("token-{llm_call_id}");
+            usage_row = Some(self.insert_token_usage(
+                store,
+                &TokenInsert {
+                    id: &token_id,
+                    llm_call_id,
+                    timestamp_ms: resp.timestamp_ms,
+                    pid,
+                    comm,
+                    provider,
+                    model: Some(model),
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    total_tokens: usage.total_tokens(),
+                    source: "response_usage",
+                    view_source: "view",
+                    confidence,
+                },
+            )?);
+            self.upsert_known_agent_session(
+                store,
+                pid,
+                comm,
+                resp.timestamp_ms,
+                Some(resp.timestamp_ms),
+                provider,
+                host,
+                Some(model),
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens(),
+                request_body_json,
+                response_body_json,
+                confidence,
+            )?;
+        }
+        self.ingest_sse_tools(store, resp, llm_call_id, pid, confidence)?;
+        Ok(usage_row)
+    }
+
+    fn ingest_agent_specific_event(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        self.ingest_claude_telemetry(store, event)?;
+        self.ingest_gemini_stdio_stats(store, event)
+    }
+
+    fn ingest_claude_telemetry(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        let host = event.host.as_deref().unwrap_or_default();
+        if !host.contains("datadoghq.com") && event.source != "ssl" {
+            return Ok(());
+        }
+        let body = body_json(&event.attributes).or_else(|| {
+            event
+                .attributes
+                .get("data")
+                .and_then(|v| v.as_str())
+                .and_then(parse_json_str)
+        });
+        let Some(Value::Array(items)) = body else {
+            return Ok(());
+        };
+        let pid = event.pid.unwrap_or(0);
+        let comm = event.comm.as_deref().unwrap_or_default();
+        for (idx, item) in items.iter().enumerate() {
+            let message = item
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if message == "tengu_api_success" {
+                let input = json_i64(item, "input_tokens");
+                let output = json_i64(item, "output_tokens");
+                let cache = json_i64(item, "cached_input_tokens");
+                let total = input + output + cache;
+                if total <= 0 {
+                    continue;
+                }
+                let model = item
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let llm_call_id = format!("claude-telemetry-{}-{idx}", event.event_id);
+                self.insert_token_usage(
+                    store,
+                    &TokenInsert {
+                        id: &format!("token-{llm_call_id}"),
+                        llm_call_id: &llm_call_id,
+                        timestamp_ms: event.timestamp_ms,
+                        pid,
+                        comm,
+                        provider: Some("anthropic"),
+                        model: Some(model),
+                        input_tokens: input,
+                        output_tokens: output,
+                        cache_creation_tokens: 0,
+                        cache_read_tokens: cache,
+                        total_tokens: total,
+                        source: "claude_telemetry",
+                        view_source: "view",
+                        confidence: 0.80,
+                    },
+                )?;
+                self.upsert_session_for_agent(
+                    store,
+                    "claude-code",
+                    "Claude Code",
+                    pid,
+                    comm,
+                    event.timestamp_ms,
+                    Some(event.timestamp_ms),
+                    Some(model),
+                    input,
+                    output,
+                    total,
+                    0.80,
+                    "claude-telemetry",
+                )?;
+            } else if message == "tengu_tool_use_success" {
+                let tool_name = item.get("tool_name").and_then(Value::as_str).unwrap_or("?");
+                let duration_ms = item
+                    .get("duration_ms")
+                    .and_then(Value::as_i64)
+                    .map(|v| v as u64);
+                let request_id = item.get("request_id").and_then(Value::as_str);
+                self.insert_tool_call(
+                    store,
+                    &ToolCallInsert {
+                        id: &format!("claude-tool-telemetry-{}-{idx}", event.event_id),
+                        session_id: Some(&format!("claude-code-pid-{pid}")),
+                        conversation_id: None,
+                        timestamp_ms: event.timestamp_ms,
+                        tool_name: Some(tool_name),
+                        tool_call_id: request_id,
+                        start_timestamp_ms: duration_ms
+                            .and_then(|d| event.timestamp_ms.checked_sub(d)),
+                        end_timestamp_ms: Some(event.timestamp_ms),
+                        duration_ms,
+                        status: Some("completed"),
+                        input_json: Some("{}"),
+                        output_json: Some("{}"),
+                        related_pid: Some(pid),
+                        related_event_id: Some(event.event_id.as_str()),
+                        view_source: "view",
+                        confidence: 0.75,
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ingest_gemini_stdio_stats(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        if !matches!(event.kind, EventKind::StdioMessage | EventKind::StdioRpc) {
+            return Ok(());
+        }
+        let Some(payload) = event.attributes.get("data").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let Some(obj) = parse_json_str(payload) else {
+            return Ok(());
+        };
+        let Some(models) = obj.pointer("/stats/models").and_then(Value::as_object) else {
+            return Ok(());
+        };
+        let pid = event.pid.unwrap_or(0);
+        let comm = event.comm.as_deref().unwrap_or("gemini");
+        for (model, stats) in models {
+            let tokens = stats.get("tokens").unwrap_or(stats);
+            let input = json_i64(tokens, "prompt").max(json_i64(tokens, "input"));
+            let output = json_i64(tokens, "candidates")
+                + json_i64(tokens, "thoughts")
+                + json_i64(tokens, "tool");
+            let cache = json_i64(tokens, "cached");
+            let total = json_i64(tokens, "total").max(input + output + cache);
+            if total <= 0 {
+                continue;
+            }
+            let llm_call_id = format!("gemini-stdout-{}-{}", event.event_id, sanitize_id(model));
+            self.insert_token_usage(
+                store,
+                &TokenInsert {
+                    id: &format!("token-{llm_call_id}"),
+                    llm_call_id: &llm_call_id,
+                    timestamp_ms: event.timestamp_ms,
+                    pid,
+                    comm,
+                    provider: Some("gcp.gen_ai"),
+                    model: Some(model),
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: cache,
+                    total_tokens: total,
+                    source: "gemini_cli_stdout_stats",
+                    view_source: "view",
+                    confidence: 0.85,
+                },
+            )?;
+            self.upsert_session_for_agent(
+                store,
+                "gemini-cli",
+                "Gemini CLI",
+                pid,
+                comm,
+                event.timestamp_ms,
+                Some(event.timestamp_ms),
+                Some(model),
+                input,
+                output,
+                total,
+                0.85,
+                "gemini-stdio",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn ingest_sse_tools(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+        llm_call_id: &str,
+        pid: u32,
+        confidence: f32,
+    ) -> StorageResult<()> {
+        let Some(events) = event.attributes.get("sse_events").and_then(Value::as_array) else {
+            return Ok(());
+        };
+        let session_id = classify_agent(
+            event.comm.as_deref().unwrap_or_default(),
+            event.host.as_deref(),
+            None,
+            Some(&event.attributes.to_string()),
+            event.model.as_deref(),
+        )
+        .map(|agent| format!("{}-pid-{pid}", agent.agent_type));
+        for (idx, sse) in events.iter().enumerate() {
+            let Some(block) = sse.pointer("/parsed_data/content_block") else {
+                continue;
+            };
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+            let tool_call_id = block.get("id").and_then(Value::as_str);
+            let input_json = block.get("input").map(Value::to_string);
+            let tool_id = tool_call_id
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("tool-{idx}"));
+            self.insert_tool_call(
+                store,
+                &ToolCallInsert {
+                    id: &format!("tool-{llm_call_id}-{tool_id}"),
+                    session_id: session_id.as_deref(),
+                    conversation_id: Some(&format!("conv-{llm_call_id}")),
+                    timestamp_ms: event.timestamp_ms,
+                    tool_name: Some(name),
+                    tool_call_id,
+                    start_timestamp_ms: Some(event.timestamp_ms),
+                    end_timestamp_ms: None,
+                    duration_ms: None,
+                    status: Some("observed"),
+                    input_json: input_json.as_deref(),
+                    output_json: None,
+                    related_pid: Some(pid),
+                    related_event_id: Some(event.event_id.as_str()),
+                    view_source: "view",
+                    confidence,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_known_agent_session(
+        &mut self,
+        store: &SqliteStore,
+        pid: u32,
+        comm: &str,
+        start_timestamp_ms: u64,
+        end_timestamp_ms: Option<u64>,
+        provider: Option<&str>,
+        host: Option<&str>,
+        model: Option<&str>,
+        input_tokens: i64,
+        output_tokens: i64,
+        total_tokens: i64,
+        request_body_json: Option<&str>,
+        response_body_json: Option<&str>,
+        confidence: f32,
+    ) -> StorageResult<()> {
+        let classifier_text = [request_body_json, response_body_json]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let agent = classify_agent(comm, host.or(provider), Some(&classifier_text), None, model);
+        if let Some(agent) = agent {
+            self.upsert_session_for_agent(
+                store,
+                agent.agent_type,
+                agent.agent_name,
+                pid,
+                comm,
+                start_timestamp_ms,
+                end_timestamp_ms,
+                model,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                confidence,
+                "llm",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_session_for_agent(
+        &mut self,
+        store: &SqliteStore,
+        agent_type: &'static str,
+        agent_name: &'static str,
+        pid: u32,
+        comm: &str,
+        start_timestamp_ms: u64,
+        end_timestamp_ms: Option<u64>,
+        model: Option<&str>,
+        input_tokens: i64,
+        output_tokens: i64,
+        total_tokens: i64,
+        confidence: f32,
+        view_source: &str,
+    ) -> StorageResult<()> {
+        let id = format!("{agent_type}-pid-{pid}");
+        let attrs = serde_json::json!({ "source": view_source }).to_string();
+        self.upsert_session(
+            store,
+            &SessionUpsert {
+                id: &id,
+                agent_type,
+                agent_name: Some(agent_name),
+                pid: Some(pid),
+                comm: Some(comm),
+                start_timestamp_ms,
+                end_timestamp_ms,
+                model,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                view_source: "view",
+                confidence,
+                attributes_json: &attrs,
+            },
+        )?;
+        Ok(())
+    }
+
+    fn ingest_process_audit(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+        action: &str,
+    ) -> StorageResult<()> {
+        let target = event.attributes.get("filename").and_then(Value::as_str);
+        self.insert_audit_event(
+            store,
+            &AuditInsert {
+                id: &format!("audit-{}", event.event_id),
+                timestamp_ms: event.timestamp_ms,
+                audit_type: "process",
+                pid: event.pid,
+                comm: event.comm.as_deref(),
+                subject: event.comm.as_deref(),
+                action: Some(action),
+                target,
+                status: Some(process_audit_status(action, &event.attributes)),
+                summary: event.summary.as_deref(),
+                details_json: &event.attributes.to_string(),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn ingest_file_audit(
+        &mut self,
+        store: &SqliteStore,
+        event: &CanonicalEvent,
+    ) -> StorageResult<()> {
+        let target = event
+            .attributes
+            .get("path")
+            .or_else(|| event.attributes.get("filepath"))
+            .and_then(Value::as_str);
+        self.insert_audit_event(
+            store,
+            &AuditInsert {
+                id: &format!("audit-{}", event.event_id),
+                timestamp_ms: event.timestamp_ms,
+                audit_type: "file",
+                pid: event.pid,
+                comm: event.comm.as_deref(),
+                subject: event.comm.as_deref(),
+                action: Some("write"),
+                target,
+                status: Some("observed"),
+                summary: event.summary.as_deref(),
+                details_json: &event.attributes.to_string(),
+            },
+        )?;
+        Ok(())
+    }
+}
+
+struct AgentClass {
+    agent_type: &'static str,
+    agent_name: &'static str,
+}
+
+fn classify_agent(
+    comm: &str,
+    host: Option<&str>,
+    request_text: Option<&str>,
+    response_text: Option<&str>,
+    model: Option<&str>,
+) -> Option<AgentClass> {
+    let haystack = [Some(comm), host, request_text, response_text, model]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+    if haystack.contains("openclaw") {
+        Some(AgentClass {
+            agent_type: "openclaw",
+            agent_name: "OpenClaw",
+        })
+    } else if haystack.contains("gemini")
+        || haystack.contains("cloudcode-pa.googleapis.com")
+        || haystack.contains("generativelanguage")
+    {
+        Some(AgentClass {
+            agent_type: "gemini-cli",
+            agent_name: "Gemini CLI",
+        })
+    } else if haystack.contains("claude") || haystack.contains("anthropic") {
+        Some(AgentClass {
+            agent_type: "claude-code",
+            agent_name: "Claude Code",
+        })
+    } else {
+        None
+    }
+}
+
+fn response_body_json(event: &CanonicalEvent) -> Option<Value> {
+    body_json(&event.attributes)
+        .or_else(|| (event.source == "sse_processor").then(|| event.attributes.clone()))
+}
+
+fn process_audit_status(action: &str, attributes: &Value) -> &'static str {
+    if action != "exit" {
+        return "observed";
+    }
+    match attributes.get("exit_code").and_then(Value::as_i64) {
+        Some(0) => "success",
+        Some(_) => "failure",
+        None => "observed",
+    }
+}
+
+fn is_writable_open(event: &CanonicalEvent) -> bool {
+    let flags = event
+        .attributes
+        .get("flags")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    const O_ACCMODE: i64 = 0o3;
+    const O_CREAT: i64 = 0o100;
+    const O_TRUNC: i64 = 0o1000;
+    const O_APPEND: i64 = 0o2000;
+    (flags & O_ACCMODE) != 0 || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
+}
+
+fn parse_json_str(text: &str) -> Option<Value> {
+    serde_json::from_str(text).ok()
+}
+
+fn json_i64(value: &Value, key: &str) -> i64 {
+    value
+        .get(key)
+        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
+        .unwrap_or_default()
+}
+
+fn number_or_string(value: Option<&Value>) -> Option<f64> {
+    value.and_then(|v| {
+        v.as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+    })
 }
 
 fn bounded_limit(limit: usize) -> i64 {
@@ -798,6 +1976,10 @@ fn bounded_limit(limit: usize) -> i64 {
 
 fn parse_json_value(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
+}
+
+fn parse_optional_json(text: Option<&str>) -> Value {
+    text.map(parse_json_value).unwrap_or(Value::Null)
 }
 
 fn collect_rows<T, F>(rows: rusqlite::MappedRows<'_, F>) -> StorageResult<Vec<T>>
@@ -811,405 +1993,40 @@ where
     Ok(out)
 }
 
-#[derive(Default)]
-pub struct GenericProjector {
-    pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
+fn reject_legacy_raw_schema(conn: &Connection) -> StorageResult<()> {
+    let has_raw = sqlite_table_exists(conn, "raw_events")?;
+    let has_canonical = sqlite_table_exists(conn, "canonical_events")?;
+    let has_view = sqlite_table_exists(conn, "view_stats")?;
+    if (has_raw || has_canonical) && !has_view {
+        return Err(
+            "legacy raw-event SQLite schema is no longer supported; re-import the JSONL capture to materialize view tables"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
-impl GenericProjector {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn process(&mut self, store: &SqliteStore, event: &CanonicalEvent) -> StorageResult<()> {
-        match event.kind {
-            EventKind::LlmRequest => {
-                if let (Some(pid), Some(tid)) = (event.pid, event.tid) {
-                    let req = PendingRequest {
-                        canonical_event_id: event.event_id.clone(),
-                        timestamp_ms: event.timestamp_ms,
-                        pid,
-                        comm: event.comm.clone().unwrap_or_default(),
-                        provider: event.provider.clone(),
-                        model: event.model.clone(),
-                        host: event.host.clone(),
-                        path: event.path.clone(),
-                        request_id: event.request_id.clone(),
-                        body_json: body_json(&event.attributes),
-                    };
-                    self.project_llm_request_orphan(store, &req)?;
-                    self.pending.entry((pid, tid)).or_default().push_back(req);
-                }
-            }
-            EventKind::HttpResponse | EventKind::LlmResponse | EventKind::LlmError => {
-                if let (Some(pid), Some(tid)) = (event.pid, event.tid) {
-                    if let Some((req, confidence)) = self.take_matching_request(pid, tid, event) {
-                        self.project_llm_pair(store, req, event, confidence)?;
-                    } else {
-                        self.project_llm_response_orphan(store, event)?;
-                    }
-                }
-            }
-            EventKind::ProcessExec => self.project_process_audit(store, event, "exec")?,
-            EventKind::ProcessExit => self.project_process_audit(store, event, "exit")?,
-            EventKind::FsOpen if is_writable_open(event) => {
-                self.project_file_audit(store, event)?
-            }
-            EventKind::FsWrite | EventKind::FsMutation => self.project_file_audit(store, event)?,
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn take_matching_request(
-        &mut self,
-        pid: u32,
-        tid: u64,
-        resp: &CanonicalEvent,
-    ) -> Option<(PendingRequest, f32)> {
-        let key = (pid, tid);
-        let (req, confidence, remove_key) = {
-            let requests = self.pending.get_mut(&key)?;
-            let (req, confidence) = if let Some(resp_request_id) = resp.request_id.as_deref() {
-                let pos = requests
-                    .iter()
-                    .position(|req| req.request_id.as_deref() == Some(resp_request_id))?;
-                (requests.remove(pos)?, 0.95)
-            } else if requests.len() == 1 {
-                (requests.pop_front()?, 0.75)
-            } else {
-                return None;
-            };
-            (req, confidence, requests.is_empty())
-        };
-        if remove_key {
-            self.pending.remove(&key);
-        }
-        Some((req, confidence))
-    }
-
-    fn project_llm_pair(
-        &self,
-        store: &SqliteStore,
-        req: PendingRequest,
-        resp: &CanonicalEvent,
-        confidence: f32,
-    ) -> StorageResult<()> {
-        let response_body = body_json(&resp.attributes);
-        let response_body = response_body.or_else(|| {
-            if resp.source == "sse_processor" {
-                Some(resp.attributes.clone())
-            } else {
-                None
-            }
-        });
-        let model = req
-            .model
-            .clone()
-            .or_else(|| response_body.as_ref().and_then(extract_model))
-            .or_else(|| resp.model.clone());
-        let provider = req
-            .provider
-            .clone()
-            .or_else(|| req.host.as_deref().map(provider_from_host));
-        let status_code = resp.status_code;
-        let llm_call_id = format!("llm-{}", req.canonical_event_id);
-        let request_body_json = req.body_json.as_ref().map(|v| v.to_string());
-        let response_body_json = response_body.as_ref().map(|v| v.to_string());
-        let error_type = status_code
-            .filter(|c| *c >= 400)
-            .map(|c| format!("http_{}", c));
-        let error_message = error_type.clone();
-
-        store.insert_llm_call(&LlmCallInsert {
-            id: &llm_call_id,
-            request_event_id: Some(req.canonical_event_id.as_str()),
-            response_event_id: Some(resp.event_id.as_str()),
-            start_timestamp_ms: req.timestamp_ms,
-            end_timestamp_ms: Some(resp.timestamp_ms),
-            pid: req.pid,
-            comm: &req.comm,
-            provider: provider.as_deref(),
-            model: model.as_deref(),
-            host: req.host.as_deref(),
-            path: req.path.as_deref(),
-            status_code,
-            error_type: error_type.as_deref(),
-            error_message: error_message.as_deref(),
-            request_body_json: request_body_json.as_deref(),
-            response_body_json: response_body_json.as_deref(),
-            adapter_id: "generic",
-            confidence,
-        })?;
-
-        let usage = if resp.source == "sse_processor" {
-            extract_token_usage_from_sse(&resp.attributes)
-        } else {
-            response_body
-                .as_ref()
-                .map(extract_token_usage)
-                .unwrap_or_default()
-        };
-        if !usage.is_empty() {
-            store.insert_token_usage(&TokenInsert {
-                id: &format!("token-{}", llm_call_id),
-                llm_call_id: &llm_call_id,
-                timestamp_ms: resp.timestamp_ms,
-                pid: req.pid,
-                comm: &req.comm,
-                provider: provider.as_deref(),
-                model: model.as_deref(),
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-                cache_creation_tokens: usage.cache_creation_tokens,
-                cache_read_tokens: usage.cache_read_tokens,
-                total_tokens: usage.total_tokens(),
-                source: "response_usage",
-                adapter_id: "generic",
-                confidence,
-            })?;
-        }
-
-        let status = if status_code.map(|c| c >= 400).unwrap_or(false) {
-            "failure"
-        } else {
-            "success"
-        };
-        store.insert_audit_event(&AuditInsert {
-            id: &format!("audit-{}", llm_call_id),
-            canonical_event_id: Some(resp.event_id.as_str()),
-            timestamp_ms: resp.timestamp_ms,
-            audit_type: "llm",
-            pid: Some(req.pid),
-            comm: Some(&req.comm),
-            subject: model.as_deref(),
-            action: Some("call"),
-            target: req.host.as_deref(),
-            status: Some(status),
-            summary: Some("LLM call"),
-            details_json: response_body_json.as_deref().unwrap_or("{}"),
-        })?;
-
-        if status == "failure" {
-            store.insert_interruption(&InterruptionInsert {
-                id: &format!("interrupt-{}", llm_call_id),
-                timestamp_ms: resp.timestamp_ms,
-                severity: "error",
-                category: "llm_error",
-                reason: error_message.as_deref().unwrap_or("LLM call failed"),
-                evidence_json: response_body_json.as_deref().unwrap_or("{}"),
-                adapter_id: "generic",
-                confidence,
-            })?;
-        }
-
-        Ok(())
-    }
-
-    fn project_llm_request_orphan(
-        &self,
-        store: &SqliteStore,
-        req: &PendingRequest,
-    ) -> StorageResult<()> {
-        let llm_call_id = format!("llm-{}", req.canonical_event_id);
-        let provider = req
-            .provider
-            .clone()
-            .or_else(|| req.host.as_deref().map(provider_from_host));
-        let request_body_json = req.body_json.as_ref().map(|v| v.to_string());
-
-        store.insert_llm_call(&LlmCallInsert {
-            id: &llm_call_id,
-            request_event_id: Some(req.canonical_event_id.as_str()),
-            response_event_id: None,
-            start_timestamp_ms: req.timestamp_ms,
-            end_timestamp_ms: None,
-            pid: req.pid,
-            comm: &req.comm,
-            provider: provider.as_deref(),
-            model: req.model.as_deref(),
-            host: req.host.as_deref(),
-            path: req.path.as_deref(),
-            status_code: None,
-            error_type: None,
-            error_message: None,
-            request_body_json: request_body_json.as_deref(),
-            response_body_json: None,
-            adapter_id: "generic",
-            confidence: 0.40,
-        })?;
-
-        store.insert_audit_event(&AuditInsert {
-            id: &format!("audit-{}", llm_call_id),
-            canonical_event_id: Some(req.canonical_event_id.as_str()),
-            timestamp_ms: req.timestamp_ms,
-            audit_type: "llm",
-            pid: Some(req.pid),
-            comm: Some(&req.comm),
-            subject: req.model.as_deref(),
-            action: Some("request"),
-            target: req.host.as_deref(),
-            status: Some("orphan_request"),
-            summary: Some("LLM request"),
-            details_json: request_body_json.as_deref().unwrap_or("{}"),
-        })
-    }
-
-    fn project_llm_response_orphan(
-        &self,
-        store: &SqliteStore,
-        resp: &CanonicalEvent,
-    ) -> StorageResult<()> {
-        let response_body = body_json(&resp.attributes)
-            .or_else(|| (resp.source == "sse_processor").then(|| resp.attributes.clone()));
-        let response_body_json = response_body.as_ref().map(|v| v.to_string());
-        let model = resp
-            .model
-            .clone()
-            .or_else(|| response_body.as_ref().and_then(extract_model));
-        let provider = resp
-            .provider
-            .clone()
-            .or_else(|| resp.host.as_deref().map(provider_from_host));
-        let pid = resp.pid.unwrap_or(0);
-        let comm = resp.comm.clone().unwrap_or_default();
-        let llm_call_id = format!("llm-orphan-{}", resp.event_id);
-
-        store.insert_llm_call(&LlmCallInsert {
-            id: &llm_call_id,
-            request_event_id: None,
-            response_event_id: Some(resp.event_id.as_str()),
-            start_timestamp_ms: resp.timestamp_ms,
-            end_timestamp_ms: Some(resp.timestamp_ms),
-            pid,
-            comm: &comm,
-            provider: provider.as_deref(),
-            model: model.as_deref(),
-            host: resp.host.as_deref(),
-            path: resp.path.as_deref(),
-            status_code: resp.status_code,
-            error_type: None,
-            error_message: None,
-            request_body_json: None,
-            response_body_json: response_body_json.as_deref(),
-            adapter_id: "generic",
-            confidence: 0.35,
-        })?;
-
-        let usage = if resp.source == "sse_processor" {
-            extract_token_usage_from_sse(&resp.attributes)
-        } else {
-            response_body
-                .as_ref()
-                .map(extract_token_usage)
-                .unwrap_or_default()
-        };
-        if !usage.is_empty() {
-            store.insert_token_usage(&TokenInsert {
-                id: &format!("token-{}", llm_call_id),
-                llm_call_id: &llm_call_id,
-                timestamp_ms: resp.timestamp_ms,
-                pid,
-                comm: &comm,
-                provider: provider.as_deref(),
-                model: model.as_deref(),
-                input_tokens: usage.input_tokens,
-                output_tokens: usage.output_tokens,
-                cache_creation_tokens: usage.cache_creation_tokens,
-                cache_read_tokens: usage.cache_read_tokens,
-                total_tokens: usage.total_tokens(),
-                source: "orphan_response_usage",
-                adapter_id: "generic",
-                confidence: 0.35,
-            })?;
-        }
-
-        store.insert_audit_event(&AuditInsert {
-            id: &format!("audit-{}", llm_call_id),
-            canonical_event_id: Some(resp.event_id.as_str()),
-            timestamp_ms: resp.timestamp_ms,
-            audit_type: "llm",
-            pid: Some(pid),
-            comm: Some(&comm),
-            subject: model.as_deref(),
-            action: Some("response"),
-            target: resp.host.as_deref(),
-            status: Some("orphan_response"),
-            summary: Some("LLM response"),
-            details_json: response_body_json.as_deref().unwrap_or("{}"),
-        })
-    }
-
-    fn project_process_audit(
-        &self,
-        store: &SqliteStore,
-        event: &CanonicalEvent,
-        action: &str,
-    ) -> StorageResult<()> {
-        let target = event.attributes.get("filename").and_then(|v| v.as_str());
-        let status = process_audit_status(action, &event.attributes);
-        store.insert_audit_event(&AuditInsert {
-            id: &format!("audit-{}", event.event_id),
-            canonical_event_id: Some(event.event_id.as_str()),
-            timestamp_ms: event.timestamp_ms,
-            audit_type: "process",
-            pid: event.pid,
-            comm: event.comm.as_deref(),
-            subject: event.comm.as_deref(),
-            action: Some(action),
-            target,
-            status: Some(status),
-            summary: event.summary.as_deref(),
-            details_json: &event.attributes.to_string(),
-        })
-    }
-
-    fn project_file_audit(&self, store: &SqliteStore, event: &CanonicalEvent) -> StorageResult<()> {
-        let target = event
-            .attributes
-            .get("path")
-            .or_else(|| event.attributes.get("filepath"))
-            .and_then(|v| v.as_str());
-        store.insert_audit_event(&AuditInsert {
-            id: &format!("audit-{}", event.event_id),
-            canonical_event_id: Some(event.event_id.as_str()),
-            timestamp_ms: event.timestamp_ms,
-            audit_type: "file",
-            pid: event.pid,
-            comm: event.comm.as_deref(),
-            subject: event.comm.as_deref(),
-            action: Some("write"),
-            target,
-            status: Some("observed"),
-            summary: event.summary.as_deref(),
-            details_json: &event.attributes.to_string(),
-        })
-    }
+fn sqlite_table_exists(conn: &Connection, table: &str) -> StorageResult<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+        )",
+        params![table],
+        |row| row.get::<_, i64>(0),
+    )? != 0)
 }
 
-fn process_audit_status(action: &str, attributes: &Value) -> &'static str {
-    if action != "exit" {
-        return "observed";
-    }
-
-    match attributes.get("exit_code").and_then(|v| v.as_i64()) {
-        Some(0) => "success",
-        Some(_) => "failure",
-        None => "observed",
-    }
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
-fn is_writable_open(event: &CanonicalEvent) -> bool {
-    let flags = event
-        .attributes
-        .get("flags")
-        .and_then(|value| value.as_i64())
-        .unwrap_or(0);
-    const O_ACCMODE: i64 = 0o3;
-    const O_CREAT: i64 = 0o100;
-    const O_TRUNC: i64 = 0o1000;
-    const O_APPEND: i64 = 0o2000;
-    (flags & O_ACCMODE) != 0 || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
+fn sanitize_id(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 struct LlmCallInsert<'a> {
@@ -1229,7 +2046,7 @@ struct LlmCallInsert<'a> {
     error_message: Option<&'a str>,
     request_body_json: Option<&'a str>,
     response_body_json: Option<&'a str>,
-    adapter_id: &'a str,
+    view_source: &'a str,
     confidence: f32,
 }
 
@@ -1247,13 +2064,12 @@ struct TokenInsert<'a> {
     cache_read_tokens: i64,
     total_tokens: i64,
     source: &'a str,
-    adapter_id: &'a str,
+    view_source: &'a str,
     confidence: f32,
 }
 
 struct AuditInsert<'a> {
     id: &'a str,
-    canonical_event_id: Option<&'a str>,
     timestamp_ms: u64,
     audit_type: &'a str,
     pid: Option<u32>,
@@ -1266,80 +2082,169 @@ struct AuditInsert<'a> {
     details_json: &'a str,
 }
 
-struct InterruptionInsert<'a> {
+struct ToolCallInsert<'a> {
     id: &'a str,
+    session_id: Option<&'a str>,
+    conversation_id: Option<&'a str>,
     timestamp_ms: u64,
-    severity: &'a str,
-    category: &'a str,
-    reason: &'a str,
-    evidence_json: &'a str,
-    adapter_id: &'a str,
+    tool_name: Option<&'a str>,
+    tool_call_id: Option<&'a str>,
+    start_timestamp_ms: Option<u64>,
+    end_timestamp_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    status: Option<&'a str>,
+    input_json: Option<&'a str>,
+    output_json: Option<&'a str>,
+    related_pid: Option<u32>,
+    related_event_id: Option<&'a str>,
+    view_source: &'a str,
     confidence: f32,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+struct SessionUpsert<'a> {
+    id: &'a str,
+    agent_type: &'a str,
+    agent_name: Option<&'a str>,
+    pid: Option<u32>,
+    comm: Option<&'a str>,
+    start_timestamp_ms: u64,
+    end_timestamp_ms: Option<u64>,
+    model: Option<&'a str>,
+    input_tokens: i64,
+    output_tokens: i64,
+    total_tokens: i64,
+    view_source: &'a str,
+    confidence: f32,
+    attributes_json: &'a str,
 }
 
-fn sanitize_id(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+impl LlmCallInsert<'_> {
+    fn to_row(&self) -> LlmCallRow {
+        LlmCallRow {
+            id: self.id.to_string(),
+            start_timestamp_ms: self.start_timestamp_ms,
+            end_timestamp_ms: self.end_timestamp_ms,
+            pid: Some(self.pid),
+            comm: Some(self.comm.to_string()),
+            provider: self.provider.map(str::to_string),
+            model: self.model.map(str::to_string),
+            host: self.host.map(str::to_string),
+            path: self.path.map(str::to_string),
+            status_code: self.status_code,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            request: parse_optional_json(self.request_body_json),
+            response: parse_optional_json(self.response_body_json),
+        }
+    }
+}
+
+impl TokenInsert<'_> {
+    fn to_row(&self) -> TokenUsageRow {
+        TokenUsageRow {
+            id: self.id.to_string(),
+            llm_call_id: self.llm_call_id.to_string(),
+            timestamp_ms: self.timestamp_ms,
+            pid: Some(self.pid),
+            comm: Some(self.comm.to_string()),
+            provider: self.provider.map(str::to_string),
+            model: self.model.map(str::to_string),
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_creation_tokens: self.cache_creation_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            total_tokens: self.total_tokens,
+            source: self.source.to_string(),
+            view_source: self.view_source.to_string(),
+            confidence: Some(self.confidence),
+        }
+    }
+}
+
+impl AuditInsert<'_> {
+    fn to_row(&self) -> AuditEventRow {
+        AuditEventRow {
+            id: self.id.to_string(),
+            timestamp_ms: self.timestamp_ms,
+            audit_type: self.audit_type.to_string(),
+            pid: self.pid,
+            comm: self.comm.map(str::to_string),
+            subject: self.subject.map(str::to_string),
+            action: self.action.map(str::to_string),
+            target: self.target.map(str::to_string),
+            status: self.status.map(str::to_string),
+            summary: self.summary.map(str::to_string),
+            details: parse_json_value(self.details_json),
+        }
+    }
+}
+
+impl ToolCallInsert<'_> {
+    fn to_row(&self) -> ToolCallRow {
+        ToolCallRow {
+            id: self.id.to_string(),
+            session_id: self.session_id.map(str::to_string),
+            conversation_id: self.conversation_id.map(str::to_string),
+            timestamp_ms: self.timestamp_ms,
+            tool_name: self.tool_name.map(str::to_string),
+            tool_call_id: self.tool_call_id.map(str::to_string),
+            start_timestamp_ms: self.start_timestamp_ms,
+            end_timestamp_ms: self.end_timestamp_ms,
+            duration_ms: self.duration_ms,
+            status: self.status.map(str::to_string),
+            input: parse_optional_json(self.input_json),
+            output: parse_optional_json(self.output_json),
+            related_pid: self.related_pid,
+            related_event_id: self.related_event_id.map(str::to_string),
+            view_source: self.view_source.to_string(),
+            confidence: Some(self.confidence),
+        }
+    }
+}
+
+impl SessionUpsert<'_> {
+    fn to_row(&self) -> SessionRow {
+        SessionRow {
+            id: self.id.to_string(),
+            agent_type: self.agent_type.to_string(),
+            agent_name: self.agent_name.map(str::to_string),
+            pid: self.pid,
+            comm: self.comm.map(str::to_string),
+            start_timestamp_ms: self.start_timestamp_ms,
+            end_timestamp_ms: self.end_timestamp_ms,
+            status: "observed".to_string(),
+            model: self.model.map(str::to_string),
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            total_tokens: self.total_tokens,
+            view_source: self.view_source.to_string(),
+            confidence: Some(self.confidence as f64),
+            attributes: parse_json_value(self.attributes_json),
+        }
+    }
 }
 
 const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS raw_events (
-  id TEXT PRIMARY KEY,
-  timestamp_ms INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  pid INTEGER,
-  comm TEXT,
-  raw_json TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS view_stats (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS canonical_events (
+CREATE TABLE IF NOT EXISTS network_targets (
   id TEXT PRIMARY KEY,
-  raw_event_id TEXT NOT NULL REFERENCES raw_events(id),
-  schema_version INTEGER NOT NULL,
-  timestamp_ms INTEGER NOT NULL,
-  ingest_timestamp_ms INTEGER NOT NULL,
-  source TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  severity TEXT NOT NULL DEFAULT 'info',
-  summary TEXT,
   pid INTEGER,
-  tid INTEGER,
-  ppid INTEGER,
-  uid INTEGER,
   comm TEXT,
-  container_id TEXT,
-  host TEXT,
-  method TEXT,
+  host TEXT NOT NULL,
   path TEXT,
-  status_code INTEGER,
-  provider TEXT,
-  model TEXT,
-  request_id TEXT,
-  trace_id TEXT,
-  session_id TEXT,
-  conversation_id TEXT,
-  parent_event_id TEXT,
-  adapter_id TEXT,
-  adapter_version TEXT,
-  confidence REAL,
-  attributes_json TEXT NOT NULL DEFAULT '{}'
+  count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  first_timestamp_ms INTEGER,
+  last_timestamp_ms INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_canonical_time ON canonical_events(timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_canonical_kind_time ON canonical_events(kind, timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_canonical_pid_time ON canonical_events(pid, timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_canonical_comm_time ON canonical_events(comm, timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_canonical_host_time ON canonical_events(host, timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_canonical_model_time ON canonical_events(model, timestamp_ms);
-CREATE INDEX IF NOT EXISTS idx_canonical_session_time ON canonical_events(session_id, timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_network_targets_host ON network_targets(host);
+CREATE INDEX IF NOT EXISTS idx_network_targets_pid ON network_targets(pid);
 
 CREATE TABLE IF NOT EXISTS llm_calls (
   id TEXT PRIMARY KEY,
@@ -1358,13 +2263,15 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   error_message TEXT,
   request_body_json TEXT,
   response_body_json TEXT,
-  adapter_id TEXT,
+  view_source TEXT,
   confidence REAL
 );
 
+CREATE INDEX IF NOT EXISTS idx_llm_calls_time ON llm_calls(start_timestamp_ms);
+
 CREATE TABLE IF NOT EXISTS token_usage (
   id TEXT PRIMARY KEY,
-  llm_call_id TEXT REFERENCES llm_calls(id),
+  llm_call_id TEXT,
   timestamp_ms INTEGER NOT NULL,
   pid INTEGER,
   comm TEXT,
@@ -1376,7 +2283,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
   cache_read_tokens INTEGER DEFAULT 0,
   total_tokens INTEGER DEFAULT 0,
   source TEXT NOT NULL,
-  adapter_id TEXT,
+  view_source TEXT,
   confidence REAL
 );
 
@@ -1386,7 +2293,6 @@ CREATE INDEX IF NOT EXISTS idx_token_comm_time ON token_usage(comm, timestamp_ms
 
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
-  canonical_event_id TEXT REFERENCES canonical_events(id),
   timestamp_ms INTEGER NOT NULL,
   audit_type TEXT NOT NULL,
   pid INTEGER,
@@ -1398,6 +2304,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   summary TEXT,
   details_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE INDEX IF NOT EXISTS idx_audit_type_time ON audit_events(audit_type, timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_audit_pid_time ON audit_events(pid, timestamp_ms);
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
@@ -1412,14 +2321,14 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   input_tokens INTEGER DEFAULT 0,
   output_tokens INTEGER DEFAULT 0,
   total_tokens INTEGER DEFAULT 0,
-  adapter_id TEXT NOT NULL,
+  view_source TEXT NOT NULL,
   confidence REAL,
   attributes_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
-  session_id TEXT REFERENCES agent_sessions(id),
+  session_id TEXT,
   start_timestamp_ms INTEGER NOT NULL,
   end_timestamp_ms INTEGER,
   model TEXT,
@@ -1445,9 +2354,12 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   output_json TEXT,
   related_pid INTEGER,
   related_event_id TEXT,
-  adapter_id TEXT NOT NULL,
+  view_source TEXT NOT NULL,
   confidence REAL
 );
+
+CREATE INDEX IF NOT EXISTS idx_tool_time ON tool_calls(timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_tool_name_time ON tool_calls(tool_name, timestamp_ms);
 
 CREATE TABLE IF NOT EXISTS interruptions (
   id TEXT PRIMARY KEY,
@@ -1459,296 +2371,16 @@ CREATE TABLE IF NOT EXISTS interruptions (
   status TEXT NOT NULL DEFAULT 'open',
   reason TEXT NOT NULL,
   evidence_json TEXT NOT NULL DEFAULT '{}',
-  adapter_id TEXT,
+  view_source TEXT,
   confidence REAL
 );
 
-CREATE TABLE IF NOT EXISTS adapter_runs (
-  id TEXT PRIMARY KEY,
-  adapter_id TEXT NOT NULL,
-  adapter_version TEXT NOT NULL,
-  started_at_ms INTEGER NOT NULL,
-  finished_at_ms INTEGER,
-  mode TEXT NOT NULL,
-  input_range_start_ms INTEGER,
-  input_range_end_ms INTEGER,
-  status TEXT NOT NULL,
-  error_message TEXT
+CREATE TABLE IF NOT EXISTS resource_samples (
+  timestamp_ms INTEGER NOT NULL,
+  pid INTEGER,
+  comm TEXT,
+  cpu_percent REAL,
+  rss_mb INTEGER
 );
+
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn stores_anthropic_pair_and_tokens() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        let req = Event::new_with_timestamp(
-            1,
-            "http_parser".to_string(),
-            42,
-            "claude".to_string(),
-            json!({
-                "tid": 7,
-                "message_type": "request",
-                "method": "POST",
-                "path": "/v1/messages",
-                "headers": { "host": "api.anthropic.com" },
-                "body": "{\"model\":\"claude-sonnet-4-20250514\"}"
-            }),
-        );
-        let resp = Event::new_with_timestamp(
-            2,
-            "http_parser".to_string(),
-            42,
-            "claude".to_string(),
-            json!({
-                "tid": 7,
-                "message_type": "response",
-                "status_code": 200,
-                "body": "{\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}"
-            }),
-        );
-        store.insert_event(&req, &mut projector).unwrap();
-        store.insert_event(&resp, &mut projector).unwrap();
-        let summary = store.token_summary("model").unwrap();
-        assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].total_tokens, 15);
-    }
-
-    #[test]
-    fn writable_file_open_projects_file_audit_event() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        let write_open = Event::new_with_timestamp(
-            1,
-            "process".to_string(),
-            42,
-            "agent".to_string(),
-            json!({
-                "event": "FILE_OPEN",
-                "filepath": "/tmp/package-lock.json",
-                "flags": 65
-            }),
-        );
-        let read_open = Event::new_with_timestamp(
-            2,
-            "process".to_string(),
-            42,
-            "agent".to_string(),
-            json!({
-                "event": "FILE_OPEN",
-                "filepath": "/tmp/README.md",
-                "flags": 0
-            }),
-        );
-        store.insert_event(&write_open, &mut projector).unwrap();
-        store.insert_event(&read_open, &mut projector).unwrap();
-
-        let target: String = store
-            .connection()
-            .query_row(
-                "SELECT target FROM audit_events WHERE audit_type = 'file'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(target, "/tmp/package-lock.json");
-    }
-
-    #[test]
-    fn migrates_tool_call_duration_columns() {
-        let temp = tempfile::tempdir().unwrap();
-        let db = temp.path().join("old.db");
-        {
-            let conn = Connection::open(&db).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE tool_calls (
-                  id TEXT PRIMARY KEY,
-                  session_id TEXT,
-                  conversation_id TEXT,
-                  timestamp_ms INTEGER NOT NULL,
-                  tool_name TEXT,
-                  tool_call_id TEXT,
-                  status TEXT,
-                  input_json TEXT,
-                  output_json TEXT,
-                  related_pid INTEGER,
-                  related_event_id TEXT,
-                  adapter_id TEXT NOT NULL,
-                  confidence REAL
-                );",
-            )
-            .unwrap();
-        }
-
-        let store = SqliteStore::open(&db).unwrap();
-        for column in ["start_timestamp_ms", "end_timestamp_ms", "duration_ms"] {
-            let exists = store.column_exists("tool_calls", column).unwrap();
-            assert!(exists, "missing migrated column {column}");
-        }
-    }
-
-    #[test]
-    fn exports_api_shaped_snapshot() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        let req = Event::new_with_timestamp(
-            1,
-            "http_parser".to_string(),
-            42,
-            "claude".to_string(),
-            json!({
-                "tid": 7,
-                "message_type": "request",
-                "method": "POST",
-                "path": "/v1/messages",
-                "headers": { "host": "api.anthropic.com" },
-                "body": "{\"model\":\"claude-sonnet-4-20250514\"}"
-            }),
-        );
-        let resp = Event::new_with_timestamp(
-            2,
-            "http_parser".to_string(),
-            42,
-            "claude".to_string(),
-            json!({
-                "tid": 7,
-                "message_type": "response",
-                "status_code": 200,
-                "body": "{\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}"
-            }),
-        );
-        store.insert_event(&req, &mut projector).unwrap();
-        store.insert_event(&resp, &mut projector).unwrap();
-        store
-            .connection_mut()
-            .execute(
-                "INSERT INTO agent_sessions (
-                    id, agent_type, agent_name, pid, comm, start_timestamp_ms,
-                    end_timestamp_ms, status, model, input_tokens, output_tokens,
-                    total_tokens, adapter_id, confidence, attributes_json
-                 ) VALUES (
-                    'claude-code-pid-42', 'claude-code', 'Claude Code', 42,
-                    'claude', 1, 2, 'observed', 'claude-sonnet-4-20250514',
-                    10, 5, 15, 'claude-code', 0.9, '{\"projection\":\"test\"}'
-                 )",
-                [],
-            )
-            .unwrap();
-
-        let snapshot = store.export_snapshot(SnapshotOptions::default()).unwrap();
-        assert_eq!(snapshot.schema_version, 1);
-        assert_eq!(snapshot.summary.source, "sqlite");
-        assert_eq!(snapshot.summary.canonical_events, 2);
-        assert_eq!(snapshot.summary.total_tokens, 15);
-        assert_eq!(snapshot.token_summary[0].total_tokens, 15);
-        assert_eq!(snapshot.events.len(), 2);
-        assert_eq!(snapshot.audit_events.len(), 1);
-        assert_eq!(snapshot.sessions[0].agent_type, "claude-code");
-        assert_eq!(snapshot.agents[0].sessions, 1);
-        assert!(snapshot.interruptions.is_empty());
-    }
-
-    #[test]
-    fn stores_sse_tokens() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        let req = Event::new_with_timestamp(
-            1,
-            "http_parser".to_string(),
-            42,
-            "claude".to_string(),
-            json!({
-                "tid": 7,
-                "message_type": "request",
-                "method": "POST",
-                "path": "/v1/messages",
-                "headers": { "host": "api.anthropic.com" },
-                "body": "{\"model\":\"claude-sonnet-4-20250514\"}"
-            }),
-        );
-        let sse = Event::new_with_timestamp(
-            2,
-            "sse_processor".to_string(),
-            42,
-            "claude".to_string(),
-            json!({
-                "tid": 7,
-                "sse_events": [
-                    {"event":"message_start","parsed_data":{"message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":9}}}},
-                    {"event":"message_delta","parsed_data":{"usage":{"output_tokens":6}}}
-                ]
-            }),
-        );
-        store.insert_event(&req, &mut projector).unwrap();
-        store.insert_event(&sse, &mut projector).unwrap();
-        let summary = store.token_summary("model").unwrap();
-        assert_eq!(summary[0].total_tokens, 15);
-    }
-
-    #[test]
-    fn keeps_ambiguous_same_thread_requests_unpaired() {
-        let mut store = SqliteStore::open_in_memory().unwrap();
-        let mut projector = GenericProjector::new();
-        for (timestamp, model) in [(1, "claude-a"), (2, "claude-b")] {
-            let req = Event::new_with_timestamp(
-                timestamp,
-                "http_parser".to_string(),
-                42,
-                "claude".to_string(),
-                json!({
-                    "tid": 7,
-                    "message_type": "request",
-                    "method": "POST",
-                    "path": "/v1/messages",
-                    "headers": { "host": "api.anthropic.com" },
-                    "body": format!("{{\"model\":\"{}\"}}", model)
-                }),
-            );
-            store.insert_event(&req, &mut projector).unwrap();
-        }
-        for (timestamp, total) in [(3, 10), (4, 20)] {
-            let resp = Event::new_with_timestamp(
-                timestamp,
-                "http_parser".to_string(),
-                42,
-                "claude".to_string(),
-                json!({
-                    "tid": 7,
-                    "message_type": "response",
-                    "status_code": 200,
-                    "body": format!("{{\"usage\":{{\"input_tokens\":{},\"output_tokens\":0}}}}", total)
-                }),
-            );
-            store.insert_event(&resp, &mut projector).unwrap();
-        }
-
-        let count: i64 = store
-            .connection()
-            .query_row("SELECT COUNT(*) FROM llm_calls", [], |r| r.get(0))
-            .unwrap();
-        let orphan_responses: i64 = store
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM llm_calls WHERE request_event_id IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT COALESCE(SUM(total_tokens), 0) FROM token_usage",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 4);
-        assert_eq!(orphan_responses, 2);
-        assert_eq!(total, 30);
-    }
-}

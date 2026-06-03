@@ -1,206 +1,193 @@
 # Materialized View Architecture
 
-## Problem
+## Summary
 
-The current data pipeline has three pain points:
-
-1. **Duplicated merge logic.** `stat`, `report`, and `top` each build their own
-   aggregated view by merging eBPF data, /proc samples, and local session JSONL.
-   Token priority rules, model aggregation, and tool counting are reimplemented
-   per command with inconsistent behavior.
-
-2. **DB on the critical path.** SQLite sits between capture and display. The
-   `record` command writes events to SQLite via adapters/projectors, then
-   `stat`/`report` read them back. This adds complexity (schema drift, raw SQL
-   in multiple files, adapter orchestration) without clear benefit — the same
-   events already exist in the JSONL log file.
-
-3. **Hard to program against.** External consumers must either parse JSONL or
-   query SQLite internals. There is no stable Rust API for "give me the merged
-   session view."
-
-## Design
-
-One in-memory materialized view, three source types feeding it, all consumers
-reading from it.
+AgentSight uses a live materialized view as the boundary between capture and
+consumption.
 
 ```
-Sources (push)             MaterializedView              Consumers (pull)
-                        ┌───────────────────┐
-EbpfSource  ──────────→ │                   │ ──→ TUI (top)
-  ssl, process, stdio    │  tokens_by_model  │ ──→ CLI (stat, report)
-                         │  processes        │ ──→ FileLogger (JSONL)
-ProcSource  ──────────→ │  tools            │ ──→ SqliteSink (optional)
-  cpu, rss, fd scan      │  sessions         │ ──→ HTTP API
-                         │  prompts          │ ──→ OtelExporter
-SessionSource ────────→ │  cost             │
-  ~/.claude JSONL        │  ...              │
-  ~/.codex JSONL         │                   │
-                        └───────────────────┘
-                                 ↑
-                        can restore from DB or JSONL
+Runners + analyzers                 Live view                         Consumers
+-------------------                 ---------                         ---------
+SSL / process / stdio / system  ->  StorageAnalyzer/ViewProjector  ->  FileLogger
+HTTPParser / SSEProcessor           SQLite materialized tables    ->  SQLite DB
+TimestampNormalizer / filters       ViewUpdate stream             ->  OTel
+                                                                      CLI/API
 ```
 
-### Source
+The important rule is that persistent outputs are derived from the view, not
+from raw event storage. SQLite stores selected materialized tables. JSONL logs
+store `ViewUpdate` records. Raw event logging remains available only in low-level
+`debug` commands where the user explicitly asks to inspect runner/analyzer
+output.
 
-A source produces a stream of typed events. Three implementations:
+## Why
 
-| Source | Reads from | Produces |
-|--------|-----------|----------|
-| `EbpfSource` | eBPF runners (via existing analyzer chain) | HTTP pairs, process exec/exit, token usage |
-| `ProcSource` | /proc polling, /proc/\<pid\>/fd scanning | CPU%, RSS, session-path correlation |
-| `SessionSource` | ~/.claude/\*, ~/.codex/\* JSONL files | Models, tokens, tools, prompt previews, cost |
+The old path had two kinds of complexity:
 
-The existing analyzer pipeline (HTTPParser, SSEProcessor, SSLFilter, etc.)
-lives **inside** `EbpfSource`. Analyzers remain single-stream transforms —
-unchanged from today. They are an implementation detail of one source, not a
-global concept.
+1. Raw events were written to SQLite first, then SQL adapters/projectors rebuilt
+   the useful tables later.
+2. Commands such as `stat`, `report`, and `top` duplicated merge logic for token
+   totals, local sessions, tools, processes, and network targets.
+
+That made SQLite a critical path dependency and made each command responsible
+for knowing too much about storage internals.
+
+The current design keeps the analyzer pipeline for single-stream transforms, but
+makes the view the handoff point for everything downstream.
+
+## Live Path
+
+`build_trace_agent()` now always installs a `StorageAnalyzer` for `record` and
+`trace`.
+
+```
+Runner event stream
+  -> analyzer chain
+  -> StorageAnalyzer
+       -> normalize Event into CanonicalEvent
+       -> ViewProjector ingests CanonicalEvent
+       -> materialized rows are written/updated
+       -> ViewUpdateSink consumers are notified
+```
+
+The view currently materializes:
+
+- `llm_calls`
+- `token_usage`
+- `audit_events`
+- `tool_calls`
+- `agent_sessions`
+- `network_targets`
+- `resource_samples`
+- `view_stats`
+
+This means a normal `record -o record.log` no longer writes every raw event. It
+writes structured view updates such as:
+
+```json
+{"kind":"token_usage","row":{"model":"claude-sonnet-4","total_tokens":15}}
+```
+
+The actual row contains the full typed fields; the example is shortened.
+
+## Consumer Boundary
+
+Consumers implement `ViewUpdateSink`.
 
 ```rust
-trait Source {
-    fn stream(&self) -> EventStream;
-    fn name(&self) -> &str;
+pub trait ViewUpdateSink: Send {
+    fn llm_call(&mut self, _call: &LlmCallRow) {}
+    fn token_usage(&mut self, _token: &TokenUsageRow) {}
+    fn audit_event(&mut self, _audit: &AuditEventRow) {}
+    fn tool_call(&mut self, _tool: &ToolCallRow) {}
+    fn session(&mut self, _session: &SessionRow) {}
+    fn network_target(&mut self, _target: &NetworkTargetRow) {}
+    fn resource_sample(&mut self, _sample: &ResourceSampleRow) {}
 }
 ```
 
-### MaterializedView
+Current consumers:
 
-A single struct that maintains aggregated state. Sources push events via
-`ingest()`. Consumers read via query methods. All state lives in memory.
+- `FileLogger`: writes view-update JSONL for `record`/`trace`.
+- `SqliteStore`: persists materialized view tables when `--db` is provided.
+- `OtelExporter`: exports completed `llm_call` rows as GenAI spans.
 
-```rust
-struct MaterializedView {
-    tokens: BTreeMap<String, TokenCounter>,
-    processes: BTreeMap<u32, ProcessInfo>,
-    tools: BTreeMap<String, usize>,
-    sessions: Vec<SessionInfo>,
-    recent_events: RingBuffer<Event>,
-    start_time: Instant,
-    event_count: u64,
-}
+The same `FileLogger` type still implements `Analyzer` for debug subcommands,
+but that is a raw diagnostic path, not the default recording path.
 
-impl MaterializedView {
-    // Write path — called by sources
-    pub fn ingest(&mut self, event: &Event) { ... }
+## SQLite Role
 
-    // Read path — called by consumers
-    pub fn summary(&self) -> Summary { ... }
-    pub fn tokens_by_model(&self) -> Vec<ModelUsage> { ... }
-    pub fn processes(&self) -> Vec<ProcessInfo> { ... }
-    pub fn tools_top(&self, n: usize) -> Vec<ToolUsage> { ... }
-    pub fn sessions(&self) -> Vec<SessionInfo> { ... }
-}
-```
+SQLite is a materialized-view store, not raw event storage.
 
-`ingest()` is O(1) incremental update. Query methods read current state
-directly — no re-aggregation.
+Removed tables:
 
-Priority rules for conflicting data are defined once, inside `ingest()`:
+- `raw_events`
+- `canonical_events`
+- `view_events`
+- `adapter_runs`
 
-- Tokens: local session > HTTP-extracted token_usage > agent_session metadata
-- Tools: local session > HTTP-extracted tool_calls
-- Processes: eBPF audit > /proc scan
-- Models: local session > HTTP response headers
+Removed code:
 
-### Restore from storage
+- `framework/adapters/sql_adapter.rs`
+- SQL adapter files under `collector/adapters/sql/`
+- CLI flags for running adapters/projectors
 
-The same view struct can be populated from stored data instead of live sources:
+Opening an old raw-event-only database now fails with a clear error asking the
+user to re-import the JSONL capture.
 
-```rust
-impl MaterializedView {
-    pub fn from_sources(sources: Vec<Box<dyn Source>>) -> Self { ... }
-    pub fn from_sqlite(db: &str) -> Self { ... }
-    pub fn from_jsonl(path: &str) -> Self { ... }
-}
-```
+## Restore And Import
 
-This means `stat --db path.db` and `stat` (reading JSONL + local files) both
-produce the same `MaterializedView` and use the same query/display code.
+There are two restore inputs:
 
-### DB as optional sink
+1. View-update JSONL from current `record`/`trace` logs.
+2. Legacy raw `Event` JSONL, kept for fixture and old-log compatibility.
 
-SQLite is not on the critical path. It is one of several optional consumers:
+`db import` tries `ViewUpdate` first. If a line is not a view update, it falls
+back to the legacy `Event` parser and rebuilds view rows through
+`StorageAnalyzer`/`ViewProjector`.
+
+`stat --db`, `report --db`, `top --db --once`, `prompts --db`, and
+`db export` read the materialized tables directly through `SqliteStore`.
+
+## API Role
+
+- `/api/events` serves the configured JSONL log file. For normal `record` and
+  `trace`, this is now view-update JSONL.
+- `/api/v1/*` endpoints read SQLite materialized tables when a DB is configured.
+
+## Command Flow
+
+### record / trace
 
 ```
-MaterializedView
-  ├→ FileLogger       (always: write JSONL log)
-  ├→ SqliteSink       (optional: record --db)
-  ├→ TUI / CLI print  (always: display)
-  ├→ WebServer        (optional: --server)
-  └→ OtelExporter     (optional: --otel)
+runners -> analyzers -> StorageAnalyzer/ViewProjector
+                                |-> FileLogger(view JSONL)
+                                |-> SQLite materialized tables (--db)
+                                |-> OtelExporter (--otel)
 ```
 
-`SqliteSink` subscribes to the view's event stream and writes to SQLite.
-The view does not know or care whether a DB exists.
+If `--db` is not provided, `StorageAnalyzer` uses an in-memory SQLite view so
+FileLogger and OTel still consume the same view rows.
 
-When reading back (`stat --db`), SQLite is just another source — the view
-replays stored events through `ingest()` and arrives at the same state.
+### top
 
-## Per-command data flow
+Live `top` still uses the live process/session view in `cmd_perf.rs`; it does
+not require SQLite. The architectural target is the same: maintain aggregate
+state incrementally and render from that state rather than rescanning raw data
+each frame.
 
-### record
+### stat / report
 
-```
-EbpfSource + ProcSource + SessionSource
-  → MaterializedView
-    → FileLogger(record.log)
-    → SqliteSink(session.db)   // optional
-    → WebServer(:7395)         // optional
-    → print summary on exit
-```
+When a DB is provided, commands read `SqliteStore::export_snapshot()` and query
+materialized tables. Without a DB, local agent session JSONL remains available as
+a source for local-only summaries.
 
-### top (live)
+## Current Code Layout
 
 ```
-EbpfSource + ProcSource + SessionSource
-  → MaterializedView
-    → TUI reads view.summary() each tick
-    // no DB, pure in-memory
+collector/src/framework/storage/
+  analyzer.rs      StorageAnalyzer: event-stream analyzer that owns the view
+  sqlite.rs        SqliteStore + ViewProjector + ViewUpdateSink rows
+
+collector/src/framework/analyzers/
+  file_logger.rs   raw Analyzer for debug, ViewUpdateSink for record/trace
+  otel_exporter.rs ViewUpdateSink for completed LLM calls
+
+collector/src/cmd_trace.rs
+  builds runners/analyzers and attaches view sinks
+
+collector/src/cli_db.rs
+  imports ViewUpdate JSONL or legacy raw Event JSONL
+  reads materialized snapshots for report/db commands
 ```
 
-### stat
+## Remaining Work
 
-```
-MaterializedView::from_jsonl(record.log)
-  // or from_sqlite(session.db) with --db
-  // or from local sessions only (no log)
-  → print_stat(view.summary())
-```
+The raw SQL adapter layer is gone and default recording no longer persists raw
+events. The remaining cleanup is command-level consolidation:
 
-### report
-
-```
-MaterializedView::from_jsonl(record.log)
-  // or from_sqlite(session.db) with --db
-  → print_session_summary(view.summary())
-```
-
-## What changes
-
-| Aspect | Current | New |
-|--------|---------|-----|
-| Merge logic | 3 commands, each ~200 lines | `ingest()` in one place |
-| Token priority | Inconsistent across commands | Defined once in `ingest()` |
-| DB role | Core data path (write + read) | Optional sink + optional restore source |
-| Adapters/projectors | Complex SQL projection layer | Removed — view replaces them |
-| Adding a new source | Modify every command | Implement `Source`, feed the view |
-| Adding a new consumer | Add code in command files | Read from view |
-| Programmable API | Query SQLite internals | `MaterializedView` methods |
-
-## What does not change
-
-- **eBPF programs** (`bpf/`): unchanged, still emit JSON to stdout.
-- **Runner trait**: unchanged, still executes binaries and produces EventStream.
-- **Analyzer trait**: unchanged, still single-stream transforms inside EbpfSource.
-- **Frontend**: unchanged, still reads from `/api/events` HTTP endpoint.
-
-## Prior art
-
-| Tool | Pattern | DB role |
-|------|---------|--------|
-| Pixie | eBPF → in-memory columnar tables → PxL query | No DB; 24h rolling window |
-| Hubble | eBPF → ring buffer → gRPC streaming | No DB; export to Prometheus/OTEL |
-| Prometheus | Scrape → head block (memory) + WAL → PromQL | TSDB is both store and query engine |
-| Vector | Source → Transform → Sink DAG | Stateless; DB is external sink |
-| osquery | Virtual SQL tables generated from /proc on demand | No DB; RocksDB buffers events only |
-| **AgentSight (proposed)** | Sources → MaterializedView → Sinks | Optional SQLite sink + restore source |
+- move repeated local-session merge logic out of `cmd_perf.rs` and `cli_db.rs`;
+- make live `top` and stored `stat/report` share the same query-facing view
+  types;
+- optionally split `SqliteStore` into source/sink modules once the command
+  layer is thin enough to make that split useful.
