@@ -5,6 +5,7 @@ use super::common::{AnalyzerProcessor, BinaryExecutor, current_boot_time_ns, par
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
+use crate::procfs::PidSeed;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use std::path::Path;
@@ -36,6 +37,18 @@ impl ProcessRunner {
     {
         self.additional_args = args.into_iter().map(|s| s.as_ref().to_string()).collect();
         // Update the executor with the additional args
+        self.executor = self
+            .executor
+            .with_args(&self.additional_args)
+            .with_runner_name("Process".to_string());
+        self
+    }
+
+    pub fn with_seed_pids(mut self, seeds: &[PidSeed]) -> Self {
+        for seed in seeds {
+            self.additional_args.push("--seed-pid".to_string());
+            self.additional_args.push(seed.arg_value());
+        }
         self.executor = self
             .executor
             .with_args(&self.additional_args)

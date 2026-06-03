@@ -31,10 +31,10 @@ CFLAGS += $(ASAN_FLAGS)
 ALL_LDFLAGS += $(ASAN_FLAGS)
 endif
 
-APPS = sslsniff browsertrace stdiocap process test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_mem_info test_process_ext_types # minimal minimal_legacy uprobe kprobe fentry usdt sockfilter tc ksyscall
+APPS = sslsniff browsertrace stdiocap process test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types # minimal minimal_legacy uprobe kprobe fentry usdt sockfilter tc ksyscall
 
 # All test programs (no BPF skeleton needed)
-TEST_APPS = test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_mem_info test_process_ext_types
+TEST_APPS = test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types
 
 CARGO ?= $(shell which cargo)
 ifeq ($(strip $(CARGO)),)
@@ -114,7 +114,7 @@ help:
 test: unit-test
 	@$(MAKE) runtime-test
 
-unit-test: test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_mem_info test_process_ext_types
+unit-test: test_process_utils test_process_filter test_process_ext_map_flush test_process_ext_types
 	@echo "Running process_utils tests..."
 	@./test_process_utils
 	@echo ""
@@ -123,9 +123,6 @@ unit-test: test_process_utils test_process_filter test_process_ext_map_flush tes
 	@echo ""
 	@echo "Running process_ext map_flush tests..."
 	@./test_process_ext_map_flush
-	@echo ""
-	@echo "Running process_ext mem_info tests..."
-	@./test_process_ext_mem_info
 	@echo ""
 	@echo "Running process_ext types tests..."
 	@./test_process_ext_types
@@ -216,10 +213,6 @@ $(OUTPUT)/test_process_ext_map_flush.o: tests/test_process_ext_map_flush.c $(wil
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) -I. -Itests -c $< -o $@
 
-$(OUTPUT)/test_process_ext_mem_info.o: tests/test_process_ext_mem_info.c $(wildcard *.h) $(wildcard process_ext/*.h) | $(OUTPUT)
-	$(call msg,CC,$@)
-	$(Q)$(CC) $(CFLAGS) -I. -c $< -o $@
-
 $(OUTPUT)/test_process_ext_types.o: tests/test_process_ext_types.c $(wildcard *.h) $(wildcard process_ext/*.h) | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) -I. -c $< -o $@
@@ -250,10 +243,6 @@ test_process_filter: $(OUTPUT)/test_process_filter.o | $(OUTPUT)
 test_process_ext_map_flush: $(OUTPUT)/test_process_ext_map_flush.o $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
 	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
-
-test_process_ext_mem_info: $(OUTPUT)/test_process_ext_mem_info.o | $(OUTPUT)
-	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -o $@
 
 test_process_ext_types: $(OUTPUT)/test_process_ext_types.o | $(OUTPUT)
 	$(call msg,BINARY,$@)

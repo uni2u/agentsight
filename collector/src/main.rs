@@ -24,6 +24,7 @@ mod cmd_exec;
 mod cmd_perf;
 mod cmd_trace;
 mod framework;
+mod procfs;
 mod server;
 mod session;
 
@@ -1017,6 +1018,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     ssl_http: *ssl_http,
                     ssl_raw_data: *ssl_raw_data,
                     process: *process,
+                    process_seed_pids: Vec::new(),
                     stdio: *stdio,
                     stdio_uid: *stdio_uid,
                     stdio_comm: stdio_comm.clone(),

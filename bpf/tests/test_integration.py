@@ -20,6 +20,10 @@ BPF_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROCESS = os.path.join(BPF_DIR, "process")
 
 
+def seed_pid_arg(pid):
+    return ["--seed-pid", f"{pid}:0"]
+
+
 class TracerSession:
     """Start process in background, collect JSON output."""
 
@@ -171,7 +175,7 @@ def test_pid_filter():
     target_proc = subprocess.Popen(["sleep", "30"])
     target_pid = target_proc.pid
     try:
-        sess = TracerSession("-m", "0", "-p", str(target_pid))
+        sess = TracerSession("-m", "0", "-p", str(target_pid), *seed_pid_arg(target_pid))
         try:
             # Run something unrelated
             subprocess.run(["echo", "unrelated"])
@@ -787,7 +791,7 @@ def test_trace_resources():
         ["python3", "-c", "import time; time.sleep(10)"]
     )
     time.sleep(0.5)  # let it start
-    sess = TracerSession("-m", "2", "-p", str(target.pid), "--trace-resources")
+    sess = TracerSession("-m", "2", "-p", str(target.pid), *seed_pid_arg(target.pid), "--trace-resources")
     try:
         time.sleep(3)  # need at least 2 samples
         target.terminate()

@@ -12,6 +12,7 @@ use crate::framework::storage::{
     SnapshotOptions, SqliteStore,
     sqlite::{SessionRow, Snapshot, StorageResult},
 };
+use crate::procfs::{self, ProcInfo, ProcSnapshot as LiveSample};
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
@@ -129,8 +130,27 @@ async fn start_live_ebpf_capture(
         args.extend(["-m".to_string(), "1".to_string()]);
     }
 
+    let seed_snapshot = match LiveSample::collect() {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            return Some(LiveEbpfCapture {
+                state: Arc::new(Mutex::new(LiveCaptureState::default())),
+                handle: tokio::spawn(async {}),
+                start_note: Some(format!("live eBPF capture did not start: {err}")),
+            });
+        }
+    };
+    let seeds = if let Some(pid) = options.pid {
+        seed_snapshot.seeds_for_pid_family(pid)
+    } else if let Some(comm) = &options.comm {
+        seed_snapshot.seeds_for_comm(comm)
+    } else {
+        seed_snapshot.seeds_for_all()
+    };
+
     let mut runner = ProcessRunner::from_binary_extractor(binary_extractor.get_process_path())
-        .with_args(args.iter().map(String::as_str));
+        .with_args(args.iter().map(String::as_str))
+        .with_seed_pids(&seeds);
     let state = Arc::new(Mutex::new(LiveCaptureState::default()));
     let state_for_task = Arc::clone(&state);
 
@@ -1277,7 +1297,7 @@ fn session_agent_rows(
         };
         let root = processes.get(&root_pid);
         let agent = root
-            .map(|p| agent_name_from_command(&p.comm, &p.command))
+            .map(|p| procfs::agent_name_from_command(&p.comm, &p.command))
             .unwrap_or_else(|| "agent".to_string());
         rows.push(AgentTopRow {
             session: format!("db:{root_pid}"),
@@ -1464,52 +1484,6 @@ fn session_tokens_by_pid(snapshot: &Snapshot) -> BTreeMap<u32, i64> {
     out
 }
 
-#[derive(Debug, Clone)]
-struct ProcInfo {
-    pid: u32,
-    ppid: u32,
-    comm: String,
-    command: String,
-    ticks: u64,
-    starttime_ticks: u64,
-    rss_mb: u64,
-}
-
-#[derive(Debug, Clone)]
-struct LiveSample {
-    at: Instant,
-    uptime_s: f64,
-    procs: BTreeMap<u32, ProcInfo>,
-}
-
-impl LiveSample {
-    fn collect() -> io::Result<Self> {
-        let page_size = page_size_bytes();
-        let mut procs = BTreeMap::new();
-
-        for entry in fs::read_dir("/proc")? {
-            let Ok(entry) = entry else { continue };
-            let file_name = entry.file_name();
-            let Some(pid) = file_name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
-                continue;
-            };
-            let Some(mut proc_info) = read_proc_info(pid, page_size) else {
-                continue;
-            };
-            if proc_info.command.is_empty() {
-                proc_info.command = proc_info.comm.clone();
-            }
-            procs.insert(pid, proc_info);
-        }
-
-        Ok(Self {
-            at: Instant::now(),
-            uptime_s: read_uptime_s().unwrap_or_default(),
-            procs,
-        })
-    }
-}
-
 fn build_live_top<'a>(
     sample: &LiveSample,
     previous: Option<&LiveSample>,
@@ -1645,13 +1619,13 @@ fn apply_live_capture(
         return;
     }
 
-    let children = children_by_ppid(&sample.procs);
+    let children = sample.children_by_ppid();
     let mut attributed = HashSet::new();
     for row in rows.iter_mut() {
         let Some(root_pid) = row.pid else {
             continue;
         };
-        let family = live_process_family(root_pid, &children, &sample.procs);
+        let family = procfs::process_family(root_pid, &children, &sample.procs);
         let mut counters = CaptureCounters::default();
         for pid in family {
             if let Some(pid_counters) = capture.by_pid.get(&pid) {
@@ -1690,11 +1664,11 @@ fn live_process_rows(
     options: &TopOptions,
 ) -> Vec<AgentTopRow> {
     let roots = live_roots(sample, options);
-    let children = children_by_ppid(&sample.procs);
+    let children = sample.children_by_ppid();
     let mut rows = Vec::new();
 
     for root_pid in roots {
-        let family = live_process_family(root_pid, &children, &sample.procs);
+        let family = procfs::process_family(root_pid, &children, &sample.procs);
         if family.is_empty() {
             continue;
         }
@@ -1702,14 +1676,14 @@ fn live_process_rows(
         let cpu_percent = family
             .iter()
             .filter_map(|pid| sample.procs.get(pid))
-            .map(|proc_info| process_cpu_percent(proc_info, previous, sample))
+            .map(|proc_info| procfs::process_cpu_percent(proc_info, previous, sample))
             .sum();
         let rss_mb = family
             .iter()
             .filter_map(|pid| sample.procs.get(pid).map(|proc_info| proc_info.rss_mb))
             .sum();
         let agent = root
-            .map(|proc_info| agent_name_from_command(&proc_info.comm, &proc_info.command))
+            .map(|proc_info| procfs::agent_name_from_command(&proc_info.comm, &proc_info.command))
             .unwrap_or_else(|| "agent".to_string());
 
         rows.push(AgentTopRow {
@@ -1717,7 +1691,7 @@ fn live_process_rows(
             agent,
             pid: Some(root_pid),
             model: None,
-            age_s: root.map(|proc_info| process_age_s(proc_info, sample)),
+            age_s: root.map(|proc_info| procfs::process_age_s(proc_info, sample)),
             cpu_percent,
             rss_mb,
             processes: family.len(),
@@ -1736,102 +1710,6 @@ fn live_process_rows(
     }
 
     rows
-}
-
-fn read_proc_info(pid: u32, page_size: u64) -> Option<ProcInfo> {
-    let proc_dir = format!("/proc/{pid}");
-    let stat = fs::read_to_string(format!("{proc_dir}/stat")).ok()?;
-    let (comm, ppid, ticks, starttime_ticks) = parse_proc_stat(&stat)?;
-    let command = read_cmdline(pid).unwrap_or_else(|| comm.clone());
-    let rss_mb = read_rss_mb(pid, page_size).unwrap_or_default();
-    Some(ProcInfo {
-        pid,
-        ppid,
-        comm,
-        command,
-        ticks,
-        starttime_ticks,
-        rss_mb,
-    })
-}
-
-fn parse_proc_stat(stat: &str) -> Option<(String, u32, u64, u64)> {
-    let open = stat.find('(')?;
-    let close = stat.rfind(')')?;
-    let comm = stat[open + 1..close].to_string();
-    let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
-    let ppid = fields.get(1)?.parse().ok()?;
-    let utime: u64 = fields.get(11)?.parse().ok()?;
-    let stime: u64 = fields.get(12)?.parse().ok()?;
-    let starttime_ticks = fields.get(19)?.parse().ok()?;
-    Some((comm, ppid, utime.saturating_add(stime), starttime_ticks))
-}
-
-fn read_cmdline(pid: u32) -> Option<String> {
-    let bytes = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let command = bytes
-        .split(|byte| *byte == 0)
-        .filter_map(|part| std::str::from_utf8(part).ok())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!command.is_empty()).then_some(command)
-}
-
-fn read_rss_mb(pid: u32, page_size: u64) -> Option<u64> {
-    let statm = fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
-    let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    let rss_bytes = resident_pages.saturating_mul(page_size);
-    if rss_bytes == 0 {
-        Some(0)
-    } else {
-        Some(rss_bytes.div_ceil(1_048_576))
-    }
-}
-
-fn read_uptime_s() -> Option<f64> {
-    fs::read_to_string("/proc/uptime")
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
-}
-
-fn page_size_bytes() -> u64 {
-    let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if value > 0 { value as u64 } else { 4096 }
-}
-
-fn ticks_per_second() -> f64 {
-    let value = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if value > 0 { value as f64 } else { 100.0 }
-}
-
-fn process_cpu_percent(
-    proc_info: &ProcInfo,
-    previous: Option<&LiveSample>,
-    sample: &LiveSample,
-) -> f64 {
-    let ticks_per_second = ticks_per_second();
-    if let Some(previous) = previous
-        && let Some(prev_proc) = previous.procs.get(&proc_info.pid)
-    {
-        let delta_ticks = proc_info.ticks.saturating_sub(prev_proc.ticks);
-        let delta_wall = sample.at.duration_since(previous.at).as_secs_f64();
-        if delta_wall > 0.0 {
-            return (delta_ticks as f64 / ticks_per_second) / delta_wall * 100.0;
-        }
-    }
-
-    let process_start_s = proc_info.starttime_ticks as f64 / ticks_per_second;
-    let elapsed_s = (sample.uptime_s - process_start_s).max(0.001);
-    (proc_info.ticks as f64 / ticks_per_second) / elapsed_s * 100.0
-}
-
-fn process_age_s(proc_info: &ProcInfo, sample: &LiveSample) -> f64 {
-    let process_start_s = proc_info.starttime_ticks as f64 / ticks_per_second();
-    (sample.uptime_s - process_start_s).max(0.0)
 }
 
 fn live_roots(sample: &LiveSample, options: &TopOptions) -> Vec<u32> {
@@ -1859,18 +1737,16 @@ fn live_roots(sample: &LiveSample, options: &TopOptions) -> Vec<u32> {
 
 fn live_process_matches(proc_info: &ProcInfo, options: &TopOptions) -> bool {
     if options.comm.is_none() {
-        return known_agent_label(&proc_info.comm, &proc_info.command).is_some();
+        return procfs::known_agent_label(&proc_info.comm, &proc_info.command).is_some();
     }
-    matches_top_filter(
-        Some(proc_info.pid),
-        Some(&proc_info.comm),
-        Some(&proc_info.command),
-        options,
-    )
+    options
+        .comm
+        .as_deref()
+        .is_some_and(|comm| procfs::process_matches_comm(proc_info, comm))
 }
 
 fn live_matching_ancestor(proc_info: &ProcInfo, sample: &LiveSample, options: &TopOptions) -> bool {
-    let current_label = known_agent_label(&proc_info.comm, &proc_info.command);
+    let current_label = procfs::known_agent_label(&proc_info.comm, &proc_info.command);
     let mut parent_pid = proc_info.ppid;
     let mut seen = HashSet::new();
     while parent_pid > 0 && seen.insert(parent_pid) {
@@ -1881,43 +1757,12 @@ fn live_matching_ancestor(proc_info: &ProcInfo, sample: &LiveSample, options: &T
             if live_process_matches(parent, options) {
                 return true;
             }
-        } else if known_agent_label(&parent.comm, &parent.command) == current_label {
+        } else if procfs::known_agent_label(&parent.comm, &parent.command) == current_label {
             return true;
         }
         parent_pid = parent.ppid;
     }
     false
-}
-
-fn children_by_ppid(procs: &BTreeMap<u32, ProcInfo>) -> HashMap<u32, Vec<u32>> {
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for proc_info in procs.values() {
-        children
-            .entry(proc_info.ppid)
-            .or_default()
-            .push(proc_info.pid);
-    }
-    children
-}
-
-fn live_process_family(
-    root: u32,
-    children: &HashMap<u32, Vec<u32>>,
-    procs: &BTreeMap<u32, ProcInfo>,
-) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    let mut seen = HashSet::new();
-    while let Some(pid) = stack.pop() {
-        if !seen.insert(pid) || !procs.contains_key(&pid) {
-            continue;
-        }
-        out.push(pid);
-        if let Some(child_pids) = children.get(&pid) {
-            stack.extend(child_pids.iter().copied());
-        }
-    }
-    out
 }
 
 fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
@@ -1970,83 +1815,6 @@ fn matches_top_filter(
                 .unwrap_or(false);
     }
     true
-}
-
-fn agent_name_from_command(comm: &str, command: &str) -> String {
-    known_agent_label(comm, command)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            if !comm.is_empty() && comm != "unknown" {
-                comm.to_string()
-            } else {
-                command
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("agent")
-                    .to_string()
-            }
-        })
-}
-
-fn known_agent_label(comm: &str, command: &str) -> Option<&'static str> {
-    label_from_exec_token(comm).or_else(|| label_from_command_argv(command))
-}
-
-fn label_from_command_argv(command: &str) -> Option<&'static str> {
-    let mut args = command.split_whitespace();
-    let argv0 = args.next()?;
-    if let Some(label) = label_from_exec_token(argv0) {
-        return Some(label);
-    }
-
-    args.filter(|arg| looks_like_exec_path(arg))
-        .find_map(label_from_exec_token)
-}
-
-fn looks_like_exec_path(token: &str) -> bool {
-    let token = token.trim_matches(|ch| matches!(ch, '"' | '\''));
-    token.contains('/')
-}
-
-fn label_from_exec_token(token: &str) -> Option<&'static str> {
-    let token = token.trim_matches(|ch| matches!(ch, '"' | '\''));
-    if token.is_empty() {
-        return None;
-    }
-
-    let lower = token.to_ascii_lowercase();
-    let basename = Path::new(&lower)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(lower.as_str());
-
-    label_from_exec_name(basename).or_else(|| label_from_known_package_path(&lower))
-}
-
-fn label_from_exec_name(name: &str) -> Option<&'static str> {
-    match name {
-        "claude" | "claude-code" => Some("claude"),
-        "codex" | "codex-cli" => Some("codex"),
-        "gemini" | "gemini-cli" => Some("gemini"),
-        "opencode" => Some("opencode"),
-        "aider" => Some("aider"),
-        "goose" => Some("goose"),
-        "openclaw" => Some("openclaw"),
-        name if name.starts_with("openclaw-") => Some("openclaw"),
-        _ => None,
-    }
-}
-
-fn label_from_known_package_path(path: &str) -> Option<&'static str> {
-    if path.contains("@anthropic-ai/claude-code") || path.contains("/claude-code/") {
-        Some("claude")
-    } else if path.contains("@openai/codex") || path.contains("/codex-linux-") {
-        Some("codex")
-    } else if path.contains("@google/gemini-cli") || path.contains("/gemini-cli/") {
-        Some("gemini")
-    } else {
-        None
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -2532,41 +2300,6 @@ fn number_or_string(value: Option<&Value>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn known_agent_label_uses_executable_not_model_argument() {
-        assert_eq!(
-            known_agent_label(
-                "python",
-                "python benchmark_runner.py --model claude-sonnet-4-5-20250929"
-            ),
-            None
-        );
-        assert_eq!(
-            known_agent_label(
-                "bash",
-                "/bin/bash -lc ./target/debug/agentsight top --once -c claude"
-            ),
-            None
-        );
-        assert_eq!(
-            known_agent_label(
-                "docker",
-                "docker run image bash -c claude --model claude-sonnet-4"
-            ),
-            None
-        );
-        assert_eq!(
-            known_agent_label("node", "node /home/user/.nvm/versions/node/v22/bin/codex"),
-            Some("codex")
-        );
-        assert_eq!(
-            known_agent_label("node", "node /home/user/.local/bin/claude"),
-            Some("claude")
-        );
-        assert_eq!(known_agent_label("claude", "claude"), Some("claude"));
-        assert_eq!(known_agent_label("openclaw-gatewa", ""), Some("openclaw"));
-    }
 
     #[test]
     fn local_session_does_not_attach_to_newer_unrelated_process() {

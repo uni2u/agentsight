@@ -4,6 +4,7 @@
 use super::{EventStream, Runner, RunnerError};
 use crate::framework::analyzers::Analyzer;
 use crate::framework::core::Event;
+use crate::procfs::ProcSnapshot;
 use async_trait::async_trait;
 use futures::stream::Stream;
 use serde_json::json;
@@ -134,18 +135,6 @@ impl Runner for SystemRunner {
     }
 }
 
-/// Get nanoseconds since boot (matching bpf_ktime_get_ns() behavior)
-fn get_boot_time_ns() -> u64 {
-    // Read /proc/uptime to get seconds since boot
-    if let Ok(uptime_str) = fs::read_to_string("/proc/uptime")
-        && let Some(uptime_secs) = uptime_str.split_whitespace().next()
-        && let Ok(secs) = uptime_secs.parse::<f64>()
-    {
-        return (secs * 1_000_000_000.0) as u64;
-    }
-    0
-}
-
 /// Create a stream of system monitoring events
 fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item = Event> + Send>> {
     Box::pin(async_stream::stream! {
@@ -155,10 +144,17 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
         loop {
             interval.tick().await;
 
-            let timestamp = get_boot_time_ns();
+            let snapshot = match ProcSnapshot::collect() {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    log::warn!("failed to collect /proc snapshot: {}", err);
+                    continue;
+                }
+            };
+            let timestamp = (snapshot.uptime_s * 1_000_000_000.0) as u64;
 
             if let Some(session_id) = config.session_id {
-                let pids = find_pids_by_session(session_id);
+                let pids = snapshot.pids_in_session(session_id);
                 if !pids.is_empty()
                     && let Ok(event) = collect_process_metrics(
                         session_id,
@@ -166,6 +162,7 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
                         timestamp,
                         &mut previous_stats,
                         &config,
+                        &snapshot,
                     )
                 {
                     yield event;
@@ -174,7 +171,7 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
             }
 
             // Find target PIDs to monitor
-            let target_pids = find_target_pids(&config);
+            let target_pids = find_target_pids(&config, &snapshot);
 
             if target_pids.is_empty() {
                 // If monitoring by name/pid and nothing found, continue waiting
@@ -192,9 +189,7 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
             for pid in target_pids {
                 // Get all PIDs to monitor (including children if configured)
                 let pids_to_monitor = if config.include_children {
-                    let mut all_pids = vec![pid];
-                    all_pids.extend(get_all_children(pid));
-                    all_pids
+                    snapshot.process_family(pid)
                 } else {
                     vec![pid]
                 };
@@ -206,6 +201,7 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
                     timestamp,
                     &mut previous_stats,
                     &config,
+                    &snapshot,
                 ) {
                     yield event;
                 }
@@ -217,105 +213,26 @@ fn create_system_event_stream(config: SystemConfig) -> Pin<Box<dyn Stream<Item =
 /// Process statistics for CPU calculation
 #[derive(Debug, Clone)]
 struct ProcessStats {
-    utime: u64,
-    stime: u64,
+    ticks: u64,
     timestamp: u64,
 }
 
 /// Find PIDs that match the monitoring criteria
-fn find_target_pids(config: &SystemConfig) -> Vec<u32> {
+fn find_target_pids(config: &SystemConfig, snapshot: &ProcSnapshot) -> Vec<u32> {
     if let Some(pid) = config.pid {
         // Monitor specific PID
-        if process_exists(pid) {
+        if snapshot.procs.contains_key(&pid) {
             vec![pid]
         } else {
             vec![]
         }
     } else if let Some(ref comm_pattern) = config.comm {
         // Find PIDs by process name
-        find_pids_by_name(comm_pattern)
+        snapshot.pids_matching_comm(comm_pattern)
     } else {
         // No specific target - caller should handle system-wide monitoring
         vec![]
     }
-}
-
-/// Check if a process exists
-fn process_exists(pid: u32) -> bool {
-    fs::metadata(format!("/proc/{}", pid)).is_ok()
-}
-
-/// Find all PIDs matching a process name pattern
-fn find_pids_by_name(pattern: &str) -> Vec<u32> {
-    let mut matching_pids = Vec::new();
-
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string()
-                && let Ok(pid) = file_name.parse::<u32>()
-                && let Ok(comm) = fs::read_to_string(format!("/proc/{}/comm", pid))
-                && comm.trim().contains(pattern)
-            {
-                matching_pids.push(pid);
-            }
-        }
-    }
-
-    matching_pids
-}
-
-/// Get all child PIDs recursively
-fn get_all_children(parent_pid: u32) -> Vec<u32> {
-    let mut children = Vec::new();
-
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string()
-                && let Ok(pid) = file_name.parse::<u32>()
-                && let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid))
-                && let Some((ppid, _, _)) = parse_proc_stat_ids(&stat)
-                && ppid == parent_pid
-            {
-                children.push(pid);
-                // Recursively get grandchildren
-                children.extend(get_all_children(pid));
-            }
-        }
-    }
-
-    children
-}
-
-fn find_pids_by_session(session_id: u32) -> Vec<u32> {
-    let mut matching_pids = Vec::new();
-
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string()
-                && let Ok(pid) = file_name.parse::<u32>()
-                && let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid))
-                && let Some((_, _, session)) = parse_proc_stat_ids(&stat)
-                && session == session_id
-            {
-                matching_pids.push(pid);
-            }
-        }
-    }
-
-    matching_pids
-}
-
-fn parse_proc_stat_ids(stat: &str) -> Option<(u32, u32, u32)> {
-    let after_comm = stat.rsplit_once(") ")?.1;
-    let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    if fields.len() < 4 {
-        return None;
-    }
-    Some((
-        fields.get(1)?.parse().ok()?,
-        fields.get(2)?.parse().ok()?,
-        fields.get(3)?.parse().ok()?,
-    ))
 }
 
 /// Collect metrics for a process and its children
@@ -325,6 +242,7 @@ fn collect_process_metrics(
     timestamp: u64,
     previous_stats: &mut HashMap<u32, ProcessStats>,
     config: &SystemConfig,
+    snapshot: &ProcSnapshot,
 ) -> Result<Event, Box<dyn std::error::Error + Send + Sync>> {
     let mut total_rss_kb = 0u64;
     let mut total_vsz_kb = 0u64;
@@ -332,32 +250,28 @@ fn collect_process_metrics(
     let mut thread_count = 0u32;
     let mut process_name = String::from("unknown");
 
-    // Get main process name
-    if let Ok(comm) = fs::read_to_string(format!("/proc/{}/comm", main_pid)) {
-        process_name = comm.trim().to_string();
+    if let Some(proc_info) = snapshot.procs.get(&main_pid) {
+        process_name = proc_info.comm.clone();
     }
 
     // Aggregate metrics across all PIDs
     for &pid in all_pids {
-        if !process_exists(pid) {
+        let Some(proc_info) = snapshot.procs.get(&pid) else {
             continue;
-        }
+        };
+        total_rss_kb += proc_info.rss_kb;
+        total_vsz_kb += proc_info.vsz_kb;
 
-        // Get memory info
-        if let Ok((rss, vsz)) = get_process_memory(pid) {
-            total_rss_kb += rss;
-            total_vsz_kb += vsz;
-        }
-
-        // Get CPU usage
-        if let Ok(stats) = get_process_cpu_stats(pid) {
-            let cpu_percent = calculate_cpu_percentage(pid, &stats, previous_stats, timestamp);
-            total_cpu_percent += cpu_percent;
-        }
+        let stats = ProcessStats {
+            ticks: proc_info.ticks,
+            timestamp,
+        };
+        let cpu_percent = calculate_cpu_percentage(pid, &stats, previous_stats);
+        total_cpu_percent += cpu_percent;
 
         // Count threads (only for main process)
         if pid == main_pid {
-            thread_count = get_thread_count(pid);
+            thread_count = proc_info.threads;
         }
     }
 
@@ -452,57 +366,15 @@ fn get_system_wide_metrics(
     ))
 }
 
-/// Get process memory usage (RSS and VSZ in KB)
-fn get_process_memory(pid: u32) -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>> {
-    let statm = fs::read_to_string(format!("/proc/{}/statm", pid))?;
-    let fields: Vec<&str> = statm.split_whitespace().collect();
-
-    if fields.len() < 2 {
-        return Err("Invalid statm format".into());
-    }
-
-    // VSZ (virtual size) and RSS (resident set size) in pages
-    let page_size = 4u64; // 4KB page size on most systems
-    let vsz_pages: u64 = fields[0].parse()?;
-    let rss_pages: u64 = fields[1].parse()?;
-
-    Ok((rss_pages * page_size, vsz_pages * page_size))
-}
-
-/// Get process CPU statistics from /proc/[pid]/stat
-fn get_process_cpu_stats(
-    pid: u32,
-) -> Result<ProcessStats, Box<dyn std::error::Error + Send + Sync>> {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", pid))?;
-    let fields: Vec<&str> = stat.split_whitespace().collect();
-
-    if fields.len() < 15 {
-        return Err("Invalid stat format".into());
-    }
-
-    let utime: u64 = fields[13].parse()?;
-    let stime: u64 = fields[14].parse()?;
-    let timestamp = get_boot_time_ns();
-
-    Ok(ProcessStats {
-        utime,
-        stime,
-        timestamp,
-    })
-}
-
 /// Calculate CPU percentage based on previous stats
 fn calculate_cpu_percentage(
     pid: u32,
     current: &ProcessStats,
     previous_stats: &mut HashMap<u32, ProcessStats>,
-    timestamp: u64,
 ) -> f64 {
     let cpu_percent = if let Some(prev) = previous_stats.get(&pid) {
-        let time_delta = timestamp.saturating_sub(prev.timestamp) as f64 / 1_000_000_000.0; // Convert nanoseconds to seconds
-        let current_ticks = current.utime.saturating_add(current.stime);
-        let previous_ticks = prev.utime.saturating_add(prev.stime);
-        let cpu_delta = current_ticks.saturating_sub(previous_ticks);
+        let time_delta = current.timestamp.saturating_sub(prev.timestamp) as f64 / 1_000_000_000.0;
+        let cpu_delta = current.ticks.saturating_sub(prev.ticks);
 
         // CPU ticks to percentage (assumes USER_HZ = 100)
         let user_hz = 100.0;
@@ -519,13 +391,6 @@ fn calculate_cpu_percentage(
     previous_stats.insert(pid, current.clone());
 
     cpu_percent
-}
-
-/// Get thread count for a process
-fn get_thread_count(pid: u32) -> u32 {
-    fs::read_dir(format!("/proc/{}/task", pid))
-        .map(|entries| entries.count() as u32)
-        .unwrap_or(1)
 }
 
 /// Get system load average

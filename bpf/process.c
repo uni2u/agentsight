@@ -8,7 +8,6 @@
 #include <unistd.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include <dirent.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -18,11 +17,11 @@
 #include "process_filter.h"
 #include "container_info.h"
 #include "process_ext/map_flush.h"
-#include "process_ext/mem_info.h"
 #include "process_ext/resource_sampler.h"
 #include "process_ext/userspace.h"
 
 #define MAX_COMMAND_LIST 256
+#define MAX_SEED_PIDS 4096
 #define FILE_DEDUP_WINDOW_NS 60000000000ULL  // 60 seconds in nanoseconds
 #define MAX_FILE_HASHES 1024
 
@@ -37,6 +36,11 @@ struct per_second_limit {
     uint64_t current_second;
     uint32_t distinct_file_count;
     bool should_warn_next;
+};
+
+struct seed_pid {
+	pid_t pid;
+	pid_t ppid;
 };
 
 // Simple hash table for FILE_OPEN deduplication
@@ -61,6 +65,8 @@ static struct env {
 	long min_duration_ms;
 	char *command_list[MAX_COMMAND_LIST];
 	int command_count;
+	struct seed_pid seed_pids[MAX_SEED_PIDS];
+	int seed_count;
 	enum filter_mode filter_mode;
 	pid_t pid;
 	pid_t session_id;
@@ -80,6 +86,7 @@ static struct env {
 	.verbose = false,
 	.min_duration_ms = 0,
 	.command_count = 0,
+	.seed_count = 0,
 	.filter_mode = FILTER_MODE_PROC,
 	.pid = 0,
 	.session_id = 0,
@@ -107,7 +114,7 @@ const char argp_program_doc[] =
 	"USAGE: ./process [-d <min-duration-ms>] [-c <command1,command2,...>] [-p <pid>] [--session <sid>] [-m <mode>] [-v]\n"
 	"       [--trace-fs] [--trace-net] [--trace-signals] [--trace-mem] [--trace-cow] [--trace-all]\n"
 	"       [--trace-resources] [--resource-detail] [--sample-interval <ms>]\n"
-	"       [--cgroup <path>] [--cgroup-filter <path>] [--cgroup-filter-children]\n"
+	"       [--cgroup <path>] [--cgroup-filter <path>] [--cgroup-filter-children] [--seed-pid <pid:ppid>]\n"
 	"\n"
 	"FILTER MODES:\n"
 	"  0 (all):    Trace all processes and all read/write operations\n"
@@ -137,6 +144,7 @@ enum {
 	OPT_CGROUP,
 	OPT_CGROUP_FILTER,
 	OPT_CGROUP_FILTER_CHILDREN,
+	OPT_SEED_PID,
 };
 
 static const struct argp_option opts[] = {
@@ -159,8 +167,36 @@ static const struct argp_option opts[] = {
 	{ "cgroup", OPT_CGROUP, "PATH", 0, "Cgroup v2 path for resource sampling" },
 	{ "cgroup-filter", OPT_CGROUP_FILTER, "PATH", 0, "Hard filter by cgroup v2 path" },
 	{ "cgroup-filter-children", OPT_CGROUP_FILTER_CHILDREN, NULL, 0, "Include descendants of --cgroup-filter path" },
+	{ "seed-pid", OPT_SEED_PID, "PID[:PPID]", 0, "Seed an existing tracked PID supplied by the collector" },
 	{},
 };
+
+static bool parse_seed_pid_arg(const char *arg, struct seed_pid *seed)
+{
+	char *end = NULL;
+	char *ppid_start = NULL;
+	long pid;
+	long ppid = 0;
+
+	errno = 0;
+	pid = strtol(arg, &end, 10);
+	if (errno || pid <= 0)
+		return false;
+
+	if (*end == ':') {
+		ppid_start = end + 1;
+		errno = 0;
+		ppid = strtol(ppid_start, &end, 10);
+		if (errno || end == ppid_start || ppid < 0)
+			return false;
+	}
+	if (*end != '\0')
+		return false;
+
+	seed->pid = (pid_t)pid;
+	seed->ppid = (pid_t)ppid;
+	return true;
+}
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
@@ -282,6 +318,17 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case OPT_CGROUP_FILTER_CHILDREN:
 		env.cgroup_filter_children = true;
+		break;
+	case OPT_SEED_PID:
+		if (env.seed_count >= MAX_SEED_PIDS) {
+			fprintf(stderr, "Too many --seed-pid entries (max %d)\n", MAX_SEED_PIDS);
+			argp_usage(state);
+		}
+		if (!parse_seed_pid_arg(arg, &env.seed_pids[env.seed_count])) {
+			fprintf(stderr, "Invalid seed pid: %s\n", arg);
+			argp_usage(state);
+		}
+		env.seed_count++;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -621,7 +668,7 @@ static void flush_pid_file_opens(pid_t pid, uint64_t timestamp_ns)
 	}
 }
 
-static void print_exec_event(const struct event *e, bool include_memory)
+static void print_exec_event(const struct event *e)
 {
 	char comm_esc[TASK_COMM_LEN * 2 + 1];
 	char filename_esc[MAX_FILENAME_LEN * 2 + 1];
@@ -640,15 +687,6 @@ static void print_exec_event(const struct event *e, bool include_memory)
 	printf("\"ppid\":%d", e->ppid);
 	printf(",\"filename\":\"%s\"", filename_esc);
 	printf(",\"full_command\":\"%s\"", command_esc);
-
-	if (include_memory) {
-		struct proc_mem_info mem;
-		if (read_proc_mem_info(e->pid, &mem)) {
-			printf(",\"rss_kb\":%ld,\"shared_kb\":%ld",
-			       mem.rss_pages * page_size_kb,
-			       mem.shared_pages * page_size_kb);
-		}
-	}
 
 	print_container_fields(e->pid);
 	printf("}\n");
@@ -710,50 +748,25 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
-/* Populate initial PIDs in the userspace tracker from existing processes */
-static int populate_initial_pids(struct pid_tracker *tracker, char **command_list, int command_count, enum filter_mode filter_mode)
+static int seed_initial_pids(struct pid_tracker *tracker)
 {
-	DIR *proc_dir;
-	struct dirent *entry;
-	pid_t pid, ppid;
-	char comm[TASK_COMM_LEN];
 	int tracked_count = 0;
 
-	proc_dir = opendir("/proc");
-	if (!proc_dir) {
-		fprintf(stderr, "Failed to open /proc directory\n");
-		return -1;
-	}
+	for (int i = 0; i < env.seed_count; i++) {
+		pid_t pid = env.seed_pids[i].pid;
+		pid_t ppid = env.seed_pids[i].ppid;
+		bool already_tracked = pid_tracker_is_tracked(tracker, pid);
 
-	while ((entry = readdir(proc_dir)) != NULL) {
-		/* Skip non-numeric entries */
-		if (strspn(entry->d_name, "0123456789") != strlen(entry->d_name))
-			continue;
-
-		pid = (pid_t)strtol(entry->d_name, NULL, 10);
-		if (pid <= 0)
-			continue;
-
-		/* Read process command */
-		if (read_proc_comm(pid, comm, sizeof(comm)) != 0)
-			continue;
-
-		/* Read parent PID */
-		if (read_proc_ppid(pid, &ppid) != 0)
-			continue;
-
-		/* Check if we should track this process */
-		if (should_track_event_process(tracker, comm, pid, ppid)) {
-			if (pid_tracker_add(tracker, pid, ppid)) {
+		if (pid_tracker_add(tracker, pid, ppid)) {
+			if (!already_tracked) {
 				add_tracked_pid_to_bpf(pid);
 				tracked_count++;
-			} else if (env.verbose) {
-				fprintf(stderr, "Warning: Failed to add PID %d to tracker (table full)\n", pid);
 			}
+		} else if (env.verbose) {
+			fprintf(stderr, "Warning: Failed to add seeded PID %d to tracker (table full)\n", pid);
 		}
 	}
 
-	closedir(proc_dir);
 	return tracked_count;
 }
 
@@ -815,7 +828,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 						detect_cgroup_path(e->pid, env.cgroup_path, sizeof(env.cgroup_path));
 				}
 
-				print_exec_event(e, true);
+				print_exec_event(e);
 			} else if (tracker->filter_mode == FILTER_MODE_FILTER) {
 				break;
 			} else {
@@ -823,7 +836,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 					pid_tracker_add(tracker, e->pid, e->ppid);
 					add_tracked_pid_to_bpf(e->pid);
 				}
-				print_exec_event(e, false);
+				print_exec_event(e);
 			}
 		}
 			break;
@@ -890,7 +903,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* filter_mode is set via -m flag or -a flag, defaults to FILTER_MODE_FILTER */
+	/* filter_mode is set via -m flag or -a flag, defaults to FILTER_MODE_PROC */
 	page_size_kb = sysconf(_SC_PAGESIZE) / 1024;
 	if (page_size_kb <= 0)
 		page_size_kb = 4;
@@ -965,24 +978,17 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Loaded cgroup subtree filter entries: %d\n", cgroups);
 	}
 
-	/* Populate initial PIDs from existing processes into userspace tracker */
-	int tracked_count = populate_initial_pids(&pid_tracker, env.command_list, env.command_count, env.filter_mode);
-	if (tracked_count < 0) {
-		fprintf(stderr, "Failed to populate initial PIDs\n");
-		goto cleanup;
-	}
+	int tracked_count = seed_initial_pids(&pid_tracker);
 	
 	/* Output configuration as JSON */
-	// printf("Config: filter_mode=%d, min_duration_ms=%ld, commands=%d, pid=%d, initial_tracked_pids=%d\n", 
-	//        env.filter_mode, env.min_duration_ms, env.command_count, env.pid, tracked_count);
 	if (env.verbose) {
 		fprintf(stderr, "Loaded process: trace_fs=%d trace_net=%d trace_signals=%d "
 			"trace_mem=%d trace_cow=%d filter_pids=%d filter_cgroup=%d "
-			"filter_cgroup_children=%d cgroup_id=%llu initial_tracked=%d\n",
+			"filter_cgroup_children=%d cgroup_id=%llu seed_pids=%d seeded_tracked=%d\n",
 			env.trace_fs, env.trace_net, env.trace_signals,
 			env.trace_mem, env.trace_cow, need_pid_filter, need_cgroup_filter,
 			env.cgroup_filter_children, (unsigned long long)cgroup_filter_id,
-			tracked_count);
+			env.seed_count, tracked_count);
 	}
 
 	/* Attach tracepoints */

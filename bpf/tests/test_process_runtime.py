@@ -23,6 +23,10 @@ class RuntimeErrorWithContext(AssertionError):
     pass
 
 
+def seed_pid_arg(pid):
+    return ["--seed-pid", f"{pid}:0"]
+
+
 class TracerSession:
     def __init__(self, *args, wait_attach=1.5):
         self.stdout = tempfile.NamedTemporaryFile(prefix="process-runtime-", suffix=".jsonl", delete=False)
@@ -158,7 +162,7 @@ def test_pid_filter_tracks_target_tree_only():
     unrelated = f"agentsight-unrelated-{uuid.uuid4().hex}"
     sess = None
     try:
-        sess = TracerSession("-m", "2", "-p", str(target.pid))
+        sess = TracerSession("-m", "2", "-p", str(target.pid), *seed_pid_arg(target.pid))
         open(trigger, "w").close()
         wait_for_file(done)
         subprocess.run(["/bin/echo", unrelated], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -181,7 +185,7 @@ def test_session_filter_tracks_session_tree_only():
     sess = None
     try:
         sid = os.getsid(target.pid)
-        sess = TracerSession("-m", "2", "--session", str(sid))
+        sess = TracerSession("-m", "2", "--session", str(sid), *seed_pid_arg(target.pid))
         open(trigger, "w").close()
         wait_for_file(done)
         subprocess.run(["/bin/echo", unrelated], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -277,6 +281,7 @@ def test_trace_resources_samples_target():
             "2",
             "-p",
             str(target.pid),
+            *seed_pid_arg(target.pid),
             "--trace-resources",
             "--sample-interval",
             "250",

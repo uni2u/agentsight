@@ -20,6 +20,7 @@ use crate::framework::{
     },
     storage::StorageAnalyzer,
 };
+use crate::procfs::{PidSeed, ProcSnapshot};
 use crate::server::WebServer;
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
@@ -56,6 +57,7 @@ pub(crate) struct TraceConfig {
     pub(crate) ssl_http: bool,
     pub(crate) ssl_raw_data: bool,
     pub(crate) process: bool,
+    pub(crate) process_seed_pids: Vec<PidSeed>,
     pub(crate) stdio: bool,
     pub(crate) stdio_uid: Option<u32>,
     pub(crate) stdio_comm: Option<String>,
@@ -119,6 +121,27 @@ pub(crate) fn build_stdio_args(
     args
 }
 
+pub(crate) fn prepare_process_seeds(cfg: &mut TraceConfig) -> Result<(), RunnerError> {
+    if !cfg.process || !cfg.process_seed_pids.is_empty() {
+        return Ok(());
+    }
+
+    let snapshot = ProcSnapshot::collect()
+        .map_err(|e| RunnerError::from(format!("failed to collect /proc snapshot: {}", e)))?;
+    cfg.process_seed_pids = if let Some(session_id) = cfg.session_id {
+        snapshot.seeds_for_session(session_id)
+    } else if let Some(pid) = cfg.pid {
+        snapshot.seeds_for_pid_family(pid)
+    } else if let Some(comm) = cfg.comm.as_deref() {
+        snapshot.seeds_for_comm(comm)
+    } else if cfg.mode.unwrap_or(1) == 1 {
+        snapshot.seeds_for_all()
+    } else {
+        Vec::new()
+    };
+    Ok(())
+}
+
 /// Build a configured AgentRunner from trace options without running it.
 /// Shared by `run_trace` and `run_exec` so they configure runners identically.
 pub(crate) fn build_trace_agent(
@@ -136,6 +159,7 @@ pub(crate) fn build_trace_agent(
     let ssl_http = cfg.ssl_http;
     let ssl_raw_data = cfg.ssl_raw_data;
     let process_enabled = cfg.process;
+    let process_seed_pids = cfg.process_seed_pids.as_slice();
     let stdio_enabled = cfg.stdio;
     let stdio_uid = cfg.stdio_uid;
     let stdio_comm = cfg.stdio_comm.as_deref();
@@ -283,6 +307,7 @@ pub(crate) fn build_trace_agent(
         if !process_args.is_empty() {
             process_runner = process_runner.with_args(&process_args);
         }
+        process_runner = process_runner.with_seed_pids(process_seed_pids);
 
         // Add TimestampNormalizer first
         process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
@@ -392,6 +417,7 @@ pub(crate) async fn run_trace(
     let db_path = cfg.db_path.clone();
     let adapter = cfg.adapter.clone();
 
+    prepare_process_seeds(&mut cfg)?;
     let mut agent = build_trace_agent(binary_extractor, &cfg)?;
 
     println!("{}", "=".repeat(60));

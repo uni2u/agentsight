@@ -7,7 +7,8 @@ use crate::binary_resolver::resolve_binary_path;
 use crate::cli_db::run_capture_adapters;
 use crate::cli_output::{SessionSummary, print_session_summary as print_summary};
 use crate::cmd_trace::{
-    TraceConfig, build_trace_agent, drain_stream_for, start_web_server_if_enabled,
+    TraceConfig, build_trace_agent, drain_stream_for, prepare_process_seeds,
+    start_web_server_if_enabled,
 };
 use crate::framework::{
     analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
@@ -172,7 +173,7 @@ pub(crate) async fn run_exec(
     println!("✓ Run attribution session: {}", child_pid);
 
     let db_path_for_adapters = db_path.clone();
-    let cfg = TraceConfig {
+    let mut cfg = TraceConfig {
         ssl: true,
         pid: Some(child_pid),
         session_id: Some(child_pid),
@@ -195,6 +196,7 @@ pub(crate) async fn run_exec(
         ..Default::default()
     };
 
+    prepare_process_seeds(&mut cfg)?;
     let mut agent = build_trace_agent(binary_extractor, &cfg)?;
 
     let server_handle = start_web_server_if_enabled(
