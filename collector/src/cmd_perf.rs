@@ -68,6 +68,7 @@ impl CaptureCounters {
 #[derive(Debug, Clone, Default)]
 struct LiveCaptureSnapshot {
     by_pid: HashMap<u32, CaptureCounters>,
+    session_paths_by_pid: HashMap<u32, BTreeSet<PathBuf>>,
     events: u64,
     parse_errors: u64,
 }
@@ -75,9 +76,13 @@ struct LiveCaptureSnapshot {
 #[derive(Default)]
 struct LiveCaptureState {
     by_pid: HashMap<u32, CaptureCounters>,
+    session_paths_by_pid: HashMap<u32, BTreeSet<PathBuf>>,
     events: u64,
     parse_errors: u64,
 }
+
+const TRACE_EBPF_FILE: &str = "ebpf_file";
+const TRACE_PROC_FD: &str = "proc_fd";
 
 struct LiveEbpfCapture {
     state: Arc<Mutex<LiveCaptureState>>,
@@ -92,6 +97,7 @@ impl LiveEbpfCapture {
         };
         LiveCaptureSnapshot {
             by_pid: state.by_pid.clone(),
+            session_paths_by_pid: state.session_paths_by_pid.clone(),
             events: state.events,
             parse_errors: state.parse_errors,
         }
@@ -129,6 +135,7 @@ async fn start_live_ebpf_capture(
     } else {
         args.extend(["-m".to_string(), "1".to_string()]);
     }
+    args.push("--trace-fs".to_string());
 
     let seed_snapshot = match LiveSample::collect() {
         Ok(snapshot) => snapshot,
@@ -234,8 +241,25 @@ fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
         return;
     }
 
-    let Some(kind) = event.data.get("event").and_then(|value| value.as_str()) else {
+    if let Some(path) = session_path_from_process_event(&event.data) {
+        state
+            .session_paths_by_pid
+            .entry(event.pid)
+            .or_default()
+            .insert(path);
+    }
+
+    let Some(event_name) = event.data.get("event").and_then(|value| value.as_str()) else {
         return;
+    };
+    let kind = if event_name == "SUMMARY" {
+        event
+            .data
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or(event_name)
+    } else {
+        event_name
     };
     let counters = state.by_pid.entry(event.pid).or_default();
     match kind {
@@ -254,6 +278,48 @@ fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
         value if value.starts_with("NET_") => counters.network += 1,
         _ => {}
     }
+}
+
+fn session_path_from_process_event(data: &Value) -> Option<PathBuf> {
+    let field = match data.get("event").and_then(|value| value.as_str())? {
+        "FILE_OPEN" => "filepath",
+        "SUMMARY"
+            if data.get("type").and_then(|value| value.as_str()) == Some("WRITE")
+                && data
+                    .get("path_resolved")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false) =>
+        {
+            "detail"
+        }
+        _ => return None,
+    };
+    data.get(field)
+        .and_then(|value| value.as_str())
+        .and_then(session_log_path_from_str)
+}
+
+fn session_log_path_from_str(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim().trim_end_matches(" (deleted)");
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let path = Path::new(trimmed);
+    if !path.is_absolute() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return None;
+    }
+
+    let path_text = path.to_string_lossy();
+    if !path_text.contains("/.claude/") && !path_text.contains("/.codex/") {
+        return None;
+    }
+
+    Some(normalize_session_log_path(path))
+}
+
+fn normalize_session_log_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub(crate) fn run_stat_query(
@@ -936,12 +1002,28 @@ fn evidence_summary(top: &AgentTopOutput<'_>) -> String {
         .iter()
         .filter(|row| row.trace.contains("ebpf"))
         .count();
+    let ebpf_file = top
+        .rows
+        .iter()
+        .filter(|row| row.trace.contains("ebpf_file"))
+        .count();
+    let proc_fd = top
+        .rows
+        .iter()
+        .filter(|row| row.trace.contains("proc_fd"))
+        .count();
     let mut parts = Vec::new();
     if local > 0 {
         parts.push(format!("local={local}"));
     }
     if proc_rows > 0 {
         parts.push(format!("proc={proc_rows}"));
+    }
+    if proc_fd > 0 {
+        parts.push(format!("fd={proc_fd}"));
+    }
+    if ebpf_file > 0 {
+        parts.push(format!("ebpf_file={ebpf_file}"));
     }
     if ebpf > 0 {
         parts.push(format!("ebpf={ebpf}"));
@@ -1513,39 +1595,53 @@ fn build_live_top<'a>(
     let mut live_rows = live_process_rows(sample, previous, options);
     sort_agent_rows(&mut live_rows, "cpu");
     let local_sessions = discover_local_top_sessions(options, limit);
+    let path_evidence = collect_live_session_path_evidence(&live_rows, sample, capture);
     let mut used_live_pids = HashSet::new();
     let mut rows = Vec::new();
 
     for session in local_sessions {
-        let live_idx = live_rows.iter().position(|row| {
-            !row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
-                && row.agent == session.agent
-                && local_session_can_attach_to_live(&session, row)
-                && matches_top_filter(row.pid, Some(&row.agent), Some(&row.command), options)
+        let live_match = live_rows.iter().enumerate().find_map(|(idx, row)| {
+            if row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
+                || row.agent != session.agent
+                || !matches_top_filter(row.pid, Some(&row.agent), Some(&row.command), options)
+            {
+                return None;
+            }
+            local_session_link_trace(&session, row, &path_evidence).map(|trace| (idx, trace))
         });
-        let live = live_idx.and_then(|idx| live_rows.get(idx).cloned());
-        if let Some(pid) = live.as_ref().and_then(|row| row.pid) {
+        let live =
+            live_match.and_then(|(idx, trace)| live_rows.get(idx).cloned().map(|row| (row, trace)));
+        if let Some(pid) = live.as_ref().and_then(|(row, _)| row.pid) {
             used_live_pids.insert(pid);
         }
         let command = session
             .prompt_preview
             .clone()
-            .or_else(|| live.as_ref().map(|row| row.command.clone()))
+            .or_else(|| live.as_ref().map(|(row, _)| row.command.clone()))
             .unwrap_or_else(|| session.path.display().to_string());
-        let trace = if live.is_some() {
-            "local+proc"
+        let trace = if let Some((_, link_trace)) = &live {
+            format!("local+proc+{link_trace}")
         } else {
-            "local"
+            "local".to_string()
         };
         rows.push(AgentTopRow {
             session: session.display_id,
             agent: session.agent,
-            pid: live.as_ref().and_then(|row| row.pid),
+            pid: live.as_ref().and_then(|(row, _)| row.pid),
             model: session.model,
-            age_s: live.as_ref().and_then(|row| row.age_s).or(session.age_s),
-            cpu_percent: live.as_ref().map(|row| row.cpu_percent).unwrap_or_default(),
-            rss_mb: live.as_ref().map(|row| row.rss_mb).unwrap_or_default(),
-            processes: live.as_ref().map(|row| row.processes).unwrap_or_default(),
+            age_s: live
+                .as_ref()
+                .and_then(|(row, _)| row.age_s)
+                .or(session.age_s),
+            cpu_percent: live
+                .as_ref()
+                .map(|(row, _)| row.cpu_percent)
+                .unwrap_or_default(),
+            rss_mb: live.as_ref().map(|(row, _)| row.rss_mb).unwrap_or_default(),
+            processes: live
+                .as_ref()
+                .map(|(row, _)| row.processes)
+                .unwrap_or_default(),
             tokens: (session.total_tokens > 0).then_some(session.total_tokens),
             tools: session.tools,
             execs: 0,
@@ -1553,7 +1649,7 @@ fn build_live_top<'a>(
             files: 0,
             network: 0,
             unattributed: 0,
-            trace: trace.to_string(),
+            trace,
             command,
         });
     }
@@ -1570,15 +1666,18 @@ fn build_live_top<'a>(
     let has_local = rows.iter().any(|row| row.trace.contains("local"));
     let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
     let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
+    let has_session_file_link = rows
+        .iter()
+        .any(|row| row.trace.contains("ebpf_file") || row.trace.contains("proc_fd"));
     let mut notes = Vec::new();
     if has_local {
-        notes.push(
-            "session rows include agent-native local logs from ~/.claude or ~/.codex when present"
-                .to_string(),
-        );
+        notes.push("session tokens/tools come from local ~/.claude or ~/.codex logs".to_string());
     }
     if has_proc {
         notes.push("proc evidence uses /proc for CPU/RSS/process families".to_string());
+    }
+    if has_session_file_link {
+        notes.push("local sessions attach to live pids only when the process touches the matching JSONL log path".to_string());
     }
     if has_ebpf {
         notes.push(
@@ -1622,11 +1721,68 @@ fn build_live_top<'a>(
     }
 }
 
-fn local_session_can_attach_to_live(session: &LocalTopSession, row: &AgentTopRow) -> bool {
-    match (session.age_s, row.age_s) {
-        (Some(local_age_s), Some(process_age_s)) => local_age_s <= process_age_s + 60.0,
-        _ => false,
+fn collect_live_session_path_evidence(
+    live_rows: &[AgentTopRow],
+    sample: &LiveSample,
+    capture: Option<&LiveCaptureSnapshot>,
+) -> HashMap<u32, BTreeMap<PathBuf, &'static str>> {
+    let children = sample.children_by_ppid();
+    let mut out = HashMap::new();
+
+    for row in live_rows {
+        let Some(root_pid) = row.pid else {
+            continue;
+        };
+        let family = procfs::process_family(root_pid, &children, &sample.procs);
+        let mut evidence = BTreeMap::new();
+        for pid in family {
+            for path in scan_proc_fd_session_paths(pid) {
+                evidence.entry(path).or_insert(TRACE_PROC_FD);
+            }
+            if let Some(capture) = capture
+                && let Some(paths) = capture.session_paths_by_pid.get(&pid)
+            {
+                for path in paths {
+                    evidence.insert(path.clone(), TRACE_EBPF_FILE);
+                }
+            }
+        }
+        if !evidence.is_empty() {
+            out.insert(root_pid, evidence);
+        }
     }
+
+    out
+}
+
+fn scan_proc_fd_session_paths(pid: u32) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return out;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(target) = fs::read_link(entry.path()) else {
+            continue;
+        };
+        if let Some(path) = session_log_path_from_str(&target.to_string_lossy()) {
+            out.insert(path);
+        }
+    }
+
+    out
+}
+
+fn local_session_link_trace(
+    session: &LocalTopSession,
+    row: &AgentTopRow,
+    path_evidence: &HashMap<u32, BTreeMap<PathBuf, &'static str>>,
+) -> Option<&'static str> {
+    let pid = row.pid?;
+    let path = normalize_session_log_path(&session.path);
+    path_evidence
+        .get(&pid)
+        .and_then(|evidence| evidence.get(&path).copied())
 }
 
 fn apply_live_capture(
@@ -2055,7 +2211,7 @@ fn parse_local_top_session(agent: &str, path: &Path, content: &str) -> Option<Lo
     Some(LocalTopSession {
         agent: agent.to_string(),
         display_id: format!("{agent}:{}", short_session_id(&session_id)),
-        path: path.to_path_buf(),
+        path: normalize_session_log_path(path),
         model,
         age_s: None,
         total_tokens,
@@ -2319,13 +2475,111 @@ fn number_or_string(value: Option<&Value>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::framework::core::Event;
+    use serde_json::json;
+    use std::fs::File;
+
+    fn create_temp_session_path(agent: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let base = match agent {
+            "claude" => [".claude", "projects"],
+            "codex" => [".codex", "sessions"],
+            _ => unreachable!("test agent"),
+        };
+        let path = temp
+            .path()
+            .join(base[0])
+            .join(base[1])
+            .join("session.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{}\n").unwrap();
+        (temp, path)
+    }
 
     #[test]
-    fn local_session_does_not_attach_to_newer_unrelated_process() {
+    fn record_live_ebpf_event_tracks_only_resolved_session_paths() {
+        let (_claude_temp, claude_path) = create_temp_session_path("claude");
+        let (_codex_temp, codex_path) = create_temp_session_path("codex");
+        let state = Arc::new(Mutex::new(LiveCaptureState::default()));
+
+        for (pid, comm, data) in [
+            (
+                42,
+                "claude",
+                json!({
+                    "timestamp": 1,
+                    "event": "FILE_OPEN",
+                    "comm": "claude",
+                    "pid": 42,
+                    "filepath": claude_path,
+                    "flags": 1
+                }),
+            ),
+            (
+                7,
+                "codex",
+                json!({
+                    "timestamp": 1,
+                    "event": "SUMMARY",
+                    "comm": "codex",
+                    "pid": 7,
+                    "type": "WRITE",
+                    "detail": codex_path,
+                    "path_resolved": true,
+                    "count": 3
+                }),
+            ),
+            (
+                9,
+                "codex",
+                json!({
+                "timestamp": 1,
+                "event": "SUMMARY",
+                "comm": "codex",
+                "pid": 9,
+                "type": "WRITE",
+                "detail": "fd=3",
+                "path_resolved": false,
+                "count": 1
+                }),
+            ),
+        ] {
+            record_live_ebpf_event(
+                &state,
+                &Event::new_with_timestamp(1, "process".to_string(), pid, comm.to_string(), data),
+            );
+        }
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.by_pid.get(&42).unwrap().files, 1);
+        assert_eq!(snapshot.by_pid.get(&7).unwrap().files, 1);
+        assert_eq!(snapshot.by_pid.get(&9).unwrap().files, 1);
+        assert!(
+            snapshot.session_paths_by_pid[&42].contains(&normalize_session_log_path(&claude_path))
+        );
+        assert!(
+            snapshot.session_paths_by_pid[&7].contains(&normalize_session_log_path(&codex_path))
+        );
+        assert!(!snapshot.session_paths_by_pid.contains_key(&9));
+    }
+
+    #[test]
+    fn proc_fd_scan_finds_open_session_jsonl() {
+        let (_temp, path) = create_temp_session_path("claude");
+        let _file = File::open(&path).unwrap();
+
+        let paths = scan_proc_fd_session_paths(std::process::id());
+        assert!(paths.contains(&normalize_session_log_path(&path)));
+    }
+
+    #[test]
+    fn local_session_link_requires_jsonl_path_evidence() {
+        let (_temp, path) = create_temp_session_path("claude");
+
         let session = LocalTopSession {
             agent: "claude".to_string(),
             display_id: "claude:old".to_string(),
-            path: PathBuf::from("/home/user/.claude/projects/old.jsonl"),
+            path: normalize_session_log_path(&path),
             model: None,
             age_s: Some(1_200.0),
             total_tokens: 1,
@@ -2352,7 +2606,19 @@ mod tests {
             command: "claude".to_string(),
         };
 
-        assert!(!local_session_can_attach_to_live(&session, &row));
+        assert_eq!(
+            local_session_link_trace(&session, &row, &HashMap::new()),
+            None
+        );
+
+        let mut evidence = BTreeMap::new();
+        evidence.insert(normalize_session_log_path(&path), TRACE_PROC_FD);
+        let path_evidence = HashMap::from([(1, evidence)]);
+
+        assert_eq!(
+            local_session_link_trace(&session, &row, &path_evidence),
+            Some(TRACE_PROC_FD)
+        );
     }
 
     #[test]
