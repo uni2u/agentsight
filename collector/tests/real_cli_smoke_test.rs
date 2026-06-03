@@ -60,6 +60,16 @@ fn run_agentsight(args: &[&str]) -> Output {
         .expect("agentsight command should run")
 }
 
+fn run_agentsight_user(args: &[&str]) -> Output {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap_or(manifest_dir);
+    Command::new(env!("CARGO_BIN_EXE_agentsight"))
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .expect("agentsight command should run")
+}
+
 fn assert_agentsight_success(output: Output, label: &str) {
     assert!(
         output.status.success(),
@@ -94,14 +104,33 @@ fn positive_session_total(db: &std::path::Path, agent_type: &str) -> i64 {
     .expect("session query should run")
 }
 
-fn tool_call_count(db: &std::path::Path, adapter_id: &str) -> i64 {
-    let conn = Connection::open(db).expect("db should open");
-    conn.query_row(
-        "SELECT COUNT(*) FROM tool_calls WHERE adapter_id = ?1",
-        [adapter_id],
-        |row| row.get(0),
-    )
-    .expect("tool call query should run")
+fn stat_total_tokens(db: &std::path::Path) -> i64 {
+    let db = db.to_str().expect("db path");
+    let output = run_agentsight_user(&["stat", "--db", db, "--json"]);
+    assert!(
+        output.status.success(),
+        "agentsight stat failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stat JSON should parse");
+    value
+        .get("total_tokens")
+        .and_then(|value| value.as_i64())
+        .unwrap_or_default()
+}
+
+fn report_text(db: &std::path::Path) -> String {
+    let db = db.to_str().expect("db path");
+    let output = run_agentsight_user(&["report", "--db", db]);
+    assert!(
+        output.status.success(),
+        "agentsight report failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]
@@ -200,7 +229,7 @@ fn real_claude_code_smoke_captures_observed_tokens() {
         ]);
         assert_agentsight_success(output, "real Claude Code smoke");
 
-        last_session_total = positive_session_total(&db, "claude-code");
+        last_session_total = stat_total_tokens(&db);
         if last_session_total > 0 {
             return;
         }
@@ -226,7 +255,7 @@ fn real_claude_code_tool_use_smoke_captures_tool_calls() {
     }
 
     let mut last_session_total = 0;
-    let mut last_tool_calls = 0;
+    let mut last_report = String::new();
     for attempt in 1..=3 {
         let temp = tempfile::tempdir().expect("tempdir");
         let db = temp.path().join("claude-tool.db");
@@ -251,21 +280,22 @@ fn real_claude_code_tool_use_smoke_captures_tool_calls() {
         ]);
         assert_agentsight_success(output, "real Claude Code tool-use smoke");
 
-        last_session_total = positive_session_total(&db, "claude-code");
-        last_tool_calls = tool_call_count(&db, "claude-code");
-        if last_session_total > 0 && last_tool_calls > 0 {
+        last_session_total = stat_total_tokens(&db);
+        last_report = report_text(&db);
+        if last_session_total > 0 && last_report.contains("tool calls:") {
             return;
         }
         eprintln!(
-            "Claude tool smoke attempt {} did not capture all signals: session={}, tools={}",
-            attempt, last_session_total, last_tool_calls
+            "Claude tool smoke attempt {} did not capture all signals: session={}, report={}",
+            attempt, last_session_total, last_report
         );
     }
 
     assert!(last_session_total > 0);
     assert!(
-        last_tool_calls > 0,
-        "Claude Code tool-use smoke should project at least one tool call"
+        last_report.contains("tool calls:"),
+        "Claude Code tool-use smoke should report at least one local tool call\n{}",
+        last_report
     );
 }
 

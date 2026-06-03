@@ -13,10 +13,10 @@ use crate::framework::{
     runners::RunnerError,
     storage::{GenericProjector, SnapshotOptions, SqliteStore},
 };
+use crate::local_sessions::{self, LocalSession};
 use clap::Subcommand;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::path::Path;
 
 #[derive(Subcommand)]
 pub(crate) enum AdapterCommand {
@@ -172,195 +172,8 @@ pub(crate) fn run_capture_adapters(
     run_sql_adapters(&mut store, adapter).map_err(|e| {
         RunnerError::from(format!("failed to run SQL adapter '{}': {}", adapter, e))
     })?;
-    project_local_sessions_from_audit(&mut store)
-        .map_err(|e| RunnerError::from(format!("failed to project local session logs: {}", e)))?;
     print_capture_adapters(db_path, adapter);
     Ok(())
-}
-
-fn project_local_sessions_from_audit(
-    store: &mut SqliteStore,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let rows = {
-        let mut stmt = store.connection_mut().prepare(
-            "SELECT target, MIN(timestamp_ms), MAX(timestamp_ms)
-             FROM audit_events
-             WHERE audit_type = 'file'
-               AND target IS NOT NULL
-               AND (target LIKE '%/.claude/%jsonl' OR target LIKE '%/.codex/%jsonl')
-             GROUP BY target",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-
-    for (path, start_ms, end_ms) in rows {
-        let Some(source) = local_session_source(&path) else {
-            continue;
-        };
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let parsed = parse_local_session(source, &content);
-        project_local_session(store, source, &path, start_ms, end_ms, &parsed)?;
-    }
-    Ok(())
-}
-
-fn project_local_session(
-    store: &mut SqliteStore,
-    source: &str,
-    path: &str,
-    start_ms: i64,
-    end_ms: i64,
-    parsed: &serde_json::Value,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some(models) = parsed.get("models").and_then(|value| value.as_object()) else {
-        return Ok(());
-    };
-    if models.is_empty() {
-        return Ok(());
-    }
-
-    let session_key = Path::new(path)
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("session");
-    let session_id = format!("local-{source}-{session_key}");
-    let agent_type = match source {
-        "claude" => "claude-code",
-        "codex" => "codex",
-        _ => source,
-    };
-    let adapter_id = format!("{source}-local-log");
-    let mut model_rows = Vec::new();
-    let mut input_total = 0;
-    let mut output_total = 0;
-    let mut token_total = 0;
-
-    for (model, usage) in models {
-        let Some(values) = usage.as_array() else {
-            continue;
-        };
-        let input = json_i64(values.first());
-        let output = json_i64(values.get(1));
-        let total = json_i64(values.get(2));
-        if input == 0 && output == 0 && total == 0 {
-            continue;
-        }
-        input_total += input;
-        output_total += output;
-        token_total += total;
-        model_rows.push((model.clone(), input, output, total));
-    }
-    if model_rows.is_empty() {
-        return Ok(());
-    }
-
-    let top_model = model_rows
-        .iter()
-        .max_by_key(|(_, _, _, total)| *total)
-        .map(|(model, _, _, _)| model.as_str())
-        .unwrap_or(agent_type);
-    let attrs = serde_json::json!({
-        "projection": "local-session-jsonl",
-        "path": path,
-    })
-    .to_string();
-
-    store.connection_mut().execute(
-        "INSERT OR REPLACE INTO agent_sessions (
-            id, agent_type, agent_name, start_timestamp_ms, end_timestamp_ms,
-            status, model, input_tokens, output_tokens, total_tokens,
-            adapter_id, confidence, attributes_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?7, ?8, ?9, ?10, 0.95, ?11)",
-        rusqlite::params![
-            &session_id,
-            agent_type,
-            source,
-            start_ms,
-            end_ms,
-            top_model,
-            input_total,
-            output_total,
-            token_total,
-            &adapter_id,
-            attrs,
-        ],
-    )?;
-
-    for (idx, (model, input, output, total)) in model_rows.iter().enumerate() {
-        store.connection_mut().execute(
-            "INSERT OR REPLACE INTO token_usage (
-                id, llm_call_id, timestamp_ms, pid, comm, provider, model,
-                input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                total_tokens, source, adapter_id, confidence
-             ) VALUES (?1, NULL, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8, 'local_session_jsonl', ?9, 0.95)",
-            rusqlite::params![
-                format!("local-token-{source}-{session_key}-{idx}"),
-                end_ms,
-                source,
-                source,
-                model,
-                input,
-                output,
-                total,
-                &adapter_id,
-            ],
-        )?;
-    }
-
-    if let Some(tools) = parsed.get("tools").and_then(|value| value.as_object()) {
-        let tool_adapter_id = agent_type;
-        for (tool_name, count) in tools {
-            let count = json_i64(Some(count)).max(0);
-            for idx in 0..count {
-                store.connection_mut().execute(
-                    "INSERT OR REPLACE INTO tool_calls (
-                        id, session_id, conversation_id, timestamp_ms,
-                        start_timestamp_ms, end_timestamp_ms, duration_ms,
-                        tool_name, tool_call_id, status, input_json, output_json,
-                        related_pid, related_event_id, adapter_id, confidence
-                     ) VALUES (
-                        ?1, ?2, NULL, ?3, NULL, NULL, NULL,
-                        ?4, NULL, 'observed', NULL, NULL,
-                        NULL, NULL, ?5, 0.95
-                     )",
-                    rusqlite::params![
-                        format!("local-tool-{source}-{session_key}-{tool_name}-{idx}"),
-                        session_id,
-                        end_ms,
-                        tool_name,
-                        tool_adapter_id,
-                    ],
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn local_session_source(path: &str) -> Option<&'static str> {
-    if path.contains("/.claude/") {
-        Some("claude")
-    } else if path.contains("/.codex/") {
-        Some("codex")
-    } else {
-        None
-    }
-}
-
-fn json_i64(value: Option<&serde_json::Value>) -> i64 {
-    value
-        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
-        .unwrap_or(0)
 }
 
 fn run_adapters_on_db(
@@ -402,6 +215,7 @@ impl SessionSummary {
             event_limit: 50_000,
             audit_limit: 50_000,
         })?;
+        let local_sessions = local_sessions_from_snapshot(&snap);
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
@@ -428,48 +242,15 @@ impl SessionSummary {
                 llm_latency_ms.add(delta);
             }
         }
-        let mut models = snap
-            .token_summary
-            .iter()
-            .map(|r| {
-                (
-                    r.group.clone(),
-                    r.input_tokens,
-                    r.output_tokens,
-                    r.total_tokens,
-                    r.calls,
-                )
-            })
-            .collect::<Vec<_>>();
-        if models
-            .iter()
-            .all(|(_, input, output, total, _)| *input == 0 && *output == 0 && *total == 0)
-        {
-            let mut session_models = BTreeMap::<String, (i64, i64, i64, i64)>::new();
-            for session in &snap.sessions {
-                if session.input_tokens == 0
-                    && session.output_tokens == 0
-                    && session.total_tokens == 0
-                {
-                    continue;
-                }
-                let model = session
-                    .model
-                    .as_ref()
-                    .filter(|model| !model.is_empty())
-                    .cloned()
-                    .unwrap_or_else(|| session.agent_type.clone());
-                let entry = session_models.entry(model).or_default();
-                entry.0 += session.input_tokens;
-                entry.1 += session.output_tokens;
-                entry.2 += session.total_tokens;
-                entry.3 += 1;
-            }
-            models = session_models
-                .into_iter()
-                .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
-                .collect();
+        if !local_sessions.is_empty() {
+            prompt_chars = local_prompt_chars(&local_sessions).unwrap_or(prompt_chars);
         }
+        let local_model_rows = local_models(&local_sessions);
+        let models = if local_sessions.iter().any(LocalSession::has_tokens) {
+            local_model_rows
+        } else {
+            db_models(&snap)
+        };
         let mut processes = BTreeMap::new();
         for row in &snap.audit_events {
             if row.action.as_deref() == Some("exec") {
@@ -543,9 +324,9 @@ impl SessionSummary {
             .map(|v| v as u64);
         let first_tool_after_ms =
             first_tool_timestamp_ms.and_then(|ts| after_start(s.start_timestamp_ms, ts));
-        let mut tool_calls = BTreeMap::new();
+        let mut tool_calls = local_tools(&local_sessions);
         let mut tool_duration_ms = SummaryStats::default();
-        {
+        if tool_calls.is_empty() {
             let mut stmt = store.connection_mut().prepare(
                 "SELECT COALESCE(tool_name, '?'), COUNT(*)
                  FROM tool_calls
@@ -588,45 +369,27 @@ impl SessionSummary {
         })
     }
 
-    pub fn from_local_jsonl(source: &str, _file: &str, data: &serde_json::Value) -> Self {
-        let models = data
-            .get("models")
-            .and_then(|v| v.as_object())
-            .map(|m| {
-                m.iter()
-                    .map(|(name, u)| {
-                        let arr = u.as_array();
-                        let get = |i: usize| {
-                            arr.and_then(|a| a.get(i))
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0)
-                        };
-                        (name.clone(), get(0), get(1), get(2), 0i64)
-                    })
-                    .collect()
+    pub fn from_local_session(session: &LocalSession) -> Self {
+        let prompt_chars = session
+            .prompt_preview
+            .as_ref()
+            .map(|prompt| {
+                let mut stats = SummaryStats::default();
+                stats.add(prompt.chars().count() as u64);
+                stats
             })
             .unwrap_or_default();
-        let tool_calls = data
-            .get("tools")
-            .and_then(|v| v.as_object())
-            .map(|t| {
-                t.iter()
-                    .map(|(n, c)| (n.clone(), c.as_u64().unwrap_or(0) as usize))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let duration_s = json_u64(data, "duration_ms") as f64 / 1000.0;
         Self {
-            source: source.into(),
-            duration_s,
+            source: session.agent.clone(),
+            duration_s: session.duration_ms as f64 / 1000.0,
             first_llm_after_ms: None,
             first_tool_after_ms: None,
-            prompt_chars: SummaryStats::default(),
+            prompt_chars,
             llm_latency_ms: SummaryStats::default(),
-            models,
+            models: local_models(std::slice::from_ref(session)),
             processes: BTreeMap::new(),
             process_exits: BTreeMap::new(),
-            tool_calls,
+            tool_calls: session.tools.clone(),
             tool_duration_ms: SummaryStats::default(),
             files: vec![],
             file_access: FileAccessSummary::default(),
@@ -634,6 +397,99 @@ impl SessionSummary {
             endpoints: vec![],
         }
     }
+}
+
+fn local_sessions_from_snapshot(
+    snap: &crate::framework::storage::sqlite::Snapshot,
+) -> Vec<LocalSession> {
+    local_sessions::sessions_from_path_strings(
+        snap.audit_events
+            .iter()
+            .filter(|row| row.audit_type == "file")
+            .filter_map(|row| row.target.as_deref()),
+    )
+}
+
+fn local_models(sessions: &[LocalSession]) -> Vec<(String, i64, i64, i64, i64)> {
+    let mut models = BTreeMap::<String, (i64, i64, i64, i64)>::new();
+    for session in sessions {
+        for (model, (input, output, total)) in &session.models {
+            let entry = models.entry(model.clone()).or_default();
+            entry.0 += input;
+            entry.1 += output;
+            entry.2 += total;
+            entry.3 += 1;
+        }
+    }
+    models
+        .into_iter()
+        .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
+        .collect()
+}
+
+fn local_tools(sessions: &[LocalSession]) -> BTreeMap<String, usize> {
+    let mut tools = BTreeMap::new();
+    for session in sessions {
+        for (tool, count) in &session.tools {
+            *tools.entry(tool.clone()).or_default() += count;
+        }
+    }
+    tools
+}
+
+fn local_prompt_chars(sessions: &[LocalSession]) -> Option<SummaryStats> {
+    let mut stats = SummaryStats::default();
+    for prompt in sessions
+        .iter()
+        .filter_map(|session| session.prompt_preview.as_ref())
+    {
+        stats.add(prompt.chars().count() as u64);
+    }
+    (stats.count > 0).then_some(stats)
+}
+
+fn db_models(
+    snap: &crate::framework::storage::sqlite::Snapshot,
+) -> Vec<(String, i64, i64, i64, i64)> {
+    let mut models = snap
+        .token_summary
+        .iter()
+        .filter(|row| row.input_tokens != 0 || row.output_tokens != 0 || row.total_tokens != 0)
+        .map(|row| {
+            (
+                row.group.clone(),
+                (
+                    row.input_tokens,
+                    row.output_tokens,
+                    row.total_tokens,
+                    row.calls,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for session in &snap.sessions {
+        if session.input_tokens == 0 && session.output_tokens == 0 && session.total_tokens == 0 {
+            continue;
+        }
+        let model = session
+            .model
+            .as_ref()
+            .filter(|model| !model.is_empty())
+            .cloned()
+            .unwrap_or_else(|| session.agent_type.clone());
+        models.entry(model).or_insert((
+            session.input_tokens,
+            session.output_tokens,
+            session.total_tokens,
+            1,
+        ));
+    }
+
+    models
+        .into_iter()
+        .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
+        .collect()
 }
 
 fn after_start(start_timestamp_ms: Option<u64>, timestamp_ms: u64) -> Option<u64> {
@@ -659,9 +515,9 @@ pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if db.is_none()
-        && let Some((source, file, data)) = read_latest_local_session()
+        && let Some(session) = local_sessions::latest()
     {
-        print_session_summary(&SessionSummary::from_local_jsonl(&source, &file, &data));
+        print_session_summary(&SessionSummary::from_local_session(&session));
         return Ok(());
     }
     let db = db.ok_or("No session data found. Run `agentsight record` first, or pass --db.")?;
@@ -670,209 +526,22 @@ pub(crate) fn run_db_summary(
 }
 
 pub(crate) fn run_local_audit(json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (source, file, data) = read_latest_local_session()
+    let session = local_sessions::latest()
         .ok_or("No session data found. Install Claude Code or Codex, or pass --db.")?;
+    let data = session.to_json();
 
     if json {
         print_json(&data)?;
         return Ok(());
     }
 
-    print_local_audit(&source, &file, &data);
+    print_local_audit(&session.agent, &session.path.display().to_string(), &data);
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Local agent session reader (reads ~/.claude and ~/.codex JSONL directly)
-// ---------------------------------------------------------------------------
-
-fn local_session_dirs() -> Vec<(&'static str, std::path::PathBuf)> {
-    let home = dirs::home_dir().unwrap_or_default();
-    [
-        ("claude", home.join(".claude/projects")),
-        ("codex", home.join(".codex/sessions")),
-    ]
-    .into_iter()
-    .filter(|(_, d)| d.is_dir())
-    .collect()
-}
-
-fn walk_jsonl(dir: &std::path::Path, f: &mut dyn FnMut(&std::path::Path, &std::fs::Metadata)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_jsonl(&path, f);
-        } else if path.extension().is_some_and(|e| e == "jsonl")
-            && let Ok(meta) = path.metadata()
-        {
-            f(&path, &meta);
-        }
-    }
-}
-
 pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, usize, u64)> {
-    local_session_dirs()
-        .into_iter()
-        .filter_map(|(name, dir)| {
-            let (mut count, mut bytes) = (0usize, 0u64);
-            walk_jsonl(&dir, &mut |_, meta| {
-                count += 1;
-                bytes += meta.len();
-            });
-            (count > 0).then_some((name, dir, count, bytes))
-        })
-        .collect()
-}
-
-fn read_latest_local_session() -> Option<(String, String, serde_json::Value)> {
-    let mut candidates = Vec::new();
-    for (name, dir) in local_session_dirs() {
-        walk_jsonl(&dir, &mut |path, meta| {
-            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-            candidates.push((mtime, name, path.to_path_buf()));
-        });
-    }
-    candidates.sort_by_key(|(mtime, _, _)| std::cmp::Reverse(*mtime));
-    for (_, name, path) in candidates {
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let parsed = parse_local_session(name, &content);
-        if !parsed.is_null() {
-            return Some((name.into(), path.display().to_string(), parsed));
-        }
-    }
-    None
-}
-
-fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
-    v.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
-}
-
-fn parse_local_session(source: &str, content: &str) -> serde_json::Value {
-    let mut models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-    let mut claude_message_models: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-    let mut claude_seen_usage = BTreeSet::new();
-    let mut tools: BTreeMap<String, usize> = BTreeMap::new();
-    let mut duration_ms = 0u64;
-    let mut num_turns = 0u64;
-    let mut cost_usd = 0.0f64;
-    let mut codex_model = String::new();
-
-    for line in content.lines() {
-        let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let typ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-        match (source, typ) {
-            ("claude", "result") => {
-                duration_ms = json_u64(&obj, "duration_ms");
-                num_turns = json_u64(&obj, "num_turns");
-                cost_usd = obj
-                    .get("total_cost_usd")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                if let Some(mu) = obj.get("modelUsage").and_then(|v| v.as_object()) {
-                    for (m, u) in mu {
-                        let inp = json_u64(u, "inputTokens");
-                        let out = json_u64(u, "outputTokens");
-                        let total = inp
-                            + out
-                            + json_u64(u, "cacheReadInputTokens")
-                            + json_u64(u, "cacheCreationInputTokens");
-                        models.insert(m.clone(), (inp, out, total));
-                    }
-                }
-            }
-            ("claude", "assistant") => {
-                if let Some(usage) = obj.pointer("/message/usage")
-                    && claude_seen_usage.insert(claude_usage_key(&obj))
-                {
-                    let model = obj
-                        .pointer("/message/model")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let inp = json_u64(usage, "input_tokens");
-                    let out = json_u64(usage, "output_tokens");
-                    let total = inp
-                        + out
-                        + json_u64(usage, "cache_read_input_tokens")
-                        + json_u64(usage, "cache_creation_input_tokens");
-                    let entry = claude_message_models.entry(model).or_default();
-                    entry.0 += inp;
-                    entry.1 += out;
-                    entry.2 += total;
-                }
-                if let Some(items) = obj.pointer("/message/content").and_then(|v| v.as_array()) {
-                    for item in items {
-                        if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                            let n = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            *tools.entry(n.into()).or_default() += 1;
-                        }
-                    }
-                }
-            }
-            ("codex", "turn_context") => {
-                if let Some(m) = obj.pointer("/payload/model").and_then(|v| v.as_str()) {
-                    codex_model = m.into();
-                }
-            }
-            ("codex", "event_msg") => {
-                if obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("token_count")
-                    && let Some(u) = obj.pointer("/payload/info/total_token_usage")
-                {
-                    let key = if codex_model.is_empty() {
-                        "unknown"
-                    } else {
-                        &codex_model
-                    };
-                    models.insert(
-                        key.into(),
-                        (
-                            json_u64(u, "input_tokens"),
-                            json_u64(u, "output_tokens"),
-                            json_u64(u, "total_tokens"),
-                        ),
-                    );
-                }
-            }
-            ("codex", "response_item")
-                if obj.pointer("/payload/type").and_then(|v| v.as_str())
-                    == Some("function_call") =>
-            {
-                let n = obj
-                    .pointer("/payload/name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                *tools.entry(n.into()).or_default() += 1;
-            }
-            _ => {}
-        }
-    }
-
-    if models.is_empty() {
-        models = claude_message_models;
-    }
-
-    if models.is_empty() && tools.is_empty() && duration_ms == 0 && num_turns == 0 {
-        return serde_json::Value::Null;
-    }
-    serde_json::json!({ "models": models, "tools": tools, "duration_ms": duration_ms, "num_turns": num_turns, "cost_usd": cost_usd })
-}
-
-fn claude_usage_key(obj: &serde_json::Value) -> String {
-    obj.get("requestId")
-        .or_else(|| obj.pointer("/message/id"))
-        .or_else(|| obj.get("uuid"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("usage")
-        .to_string()
+    local_sessions::count_local_sessions()
 }
 
 #[cfg(test)]
@@ -1004,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_adapters_project_touched_local_claude_log() {
+    fn sqlite_summary_reads_touched_local_claude_log_without_projection() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("local-log.db");
         let session_dir = temp.path().join(".claude/projects/test");
@@ -1031,58 +700,80 @@ mod tests {
             )
             .unwrap();
 
-        project_local_sessions_from_audit(&mut store).unwrap();
-        let total: i64 = store
-            .connection_mut()
-            .query_row(
-                "SELECT COALESCE(SUM(total_tokens), 0)
-                 FROM agent_sessions
-                 WHERE agent_type = 'claude-code'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(total > 0);
+        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        assert_eq!(
+            summary.models,
+            vec![("claude-opus-4-6".to_string(), 3, 11, 26, 1)]
+        );
+        assert_eq!(summary.tool_calls.get("Bash"), Some(&1));
+
         let token_rows: i64 = store
             .connection_mut()
             .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(token_rows, 1);
-        let tool_rows: i64 = store
+        assert_eq!(token_rows, 0);
+        let session_rows: i64 = store
             .connection_mut()
-            .query_row(
-                "SELECT COUNT(*) FROM tool_calls WHERE adapter_id = 'claude-code'",
-                [],
-                |row| row.get(0),
+            .query_row("SELECT COUNT(*) FROM agent_sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(session_rows, 0);
+    }
+
+    #[test]
+    fn sqlite_summary_uses_db_tokens_when_touched_local_log_has_no_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("local-log-no-usage.db");
+        let session_dir = temp.path().join(".claude/projects/test");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session_path = session_dir.join("session-1.jsonl");
+        std::fs::write(
+            &session_path,
+            "{\"type\":\"user\",\"message\":{\"content\":\"local prompt only\"}}\n",
+        )
+        .unwrap();
+
+        let mut store = SqliteStore::open(&db).unwrap();
+        let session_path_string = session_path.to_string_lossy().to_string();
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO audit_events (
+                    id, timestamp_ms, audit_type, pid, comm, action, target, status, details_json
+                 ) VALUES ('audit-1', 1000, 'file', 42, 'claude', 'write', ?1, 'observed', '{}')",
+                [session_path_string.as_str()],
             )
             .unwrap();
-        assert_eq!(tool_rows, 1);
+        store
+            .connection_mut()
+            .execute(
+                "INSERT INTO token_usage (
+                    id, timestamp_ms, model, input_tokens, output_tokens, total_tokens, source
+                 ) VALUES ('token-1', 1200, 'ssl-model', 8, 5, 13, 'response_usage')",
+                [],
+            )
+            .unwrap();
+
+        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
+        assert_eq!(summary.models, vec![("ssl-model".to_string(), 8, 5, 13, 1)]);
+        assert_eq!(summary.prompt_chars.total, 17);
     }
 
     #[test]
     fn local_claude_summary_reads_active_message_usage() {
-        let parsed = parse_local_session(
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".claude/projects/test/session.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let session = local_sessions::parse_content(
             "claude",
+            &path,
+            std::time::UNIX_EPOCH,
             concat!(
                 "{\"type\":\"assistant\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
                 "{\"type\":\"assistant\",\"requestId\":\"req_1\",\"message\":{\"model\":\"claude-opus-4-6\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7,\"output_tokens\":11}}}\n",
             ),
-        );
-        assert_eq!(
-            parsed.pointer("/models/claude-opus-4-6/0"),
-            Some(&serde_json::Value::from(3))
-        );
-        assert_eq!(
-            parsed.pointer("/models/claude-opus-4-6/1"),
-            Some(&serde_json::Value::from(11))
-        );
-        assert_eq!(
-            parsed.pointer("/models/claude-opus-4-6/2"),
-            Some(&serde_json::Value::from(26))
-        );
-        assert_eq!(
-            parsed.pointer("/tools/Bash"),
-            Some(&serde_json::Value::from(1))
-        );
+        )
+        .unwrap();
+        assert_eq!(session.models["claude-opus-4-6"], (3, 11, 26));
+        assert_eq!(session.tools.get("Bash"), Some(&1));
     }
 }

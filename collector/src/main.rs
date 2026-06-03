@@ -24,6 +24,7 @@ mod cmd_exec;
 mod cmd_perf;
 mod cmd_trace;
 mod framework;
+mod local_sessions;
 mod procfs;
 mod server;
 mod session;
