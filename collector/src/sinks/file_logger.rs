@@ -3,10 +3,7 @@
 
 use crate::framework::analyzers::{Analyzer, AnalyzerError};
 use crate::framework::runners::EventStream;
-use crate::view::types::{
-    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
-    ToolCallRow, ViewUpdate, ViewUpdateSink,
-};
+use crate::view::types::{ViewUpdate, ViewUpdateSink};
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use log::debug;
@@ -207,8 +204,8 @@ impl FileLogger {
         }
     }
 
-    fn write_view_update(&self, update: ViewUpdate) {
-        match serde_json::to_string(&update) {
+    fn write_view_update(&self, update: &ViewUpdate) {
+        match serde_json::to_string(update) {
             Ok(json) => self.write_line(&format!("{json}\n")),
             Err(e) => self.write_line(&format!(
                 "{{\"kind\":\"error\",\"row\":{{\"message\":\"Failed to serialize view update: {e}\"}}}}\n"
@@ -218,32 +215,8 @@ impl FileLogger {
 }
 
 impl ViewUpdateSink for FileLogger {
-    fn llm_call(&mut self, call: &LlmCallRow) {
-        self.write_view_update(ViewUpdate::LlmCall(call.clone()));
-    }
-
-    fn token_usage(&mut self, token: &TokenUsageRow) {
-        self.write_view_update(ViewUpdate::TokenUsage(token.clone()));
-    }
-
-    fn audit_event(&mut self, audit: &AuditEventRow) {
-        self.write_view_update(ViewUpdate::AuditEvent(audit.clone()));
-    }
-
-    fn tool_call(&mut self, tool: &ToolCallRow) {
-        self.write_view_update(ViewUpdate::ToolCall(tool.clone()));
-    }
-
-    fn session(&mut self, session: &SessionRow) {
-        self.write_view_update(ViewUpdate::Session(session.clone()));
-    }
-
-    fn network_target(&mut self, target: &NetworkTargetRow) {
-        self.write_view_update(ViewUpdate::NetworkTarget(target.clone()));
-    }
-
-    fn resource_sample(&mut self, sample: &ResourceSampleRow) {
-        self.write_view_update(ViewUpdate::ResourceSample(sample.clone()));
+    fn update(&mut self, update: &ViewUpdate) {
+        self.write_view_update(update);
     }
 }
 
@@ -597,7 +570,7 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let mut logger = FileLogger::new(temp_file.path()).unwrap();
 
-        logger.llm_call(&LlmCallRow {
+        logger.update(&ViewUpdate::LlmCall(crate::view::types::LlmCallRow {
             id: "llm-1".to_string(),
             start_timestamp_ms: 1_000,
             end_timestamp_ms: Some(1_200),
@@ -613,8 +586,8 @@ mod tests {
             total_tokens: 15,
             request: json!({"model": "claude-sonnet-4"}),
             response: json!({"usage": {"input_tokens": 10, "output_tokens": 5}}),
-        });
-        logger.token_usage(&TokenUsageRow {
+        }));
+        logger.update(&ViewUpdate::TokenUsage(crate::view::types::TokenUsageRow {
             id: "token-1".to_string(),
             llm_call_id: "llm-1".to_string(),
             timestamp_ms: 1_200,
@@ -630,7 +603,7 @@ mod tests {
             source: "response_usage".to_string(),
             view_source: "view".to_string(),
             confidence: Some(0.95),
-        });
+        }));
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(content.contains(r#""kind":"llm_call""#));

@@ -4,52 +4,44 @@
 pub mod types;
 
 use crate::framework::core::Event;
-use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
+use crate::framework::storage::sqlite::ViewProjector;
 use crate::view::types::{
-    AgentRow, AuditEventRow, AuditRow, InterruptionRow, LlmCallRow, NetworkTargetRow,
-    ResourceSampleRow, SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, StorageResult,
-    TokenSummary, TokenUsageRow, ToolCallRow, ViewUpdate, ViewUpdateSink,
+    AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, Snapshot,
+    SnapshotOptions, SnapshotSummary, StorageResult, TokenSummary, TokenUsageRow, ToolCallRow,
+    ViewUpdate, ViewUpdateSink,
 };
 use chrono::{SecondsFormat, Utc};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(crate) struct MaterializedView {
-    store: Option<SqliteStore>,
     projector: ViewProjector,
     state: ViewState,
 }
 
 impl MaterializedView {
-    pub(crate) fn open_sqlite(path: impl AsRef<Path>) -> StorageResult<Self> {
-        let store = SqliteStore::open(path)?;
-        let state = ViewState::from_store(&store)?;
-        Ok(Self {
-            store: Some(store),
-            projector: ViewProjector::new(),
-            state,
-        })
-    }
-
-    pub(crate) fn open_in_memory() -> StorageResult<Self> {
-        Ok(Self {
-            store: None,
+    pub(crate) fn new() -> Self {
+        Self {
             projector: ViewProjector::new(),
             state: ViewState::default(),
-        })
+        }
     }
 
     pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewUpdateSink>) {
         self.projector.add_sink(sink);
     }
 
+    pub(crate) fn set_source(&mut self, source: impl Into<String>) {
+        self.state.source = source.into();
+    }
+
+    pub(crate) fn load_update(&mut self, update: ViewUpdate) {
+        self.state.apply_update(&update);
+    }
+
     pub(crate) fn ingest_event(&mut self, event: &Event) -> StorageResult<()> {
         self.projector.ingest_event(event)?;
-        self.state.note_event();
         let updates = self.projector.drain_updates();
-        if let Some(store) = &mut self.store {
-            store.apply_projected_updates(&updates)?;
-        }
         for update in updates {
             self.state.apply_update(&update);
         }
@@ -57,10 +49,7 @@ impl MaterializedView {
     }
 
     pub(crate) fn ingest_update(&mut self, update: &ViewUpdate) -> StorageResult<()> {
-        if let Some(store) = &mut self.store {
-            store.apply_view_update(update)?;
-        }
-        self.state.note_event();
+        self.projector.notify_update(update);
         self.state.apply_update(update);
         Ok(())
     }
@@ -85,50 +74,46 @@ impl MaterializedView {
         Ok(inserted)
     }
 
-    pub(crate) fn export_snapshot(&self, options: SnapshotOptions) -> StorageResult<Snapshot> {
-        Ok(self.state.export_snapshot(options))
+    pub(crate) fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {
+        self.state.export_snapshot(options)
     }
 
-    pub(crate) fn token_summary(&self, group_by: &str) -> StorageResult<Vec<TokenSummary>> {
-        Ok(self.state.token_summary(group_by))
+    pub(crate) fn token_summary(&self, group_by: &str) -> Vec<TokenSummary> {
+        self.state.token_summary(group_by)
     }
 
-    pub(crate) fn audit_rows(
-        &self,
-        audit_type: Option<&str>,
-        limit: usize,
-    ) -> StorageResult<Vec<AuditRow>> {
-        Ok(self.state.audit_rows(audit_type, limit))
+    pub(crate) fn audit_rows(&self, audit_type: Option<&str>, limit: usize) -> Vec<AuditEventRow> {
+        self.state.audit_rows(audit_type, limit)
     }
 
-    pub(crate) fn llm_call_rows(&self, limit: usize) -> StorageResult<Vec<LlmCallRow>> {
-        Ok(self.state.llm_call_rows(limit))
+    pub(crate) fn llm_call_rows(&self, limit: usize) -> Vec<LlmCallRow> {
+        self.state.llm_call_rows(limit)
     }
 
-    pub(crate) fn first_tool_timestamp_ms(&self) -> StorageResult<Option<u64>> {
-        Ok(self.state.first_tool_timestamp_ms())
+    pub(crate) fn first_tool_timestamp_ms(&self) -> Option<u64> {
+        self.state.first_tool_timestamp_ms()
     }
 
-    pub(crate) fn tool_call_count(&self) -> StorageResult<i64> {
-        Ok(self.state.tool_call_count())
+    pub(crate) fn tool_call_count(&self) -> i64 {
+        self.state.tool_call_count()
     }
 
-    pub(crate) fn tool_counts(&self) -> StorageResult<BTreeMap<String, usize>> {
-        Ok(self.state.tool_counts())
+    pub(crate) fn tool_counts(&self) -> BTreeMap<String, usize> {
+        self.state.tool_counts()
     }
 
-    pub(crate) fn tool_durations_ms(&self) -> StorageResult<Vec<u64>> {
-        Ok(self.state.tool_durations_ms())
+    pub(crate) fn tool_durations_ms(&self) -> Vec<u64> {
+        self.state.tool_durations_ms()
     }
 
-    pub(crate) fn resource_samples(&self) -> StorageResult<Vec<(Option<f64>, Option<i64>)>> {
-        Ok(self.state.resource_samples())
+    pub(crate) fn resource_samples(&self) -> Vec<(Option<f64>, Option<i64>)> {
+        self.state.resource_samples()
     }
 }
 
 #[derive(Default)]
 struct ViewState {
-    event_count: i64,
+    source: String,
     llm_calls: BTreeMap<String, LlmCallRow>,
     token_usage: BTreeMap<String, TokenUsageRow>,
     audit_events: BTreeMap<String, AuditEventRow>,
@@ -136,45 +121,9 @@ struct ViewState {
     sessions: BTreeMap<String, SessionRow>,
     network_targets: BTreeMap<String, NetworkTargetRow>,
     resource_samples: Vec<ResourceSampleRow>,
-    interruptions: BTreeMap<String, InterruptionRow>,
 }
 
 impl ViewState {
-    fn from_store(store: &SqliteStore) -> StorageResult<Self> {
-        let mut state = Self {
-            event_count: store.ingested_event_count()?,
-            ..Self::default()
-        };
-
-        for row in store.llm_call_rows(100_000)? {
-            state.llm_calls.insert(row.id.clone(), row);
-        }
-        for row in store.token_usage_rows()? {
-            state.token_usage.insert(row.id.clone(), row);
-        }
-        for row in store.audit_event_rows(100_000)? {
-            state.audit_events.insert(row.id.clone(), row);
-        }
-        for row in store.tool_call_rows()? {
-            state.tool_calls.insert(row.id.clone(), row);
-        }
-        for row in store.session_rows()? {
-            state.sessions.insert(row.id.clone(), row);
-        }
-        for row in store.network_target_rows()? {
-            state.network_targets.insert(network_target_key(&row), row);
-        }
-        state.resource_samples = store.resource_sample_rows()?;
-        for row in store.interruption_rows()? {
-            state.interruptions.insert(row.id.clone(), row);
-        }
-        Ok(state)
-    }
-
-    fn note_event(&mut self) {
-        self.event_count += 1;
-    }
-
     fn apply_update(&mut self, update: &ViewUpdate) {
         match update {
             ViewUpdate::LlmCall(row) => {
@@ -241,7 +190,6 @@ impl ViewState {
             audit_events: self.audit_events(options.audit_limit),
             sessions: self.sessions(),
             agents: self.agents(),
-            interruptions: self.interruptions(),
         }
     }
 
@@ -276,10 +224,6 @@ impl ViewState {
         for row in &self.resource_samples {
             observe(Some(row.timestamp_ms));
         }
-        for row in self.interruptions.values() {
-            observe(Some(row.timestamp_ms));
-        }
-
         let (input_tokens, output_tokens, total_tokens) =
             self.effective_tokens()
                 .into_iter()
@@ -292,13 +236,16 @@ impl ViewState {
                 });
 
         SnapshotSummary {
-            source: "materialized_view".to_string(),
-            view_events: self.event_count,
+            source: if self.source.is_empty() {
+                "materialized_view".to_string()
+            } else {
+                self.source.clone()
+            },
+            view_events: self.view_events(),
             llm_calls: self.llm_calls.len() as i64,
             token_usage_rows: self.token_usage.len() as i64,
             audit_events: self.audit_events.len() as i64,
             sessions: self.sessions.len() as i64,
-            interruptions: self.interruptions.len() as i64,
             input_tokens,
             output_tokens,
             total_tokens,
@@ -337,23 +284,12 @@ impl ViewState {
         rows
     }
 
-    fn audit_rows(&self, audit_type: Option<&str>, limit: usize) -> Vec<AuditRow> {
+    fn audit_rows(&self, audit_type: Option<&str>, limit: usize) -> Vec<AuditEventRow> {
         let mut rows = self
             .audit_events
             .values()
             .filter(|row| audit_type.is_none_or(|audit_type| row.audit_type == audit_type))
-            .map(|row| AuditRow {
-                timestamp_ms: row.timestamp_ms,
-                audit_type: row.audit_type.clone(),
-                pid: row.pid,
-                comm: row.comm.clone(),
-                subject: row.subject.clone(),
-                action: row.action.clone(),
-                target: row.target.clone(),
-                status: row.status.clone(),
-                summary: row.summary.clone(),
-                details: row.details.clone(),
-            })
+            .cloned()
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
         rows.truncate(limit.clamp(1, 10_000));
@@ -475,14 +411,14 @@ impl ViewState {
         agents.into_values().collect()
     }
 
-    fn interruptions(&self) -> Vec<InterruptionRow> {
-        let mut rows = self.interruptions.values().cloned().collect::<Vec<_>>();
-        rows.sort_by(|a, b| {
-            a.timestamp_ms
-                .cmp(&b.timestamp_ms)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        rows
+    fn view_events(&self) -> i64 {
+        (self.llm_calls.len()
+            + self.token_usage.len()
+            + self.audit_events.len()
+            + self.tool_calls.len()
+            + self.sessions.len()
+            + self.network_targets.len()
+            + self.resource_samples.len()) as i64
     }
 
     fn effective_tokens(&self) -> Vec<&TokenUsageRow> {

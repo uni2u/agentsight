@@ -37,20 +37,6 @@ pub struct TokenUsageRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuditRow {
-    pub timestamp_ms: u64,
-    pub audit_type: String,
-    pub pid: Option<u32>,
-    pub comm: Option<String>,
-    pub subject: Option<String>,
-    pub action: Option<String>,
-    pub target: Option<String>,
-    pub status: Option<String>,
-    pub summary: Option<String>,
-    pub details: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmCallRow {
     pub id: String,
     pub start_timestamp_ms: u64,
@@ -92,7 +78,6 @@ pub struct Snapshot {
     pub audit_events: Vec<AuditEventRow>,
     pub sessions: Vec<SessionRow>,
     pub agents: Vec<AgentRow>,
-    pub interruptions: Vec<InterruptionRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +88,6 @@ pub struct SnapshotSummary {
     pub token_usage_rows: i64,
     pub audit_events: i64,
     pub sessions: i64,
-    pub interruptions: i64,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
@@ -199,21 +183,6 @@ pub struct AgentRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InterruptionRow {
-    pub id: String,
-    pub timestamp_ms: u64,
-    pub session_id: Option<String>,
-    pub conversation_id: Option<String>,
-    pub severity: String,
-    pub category: String,
-    pub status: String,
-    pub reason: String,
-    pub evidence: Value,
-    pub view_source: Option<String>,
-    pub confidence: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "row", rename_all = "snake_case")]
 pub enum ViewUpdate {
     LlmCall(LlmCallRow),
@@ -226,11 +195,5 @@ pub enum ViewUpdate {
 }
 
 pub trait ViewUpdateSink: Send {
-    fn llm_call(&mut self, _call: &LlmCallRow) {}
-    fn token_usage(&mut self, _token: &TokenUsageRow) {}
-    fn audit_event(&mut self, _audit: &AuditEventRow) {}
-    fn tool_call(&mut self, _tool: &ToolCallRow) {}
-    fn session(&mut self, _session: &SessionRow) {}
-    fn network_target(&mut self, _target: &NetworkTargetRow) {}
-    fn resource_sample(&mut self, _sample: &ResourceSampleRow) {}
+    fn update(&mut self, _update: &ViewUpdate) {}
 }

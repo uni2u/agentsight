@@ -123,12 +123,6 @@ fn replay_then_export_snapshot_for_static_web() {
     assert_eq!(data["sessions"][0]["agent_type"], "gemini-cli");
     assert_eq!(data["sessions"][0]["total_tokens"], 15);
     assert_eq!(data["agents"][0]["agent_type"], "gemini-cli");
-    assert!(
-        data["interruptions"]
-            .as_array()
-            .expect("interruptions")
-            .is_empty()
-    );
 }
 
 #[test]

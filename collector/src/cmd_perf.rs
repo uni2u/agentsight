@@ -786,9 +786,9 @@ fn load_stat(db: &str) -> StorageResult<StatOutput> {
     let view = SqliteSource::open(db)?.into_view();
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
-    })?;
-    let resources = resource_peaks_from_samples(view.resource_samples()?);
-    let tool_calls = view.tool_call_count()?;
+    });
+    let resources = resource_peaks_from_samples(view.resource_samples());
+    let tool_calls = view.tool_call_count();
     let (input_tokens, output_tokens, total_tokens) = stat_token_totals(&snapshot);
 
     let mut process_execs = 0usize;
@@ -1589,8 +1589,8 @@ fn load_snapshot_and_resources(db: &str) -> StorageResult<(Snapshot, ResourcePea
     let view = SqliteSource::open(db)?.into_view();
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
-    })?;
-    let resources = resource_peaks_from_samples(view.resource_samples()?);
+    });
+    let resources = resource_peaks_from_samples(view.resource_samples());
     Ok((snapshot, resources))
 }
 
@@ -1926,7 +1926,6 @@ mod tests {
                 token_usage_rows: 0,
                 audit_events: 0,
                 sessions: 1,
-                interruptions: 0,
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
@@ -1955,7 +1954,6 @@ mod tests {
                 attributes: serde_json::json!({}),
             }],
             agents: Vec::new(),
-            interruptions: Vec::new(),
         };
 
         assert_eq!(stat_token_totals(&snapshot), (3, 10, 27667));
@@ -1980,7 +1978,6 @@ mod tests {
                 token_usage_rows: 1,
                 audit_events: 1,
                 sessions: 0,
-                interruptions: 0,
                 input_tokens: 8,
                 output_tokens: 5,
                 total_tokens: 13,
@@ -2005,7 +2002,6 @@ mod tests {
             }],
             sessions: Vec::new(),
             agents: Vec::new(),
-            interruptions: Vec::new(),
         };
 
         assert_eq!(stat_token_totals(&snapshot), (8, 5, 13));

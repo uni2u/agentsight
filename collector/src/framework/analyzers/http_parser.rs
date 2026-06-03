@@ -716,7 +716,8 @@ impl Analyzer for HTTPParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
+    use crate::framework::storage::sqlite::ViewProjector;
+    use crate::view::types::ViewUpdate;
     use futures::StreamExt;
     use hpack::Encoder as HpackEncoder;
     use serde_json::json;
@@ -811,20 +812,20 @@ mod tests {
                 .contains("usageMetadata")
         );
 
-        let mut store = SqliteStore::open_in_memory().unwrap();
         let mut view = ViewProjector::new();
         for event in output {
-            store.insert_event(&event, &mut view).unwrap();
+            view.ingest_event(&event).unwrap();
         }
-        let total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT COALESCE(SUM(total_tokens), 0)
-                 FROM token_usage WHERE source = 'response_usage'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let total: i64 = view
+            .drain_updates()
+            .into_iter()
+            .filter_map(|update| match update {
+                ViewUpdate::TokenUsage(row) if row.source == "response_usage" => {
+                    Some(row.total_tokens)
+                }
+                _ => None,
+            })
+            .sum();
         assert_eq!(total, 15);
     }
 

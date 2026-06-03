@@ -14,10 +14,10 @@ pub struct StorageAnalyzer {
 }
 
 impl StorageAnalyzer {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Self {
-            view: Arc::new(Mutex::new(MaterializedView::open_in_memory()?)),
-        })
+    pub fn new() -> Self {
+        Self {
+            view: Arc::new(Mutex::new(MaterializedView::new())),
+        }
     }
 
     pub fn add_view_sink(self, sink: Box<dyn ViewUpdateSink>) -> Self {

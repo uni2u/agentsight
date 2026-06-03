@@ -76,13 +76,7 @@ Consumers implement `ViewUpdateSink`.
 
 ```rust
 pub trait ViewUpdateSink: Send {
-    fn llm_call(&mut self, _call: &LlmCallRow) {}
-    fn token_usage(&mut self, _token: &TokenUsageRow) {}
-    fn audit_event(&mut self, _audit: &AuditEventRow) {}
-    fn tool_call(&mut self, _tool: &ToolCallRow) {}
-    fn session(&mut self, _session: &SessionRow) {}
-    fn network_target(&mut self, _target: &NetworkTargetRow) {}
-    fn resource_sample(&mut self, _sample: &ResourceSampleRow) {}
+    fn update(&mut self, _update: &ViewUpdate) {}
 }
 ```
 

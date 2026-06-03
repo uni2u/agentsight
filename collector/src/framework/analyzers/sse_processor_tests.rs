@@ -8,7 +8,8 @@ mod sse_processor_tests {
     use super::super::sse_processor::SSEProcessor;
     use crate::framework::core::Event;
     use crate::framework::runners::EventStream;
-    use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
+    use crate::framework::storage::sqlite::ViewProjector;
+    use crate::view::types::ViewUpdate;
     use futures::stream;
     use futures::stream::StreamExt;
     use serde_json::json;
@@ -64,7 +65,6 @@ mod sse_processor_tests {
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].source, "sse_processor");
 
-        let mut store = SqliteStore::open_in_memory().unwrap();
         let mut view = ViewProjector::new();
         let req = Event::new_with_timestamp(
             1,
@@ -80,18 +80,19 @@ mod sse_processor_tests {
                 "body": "{\"model\":\"gemini-2.5-pro\"}"
             }),
         );
-        store.insert_event(&req, &mut view).unwrap();
-        store.insert_event(&collected[0], &mut view).unwrap();
+        view.ingest_event(&req).unwrap();
+        view.ingest_event(&collected[0]).unwrap();
 
-        let total: i64 = store
-            .connection()
-            .query_row(
-                "SELECT COALESCE(SUM(total_tokens), 0)
-                 FROM token_usage WHERE source = 'response_usage'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        let total: i64 = view
+            .drain_updates()
+            .into_iter()
+            .filter_map(|update| match update {
+                ViewUpdate::TokenUsage(row) if row.source == "response_usage" => {
+                    Some(row.total_tokens)
+                }
+                _ => None,
+            })
+            .sum();
         assert_eq!(total, 15);
     }
 

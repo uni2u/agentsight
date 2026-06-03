@@ -118,10 +118,6 @@ async fn handle_request(
         (&Method::GET, "/api/v1/agents") => {
             serve_sqlite_api(db_path, query.as_deref(), ApiResource::Agents).await
         }
-        (&Method::GET, "/api/v1/interruptions") => {
-            serve_sqlite_api(db_path, query.as_deref(), ApiResource::Interruptions).await
-        }
-
         // Serve static assets (catch-all for GET requests)
         (&Method::GET, _) => serve_asset(assets, path).await,
 
@@ -201,7 +197,6 @@ enum ApiResource {
     AuditEvents,
     Sessions,
     Agents,
-    Interruptions,
 }
 
 async fn serve_sqlite_api(
@@ -223,24 +218,21 @@ async fn serve_sqlite_api(
             let view = SqliteSource::open(&db_path)?.into_view();
             let options = SnapshotOptions { audit_limit };
             let value = match resource {
-                ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by)?)?,
-                ApiResource::Snapshot => serde_json::to_value(view.export_snapshot(options)?)?,
+                ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by))?,
+                ApiResource::Snapshot => serde_json::to_value(view.export_snapshot(options))?,
                 ApiResource::Summary => {
-                    serde_json::to_value(view.export_snapshot(options)?.summary)?
+                    serde_json::to_value(view.export_snapshot(options).summary)?
                 }
                 ApiResource::Events => {
-                    serde_json::to_value(view.export_snapshot(options)?.network_targets)?
+                    serde_json::to_value(view.export_snapshot(options).network_targets)?
                 }
                 ApiResource::AuditEvents => {
-                    serde_json::to_value(view.export_snapshot(options)?.audit_events)?
+                    serde_json::to_value(view.export_snapshot(options).audit_events)?
                 }
                 ApiResource::Sessions => {
-                    serde_json::to_value(view.export_snapshot(options)?.sessions)?
+                    serde_json::to_value(view.export_snapshot(options).sessions)?
                 }
-                ApiResource::Agents => serde_json::to_value(view.export_snapshot(options)?.agents)?,
-                ApiResource::Interruptions => {
-                    serde_json::to_value(view.export_snapshot(options)?.interruptions)?
-                }
+                ApiResource::Agents => serde_json::to_value(view.export_snapshot(options).agents)?,
             };
             Ok(value)
         },

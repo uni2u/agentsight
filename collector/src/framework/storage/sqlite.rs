@@ -7,8 +7,8 @@ use crate::framework::semantic::{
     extract_token_usage_from_sse, normalize_event, provider_from_host,
 };
 use crate::view::types::{
-    AuditEventRow, InterruptionRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow,
-    StorageResult, TokenUsageRow, ToolCallRow, ViewUpdate, ViewUpdateSink,
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, StorageResult,
+    TokenUsageRow, ToolCallRow, ViewUpdate, ViewUpdateSink,
 };
 use rusqlite::{Connection, params};
 use serde_json::Value;
@@ -44,21 +44,8 @@ impl SqliteStore {
     }
 
     #[cfg(test)]
-    pub fn open_in_memory() -> StorageResult<Self> {
-        let conn = Connection::open_in_memory()?;
-        let mut store = Self { conn };
-        store.init()?;
-        Ok(store)
-    }
-
-    #[cfg(test)]
     pub fn connection(&self) -> &Connection {
         &self.conn
-    }
-
-    #[cfg(test)]
-    pub fn connection_mut(&mut self) -> &mut Connection {
-        &mut self.conn
     }
 
     fn init(&mut self) -> StorageResult<()> {
@@ -68,40 +55,15 @@ impl SqliteStore {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub fn insert_event(
-        &mut self,
-        event: &Event,
-        view: &mut ViewProjector,
-    ) -> StorageResult<CanonicalEvent> {
-        let canonical = view.ingest_event(event)?;
-        let updates = view.drain_updates();
-        self.increment_stat("ingested_events", 1)?;
-        for update in &updates {
-            self.store_view_update(update)?;
-        }
-        Ok(canonical)
-    }
-
     pub fn apply_view_update(&mut self, update: &ViewUpdate) -> StorageResult<()> {
         self.increment_stat("ingested_events", 1)?;
         self.store_view_update(update)
-    }
-
-    pub fn apply_projected_updates(&mut self, updates: &[ViewUpdate]) -> StorageResult<()> {
-        self.increment_stat("ingested_events", 1)?;
-        for update in updates {
-            self.store_view_update(update)?;
-        }
-        Ok(())
     }
 
     fn store_view_update(&self, update: &ViewUpdate) -> StorageResult<()> {
         match update {
             ViewUpdate::LlmCall(row) => self.insert_llm_call(&LlmCallInsert {
                 id: &row.id,
-                request_event_id: None,
-                response_event_id: None,
                 start_timestamp_ms: row.start_timestamp_ms,
                 end_timestamp_ms: row.end_timestamp_ms,
                 pid: row.pid.unwrap_or_default(),
@@ -111,8 +73,6 @@ impl SqliteStore {
                 host: row.host.as_deref(),
                 path: row.path.as_deref(),
                 status_code: row.status_code,
-                error_type: None,
-                error_message: None,
                 request_body_json: Some(&row.request.to_string()),
                 response_body_json: Some(&row.response.to_string()),
                 view_source: "view_jsonl",
@@ -174,6 +134,7 @@ impl SqliteStore {
                 comm: row.comm.as_deref(),
                 start_timestamp_ms: row.start_timestamp_ms,
                 end_timestamp_ms: row.end_timestamp_ms,
+                status: &row.status,
                 model: row.model.as_deref(),
                 input_tokens: row.input_tokens,
                 output_tokens: row.output_tokens,
@@ -257,14 +218,12 @@ impl SqliteStore {
     fn insert_llm_call(&self, call: &LlmCallInsert<'_>) -> StorageResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO llm_calls (
-                id, request_event_id, response_event_id, start_timestamp_ms, end_timestamp_ms,
-                pid, comm, provider, model, host, path, status_code, error_type, error_message,
-                request_body_json, response_body_json, view_source, confidence
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                id, start_timestamp_ms, end_timestamp_ms, pid, comm, provider, model,
+                host, path, status_code, request_body_json, response_body_json,
+                view_source, confidence
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 call.id,
-                call.request_event_id,
-                call.response_event_id,
                 call.start_timestamp_ms as i64,
                 call.end_timestamp_ms.map(|v| v as i64),
                 call.pid as i64,
@@ -274,8 +233,6 @@ impl SqliteStore {
                 call.host,
                 call.path,
                 call.status_code.map(|v| v as i64),
-                call.error_type,
-                call.error_message,
                 call.request_body_json,
                 call.response_body_json,
                 call.view_source,
@@ -371,10 +328,11 @@ impl SqliteStore {
                 id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
                 status, model, input_tokens, output_tokens, total_tokens, view_source, confidence,
                 attributes_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'observed', ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                 start_timestamp_ms = MIN(start_timestamp_ms, excluded.start_timestamp_ms),
                 end_timestamp_ms = MAX(COALESCE(end_timestamp_ms, 0), COALESCE(excluded.end_timestamp_ms, 0)),
+                status = excluded.status,
                 model = COALESCE(NULLIF(excluded.model, 'unknown'), model, excluded.model),
                 input_tokens = input_tokens + excluded.input_tokens,
                 output_tokens = output_tokens + excluded.output_tokens,
@@ -388,6 +346,7 @@ impl SqliteStore {
                 session.comm,
                 session.start_timestamp_ms as i64,
                 session.end_timestamp_ms.map(|v| v as i64),
+                session.status,
                 session.model,
                 session.input_tokens,
                 session.output_tokens,
@@ -444,7 +403,7 @@ impl SqliteStore {
         let rows = stmt.query_map([], |row| {
             Ok(TokenUsageRow {
                 id: row.get(0)?,
-                llm_call_id: row.get(1)?,
+                llm_call_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 timestamp_ms: row.get::<_, i64>(2)? as u64,
                 pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
                 comm: row.get(4)?,
@@ -455,8 +414,12 @@ impl SqliteStore {
                 cache_creation_tokens: row.get(9)?,
                 cache_read_tokens: row.get(10)?,
                 total_tokens: row.get(11)?,
-                source: row.get(12)?,
-                view_source: row.get(13)?,
+                source: row
+                    .get::<_, Option<String>>(12)?
+                    .unwrap_or_else(|| "unknown".to_string()),
+                view_source: row
+                    .get::<_, Option<String>>(13)?
+                    .unwrap_or_else(|| "view".to_string()),
                 confidence: row.get(14)?,
             })
         })?;
@@ -597,31 +560,6 @@ impl SqliteStore {
         collect_rows(rows)
     }
 
-    pub fn interruption_rows(&self) -> StorageResult<Vec<InterruptionRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, timestamp_ms, session_id, conversation_id, severity,
-                    category, status, reason, evidence_json, view_source, confidence
-             FROM interruptions
-             ORDER BY timestamp_ms, id",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let evidence_json: String = row.get(8)?;
-            Ok(InterruptionRow {
-                id: row.get(0)?,
-                timestamp_ms: row.get::<_, i64>(1)? as u64,
-                session_id: row.get(2)?,
-                conversation_id: row.get(3)?,
-                severity: row.get(4)?,
-                category: row.get(5)?,
-                status: row.get(6)?,
-                reason: row.get(7)?,
-                evidence: parse_json_value(&evidence_json),
-                view_source: row.get(9)?,
-                confidence: row.get(10)?,
-            })
-        })?;
-        collect_rows(rows)
-    }
 }
 
 #[derive(Default)]
@@ -645,6 +583,12 @@ impl ViewProjector {
         std::mem::take(&mut self.emitted)
     }
 
+    pub fn notify_update(&mut self, update: &ViewUpdate) {
+        for sink in &mut self.sinks {
+            sink.update(update);
+        }
+    }
+
     pub fn ingest_event(&mut self, event: &Event) -> StorageResult<CanonicalEvent> {
         self.next_seq += 1;
         let raw_id = format!(
@@ -656,63 +600,20 @@ impl ViewProjector {
         );
         let canonical = normalize_event(event, raw_id, now_ms());
         if let Some(sample) = resource_sample_from_event(&canonical) {
-            self.emit_resource_sample(&sample);
+            self.emit(ViewUpdate::ResourceSample(sample));
         }
         if let Some(target) = network_target_from_event(&canonical) {
-            self.emit_network_target(&target);
+            self.emit(ViewUpdate::NetworkTarget(target));
         }
         self.ingest(&canonical)?;
         Ok(canonical)
     }
 
-    fn emit_llm_call(&mut self, call: &LlmCallRow) {
-        self.emitted.push(ViewUpdate::LlmCall(call.clone()));
+    fn emit(&mut self, update: ViewUpdate) {
         for sink in &mut self.sinks {
-            sink.llm_call(call);
+            sink.update(&update);
         }
-    }
-
-    fn emit_token_usage(&mut self, token: &TokenUsageRow) {
-        self.emitted.push(ViewUpdate::TokenUsage(token.clone()));
-        for sink in &mut self.sinks {
-            sink.token_usage(token);
-        }
-    }
-
-    fn emit_audit_event(&mut self, audit: &AuditEventRow) {
-        self.emitted.push(ViewUpdate::AuditEvent(audit.clone()));
-        for sink in &mut self.sinks {
-            sink.audit_event(audit);
-        }
-    }
-
-    fn emit_tool_call(&mut self, tool: &ToolCallRow) {
-        self.emitted.push(ViewUpdate::ToolCall(tool.clone()));
-        for sink in &mut self.sinks {
-            sink.tool_call(tool);
-        }
-    }
-
-    fn emit_session(&mut self, session: &SessionRow) {
-        self.emitted.push(ViewUpdate::Session(session.clone()));
-        for sink in &mut self.sinks {
-            sink.session(session);
-        }
-    }
-
-    fn emit_network_target(&mut self, target: &NetworkTargetRow) {
-        self.emitted.push(ViewUpdate::NetworkTarget(target.clone()));
-        for sink in &mut self.sinks {
-            sink.network_target(target);
-        }
-    }
-
-    fn emit_resource_sample(&mut self, sample: &ResourceSampleRow) {
-        self.emitted
-            .push(ViewUpdate::ResourceSample(sample.clone()));
-        for sink in &mut self.sinks {
-            sink.resource_sample(sample);
-        }
+        self.emitted.push(update);
     }
 
     fn insert_llm_call(&mut self, call: &LlmCallInsert<'_>) -> StorageResult<LlmCallRow> {
@@ -721,25 +622,25 @@ impl ViewProjector {
 
     fn insert_token_usage(&mut self, token: &TokenInsert<'_>) -> StorageResult<TokenUsageRow> {
         let row = token.to_row();
-        self.emit_token_usage(&row);
+        self.emit(ViewUpdate::TokenUsage(row.clone()));
         Ok(row)
     }
 
     fn insert_audit_event(&mut self, audit: &AuditInsert<'_>) -> StorageResult<AuditEventRow> {
         let row = audit.to_row();
-        self.emit_audit_event(&row);
+        self.emit(ViewUpdate::AuditEvent(row.clone()));
         Ok(row)
     }
 
     fn insert_tool_call(&mut self, tool: &ToolCallInsert<'_>) -> StorageResult<ToolCallRow> {
         let row = tool.to_row();
-        self.emit_tool_call(&row);
+        self.emit(ViewUpdate::ToolCall(row.clone()));
         Ok(row)
     }
 
     fn upsert_session(&mut self, session: &SessionUpsert<'_>) -> StorageResult<SessionRow> {
         let row = session.to_row();
-        self.emit_session(&row);
+        self.emit(ViewUpdate::Session(row.clone()));
         Ok(row)
     }
 
@@ -836,14 +737,8 @@ impl ViewProjector {
         let request_body_json = req.body_json.as_ref().map(Value::to_string);
         let response_body_json = response_body.as_ref().map(Value::to_string);
         let status_code = resp.status_code;
-        let error_type = status_code
-            .filter(|c| *c >= 400)
-            .map(|c| format!("http_{c}"));
-
         let mut call_row = self.insert_llm_call(&LlmCallInsert {
             id: &llm_call_id,
-            request_event_id: Some(req.event_id.as_str()),
-            response_event_id: Some(resp.event_id.as_str()),
             start_timestamp_ms: req.timestamp_ms,
             end_timestamp_ms: Some(resp.timestamp_ms),
             pid: req.pid,
@@ -853,8 +748,6 @@ impl ViewProjector {
             host: req.host.as_deref(),
             path: req.path.as_deref(),
             status_code,
-            error_type: error_type.as_deref(),
-            error_message: error_type.as_deref(),
             request_body_json: request_body_json.as_deref(),
             response_body_json: response_body_json.as_deref(),
             view_source: "view",
@@ -893,7 +786,7 @@ impl ViewProjector {
             summary: Some("LLM call"),
             details_json: response_body_json.as_deref().unwrap_or("{}"),
         })?;
-        self.emit_llm_call(&call_row);
+        self.emit(ViewUpdate::LlmCall(call_row.clone()));
         Ok(())
     }
 
@@ -906,8 +799,6 @@ impl ViewProjector {
         let request_body_json = req.body_json.as_ref().map(Value::to_string);
         let call_row = self.insert_llm_call(&LlmCallInsert {
             id: &llm_call_id,
-            request_event_id: Some(req.event_id.as_str()),
-            response_event_id: None,
             start_timestamp_ms: req.timestamp_ms,
             end_timestamp_ms: None,
             pid: req.pid,
@@ -917,8 +808,6 @@ impl ViewProjector {
             host: req.host.as_deref(),
             path: req.path.as_deref(),
             status_code: None,
-            error_type: None,
-            error_message: None,
             request_body_json: request_body_json.as_deref(),
             response_body_json: None,
             view_source: "view",
@@ -937,7 +826,7 @@ impl ViewProjector {
             summary: Some("LLM request"),
             details_json: request_body_json.as_deref().unwrap_or("{}"),
         })?;
-        self.emit_llm_call(&call_row);
+        self.emit(ViewUpdate::LlmCall(call_row.clone()));
         Ok(())
     }
 
@@ -958,8 +847,6 @@ impl ViewProjector {
         let llm_call_id = format!("llm-orphan-{}", resp.event_id);
         let mut call_row = self.insert_llm_call(&LlmCallInsert {
             id: &llm_call_id,
-            request_event_id: None,
-            response_event_id: Some(resp.event_id.as_str()),
             start_timestamp_ms: resp.timestamp_ms,
             end_timestamp_ms: Some(resp.timestamp_ms),
             pid,
@@ -969,8 +856,6 @@ impl ViewProjector {
             host: resp.host.as_deref(),
             path: resp.path.as_deref(),
             status_code: resp.status_code,
-            error_type: None,
-            error_message: None,
             request_body_json: None,
             response_body_json: response_body_text.as_deref(),
             view_source: "view",
@@ -1005,7 +890,7 @@ impl ViewProjector {
             summary: Some("LLM response"),
             details_json: response_body_text.as_deref().unwrap_or("{}"),
         })?;
-        self.emit_llm_call(&call_row);
+        self.emit(ViewUpdate::LlmCall(call_row.clone()));
         Ok(())
     }
 
@@ -1363,6 +1248,7 @@ impl ViewProjector {
             total_tokens,
             view_source: "view",
             confidence,
+            status: "observed",
             attributes_json: &attrs,
         })?;
         Ok(())
@@ -1592,8 +1478,6 @@ fn sanitize_id(s: &str) -> String {
 
 struct LlmCallInsert<'a> {
     id: &'a str,
-    request_event_id: Option<&'a str>,
-    response_event_id: Option<&'a str>,
     start_timestamp_ms: u64,
     end_timestamp_ms: Option<u64>,
     pid: u32,
@@ -1603,8 +1487,6 @@ struct LlmCallInsert<'a> {
     host: Option<&'a str>,
     path: Option<&'a str>,
     status_code: Option<u16>,
-    error_type: Option<&'a str>,
-    error_message: Option<&'a str>,
     request_body_json: Option<&'a str>,
     response_body_json: Option<&'a str>,
     view_source: &'a str,
@@ -1670,6 +1552,7 @@ struct SessionUpsert<'a> {
     comm: Option<&'a str>,
     start_timestamp_ms: u64,
     end_timestamp_ms: Option<u64>,
+    status: &'a str,
     model: Option<&'a str>,
     input_tokens: i64,
     output_tokens: i64,
@@ -1774,7 +1657,7 @@ impl SessionUpsert<'_> {
             comm: self.comm.map(str::to_string),
             start_timestamp_ms: self.start_timestamp_ms,
             end_timestamp_ms: self.end_timestamp_ms,
-            status: "observed".to_string(),
+            status: self.status.to_string(),
             model: self.model.map(str::to_string),
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
@@ -1809,8 +1692,6 @@ CREATE INDEX IF NOT EXISTS idx_network_targets_pid ON network_targets(pid);
 
 CREATE TABLE IF NOT EXISTS llm_calls (
   id TEXT PRIMARY KEY,
-  request_event_id TEXT,
-  response_event_id TEXT,
   start_timestamp_ms INTEGER NOT NULL,
   end_timestamp_ms INTEGER,
   pid INTEGER,
@@ -1820,8 +1701,6 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   host TEXT,
   path TEXT,
   status_code INTEGER,
-  error_type TEXT,
-  error_message TEXT,
   request_body_json TEXT,
   response_body_json TEXT,
   view_source TEXT,
@@ -1887,19 +1766,6 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   attributes_json TEXT NOT NULL DEFAULT '{}'
 );
 
-CREATE TABLE IF NOT EXISTS conversations (
-  id TEXT PRIMARY KEY,
-  session_id TEXT,
-  start_timestamp_ms INTEGER NOT NULL,
-  end_timestamp_ms INTEGER,
-  model TEXT,
-  input_tokens INTEGER DEFAULT 0,
-  output_tokens INTEGER DEFAULT 0,
-  total_tokens INTEGER DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'active',
-  attributes_json TEXT NOT NULL DEFAULT '{}'
-);
-
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY,
   session_id TEXT,
@@ -1921,20 +1787,6 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 
 CREATE INDEX IF NOT EXISTS idx_tool_time ON tool_calls(timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_tool_name_time ON tool_calls(tool_name, timestamp_ms);
-
-CREATE TABLE IF NOT EXISTS interruptions (
-  id TEXT PRIMARY KEY,
-  timestamp_ms INTEGER NOT NULL,
-  session_id TEXT,
-  conversation_id TEXT,
-  severity TEXT NOT NULL,
-  category TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open',
-  reason TEXT NOT NULL,
-  evidence_json TEXT NOT NULL DEFAULT '{}',
-  view_source TEXT,
-  confidence REAL
-);
 
 CREATE TABLE IF NOT EXISTS resource_samples (
   timestamp_ms INTEGER NOT NULL,

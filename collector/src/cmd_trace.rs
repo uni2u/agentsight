@@ -342,8 +342,7 @@ pub(crate) fn build_trace_agent(
 
     // Add global materialized view. The file log and optional exporters consume
     // view updates, not raw runner events.
-    let mut storage = StorageAnalyzer::new()
-        .map_err(|e| RunnerError::from(format!("failed to initialize live view: {}", e)))?;
+    let mut storage = StorageAnalyzer::new();
     if let Some(path) = db_path {
         storage = storage.add_view_sink(Box::new(SqliteSink::new(path).map_err(|e| {
             RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))

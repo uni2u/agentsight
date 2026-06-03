@@ -8,11 +8,12 @@ use crate::output::{
 };
 use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::sources::sqlite::SqliteSource;
+use crate::sinks::SqliteSink;
 use crate::view::MaterializedView;
 use crate::view::types::{Snapshot, SnapshotOptions};
 
 #[cfg(test)]
-use crate::framework::storage::sqlite::{SqliteStore, ViewProjector};
+use crate::framework::storage::sqlite::SqliteStore;
 #[cfg(test)]
 use crate::view::types::{TokenUsageRow, ViewUpdate};
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +29,8 @@ pub(crate) fn run_replay(
     input: &str,
     db: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut view = MaterializedView::open_sqlite(db)?;
+    let mut view = MaterializedView::new();
+    view.add_sink(Box::new(SqliteSink::new(db)?));
     let inserted = view.ingest_jsonl_file(input)?;
 
     print_replay(db, inserted);
@@ -41,7 +43,7 @@ pub(crate) fn run_token_query(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let view = SqliteSource::open(db)?.into_view();
-    let rows = view.token_summary(group_by)?;
+    let rows = view.token_summary(group_by);
     if json {
         print_json(&rows)?;
     } else {
@@ -57,7 +59,7 @@ pub(crate) fn run_audit_query(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let view = SqliteSource::open(db)?.into_view();
-    let rows = view.audit_rows(audit_type, limit)?;
+    let rows = view.audit_rows(audit_type, limit);
     if json {
         print_json(&rows)?;
     } else {
@@ -72,7 +74,7 @@ pub(crate) fn run_prompts_query(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let view = SqliteSource::open(db)?.into_view();
-    let rows = view.llm_call_rows(limit)?;
+    let rows = view.llm_call_rows(limit);
     if json {
         print_json(&rows)?;
     } else {
@@ -87,7 +89,7 @@ pub(crate) fn run_export(
     audit_limit: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let view = SqliteSource::open(db)?.into_view();
-    let snapshot = view.export_snapshot(SnapshotOptions { audit_limit })?;
+    let snapshot = view.export_snapshot(SnapshotOptions { audit_limit });
     let json = serde_json::to_vec_pretty(&snapshot)?;
     if output == "-" {
         let mut stdout = std::io::stdout().lock();
@@ -105,14 +107,14 @@ impl SessionSummary {
         let view = SqliteSource::open(db)?.into_view();
         let snap = view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
-        })?;
+        });
         let local_sessions = local_sessions::from_snapshot(&snap);
         let s = &snap.summary;
         let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
             (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
             _ => 0.0,
         };
-        let llm_rows = view.llm_call_rows(50_000)?;
+        let llm_rows = view.llm_call_rows(50_000);
         let first_llm_after_ms = s.start_timestamp_ms.and_then(|start| {
             llm_rows
                 .iter()
@@ -209,15 +211,15 @@ impl SessionSummary {
             .into_iter()
             .map(|(endpoint, count)| format!("{endpoint}({count})"))
             .collect();
-        let first_tool_timestamp_ms = view.first_tool_timestamp_ms()?;
+        let first_tool_timestamp_ms = view.first_tool_timestamp_ms();
         let first_tool_after_ms =
             first_tool_timestamp_ms.and_then(|ts| after_start(s.start_timestamp_ms, ts));
         let mut tool_calls = local_sessions::tool_counts(&local_sessions);
         let mut tool_duration_ms = SummaryStats::default();
         if tool_calls.is_empty() {
-            tool_calls = view.tool_counts()?;
+            tool_calls = view.tool_counts();
         }
-        for duration_ms in view.tool_durations_ms()? {
+        for duration_ms in view.tool_durations_ms() {
             tool_duration_ms.add(duration_ms);
         }
         Ok(Self {
@@ -406,9 +408,9 @@ mod tests {
     fn token_queries_use_highest_priority_source_per_llm_call() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("token-priority.db");
-        let mut store = SqliteStore::open(&db).unwrap();
+        let store = SqliteStore::open(&db).unwrap();
         store
-            .connection_mut()
+            .connection()
             .execute(
                 "INSERT INTO llm_calls (
                     id, start_timestamp_ms, end_timestamp_ms, pid, comm, model, view_source
@@ -417,7 +419,7 @@ mod tests {
             )
             .unwrap();
         store
-            .connection_mut()
+            .connection()
             .execute(
                 "INSERT INTO token_usage (
                     id, llm_call_id, timestamp_ms, pid, comm, model,
@@ -445,8 +447,8 @@ mod tests {
     fn sqlite_summary_reports_timeline_prompt_and_access_scope() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("summary.db");
-        let mut store = SqliteStore::open(&db).unwrap();
-        let mut view = ViewProjector::new();
+        let mut view = MaterializedView::new();
+        view.add_sink(Box::new(SqliteSink::new(&db).unwrap()));
 
         for event in [
             Event::new_with_timestamp(
@@ -499,19 +501,28 @@ mod tests {
                 json!({"event": "FILE_WRITE", "path": "/tmp/agentsight-summary/sub/b.txt"}),
             ),
         ] {
-            store.insert_event(&event, &mut view).unwrap();
+            view.ingest_event(&event).unwrap();
         }
 
-        store
-            .connection_mut()
-            .execute(
-                "INSERT INTO tool_calls (
-                    id, timestamp_ms, start_timestamp_ms, end_timestamp_ms,
-                    duration_ms, tool_name, view_source
-                 ) VALUES ('tool-1', 1500, 1500, 1650, 150, 'Bash', 'claude-code')",
-                [],
-            )
-            .unwrap();
+        view.ingest_update(&ViewUpdate::ToolCall(crate::view::types::ToolCallRow {
+            id: "tool-1".to_string(),
+            session_id: None,
+            conversation_id: None,
+            timestamp_ms: 1_500,
+            tool_name: Some("Bash".to_string()),
+            tool_call_id: None,
+            start_timestamp_ms: Some(1_500),
+            end_timestamp_ms: Some(1_650),
+            duration_ms: Some(150),
+            status: None,
+            input: json!({}),
+            output: json!({}),
+            related_pid: None,
+            related_event_id: None,
+            view_source: "claude-code".to_string(),
+            confidence: None,
+        }))
+        .unwrap();
 
         let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
         assert_eq!(summary.duration_s, 0.9);
@@ -539,10 +550,10 @@ mod tests {
     fn sqlite_summary_uses_agent_session_tokens_when_token_usage_is_empty() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("session-tokens.db");
-        let mut store = SqliteStore::open(&db).unwrap();
+        let store = SqliteStore::open(&db).unwrap();
 
         store
-            .connection_mut()
+            .connection()
             .execute(
                 "INSERT INTO agent_sessions (
                     id, agent_type, agent_name, start_timestamp_ms, end_timestamp_ms,
@@ -580,10 +591,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut store = SqliteStore::open(&db).unwrap();
+        let store = SqliteStore::open(&db).unwrap();
         let session_path_string = session_path.to_string_lossy().to_string();
         store
-            .connection_mut()
+            .connection()
             .execute(
                 "INSERT INTO audit_events (
                     id, timestamp_ms, audit_type, pid, comm, action, target, status, details_json
@@ -600,12 +611,12 @@ mod tests {
         assert_eq!(summary.tool_calls.get("Bash"), Some(&1));
 
         let token_rows: i64 = store
-            .connection_mut()
+            .connection()
             .query_row("SELECT COUNT(*) FROM token_usage", [], |row| row.get(0))
             .unwrap();
         assert_eq!(token_rows, 0);
         let session_rows: i64 = store
-            .connection_mut()
+            .connection()
             .query_row("SELECT COUNT(*) FROM agent_sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(session_rows, 0);
@@ -624,10 +635,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut store = SqliteStore::open(&db).unwrap();
+        let store = SqliteStore::open(&db).unwrap();
         let session_path_string = session_path.to_string_lossy().to_string();
         store
-            .connection_mut()
+            .connection()
             .execute(
                 "INSERT INTO audit_events (
                     id, timestamp_ms, audit_type, pid, comm, action, target, status, details_json
@@ -636,7 +647,7 @@ mod tests {
             )
             .unwrap();
         store
-            .connection_mut()
+            .connection()
             .execute(
                 "INSERT INTO token_usage (
                     id, timestamp_ms, model, input_tokens, output_tokens, total_tokens, source

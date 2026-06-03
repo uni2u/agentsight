@@ -18,7 +18,7 @@
 //! stable view data to OTLP.
 //!
 use crate::framework::analyzers::AnalyzerError;
-use crate::view::types::{LlmCallRow, ViewUpdateSink};
+use crate::view::types::{LlmCallRow, ViewUpdate, ViewUpdateSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
@@ -294,7 +294,10 @@ impl SpanInput {
 }
 
 impl ViewUpdateSink for OtelExporter {
-    fn llm_call(&mut self, call: &LlmCallRow) {
+    fn update(&mut self, update: &ViewUpdate) {
+        let ViewUpdate::LlmCall(call) = update else {
+            return;
+        };
         let Some(end_ms) = call.end_timestamp_ms else {
             return;
         };

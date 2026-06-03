@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::framework::analyzers::common;
 use crate::framework::core::Event;
 use crate::text::truncate_with_ellipsis as truncate;
-use crate::view::types::{AuditRow, LlmCallRow, TokenSummary};
+use crate::view::types::{AuditEventRow, LlmCallRow, TokenSummary};
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct ResourcePeaks {
@@ -420,7 +420,7 @@ pub(crate) fn print_token_summary(group_by: &str, rows: &[TokenSummary]) {
     }
 }
 
-pub(crate) fn print_audit_rows(rows: &[AuditRow]) {
+pub(crate) fn print_audit_rows(rows: &[AuditEventRow]) {
     println!("Audit events");
     println!(
         "{:<15} {:<10} {:<8} {:<16} {:<10} {:<28} summary",
