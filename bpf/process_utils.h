@@ -80,7 +80,7 @@ static bool command_matches_filter(const char *comm, const char *filter)
 }
 
 /* Count and print processes that match the given command filters */
-static int count_matching_processes(char **command_list, int command_count, bool trace_all)
+static inline int count_matching_processes(char **command_list, int command_count, bool trace_all)
 {
 	DIR *proc_dir;
 	struct dirent *entry;
@@ -158,7 +158,7 @@ static int count_matching_processes(char **command_list, int command_count, bool
  *
  * Returns pointer to a static buffer (NOT thread-safe, single consumer).
  */
-static const char *postprocess_full_command(const char *buf, int buf_size, unsigned int arg_len)
+static inline const char *postprocess_full_command(const char *buf, int buf_size, unsigned int arg_len)
 {
 	static char cmd_buf[MAX_COMMAND_LEN];
 

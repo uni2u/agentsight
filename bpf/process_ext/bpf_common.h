@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef __PROCESS_NEW_BPF_COMMON_H
-#define __PROCESS_NEW_BPF_COMMON_H
+#ifndef __PROCESS_EXT_BPF_COMMON_H
+#define __PROCESS_EXT_BPF_COMMON_H
 
 /*
- * Common BPF helpers for process_new: PID filtering + unified map update.
- * Included by process_new.bpf.c BEFORE all feature modules.
+ * Common BPF helpers for process extension modules: PID filtering and
+ * aggregated map updates. Included by process.bpf.c before feature modules.
  * References maps and flags defined in the glue file.
  */
 
@@ -146,4 +146,4 @@ static __always_inline void format_ipv4_port(char *buf, int buf_len, u32 ip, u16
 	buf[pos] = '\0';
 }
 
-#endif /* __PROCESS_NEW_BPF_COMMON_H */
+#endif /* __PROCESS_EXT_BPF_COMMON_H */

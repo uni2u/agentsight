@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 /* container_info.h — Userspace helpers for container metadata.
  * Provides ns_pid and container_id extraction from /proc.
- * Shared by process_new.c and sslsniff.c.
+ * Shared by the process tracer and sslsniff.c.
  */
 #ifndef __CONTAINER_INFO_H
 #define __CONTAINER_INFO_H

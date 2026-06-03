@@ -5,6 +5,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "process.h"
+#include "process_ext/bpf_state.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -22,6 +23,8 @@ struct {
 
 const volatile unsigned long long min_duration_ns = 0;
 
+#include "process_ext/bpf_common.h"
+
 /* Bash readline uretprobe handler */
 SEC("uretprobe//usr/bin/bash:readline")
 int BPF_URETPROBE(bash_readline, const void *ret)
@@ -31,6 +34,8 @@ int BPF_URETPROBE(bash_readline, const void *ret)
 	u32 pid;
 
 	if (!ret)
+		return 0;
+	if (!is_cgroup_tracked())
 		return 0;
 
 	/* Check if this is actually bash */
@@ -69,6 +74,9 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 	struct event *e;
 	pid_t pid;
 	u64 ts;
+
+	if (!is_cgroup_tracked())
+		return 0;
 
 	/* Get process info */
 	pid = bpf_get_current_pid_tgid() >> 32;
@@ -156,6 +164,9 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	pid_t pid, tid;
 	u64 id, ts, *start_ts, duration_ns = 0;
 
+	if (!is_cgroup_tracked())
+		return 0;
+
 	/* get PID and TID of exiting thread/process */
 	id = bpf_get_current_pid_tgid();
 	pid = id >> 32;
@@ -195,6 +206,15 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
 	e->exit_code = (BPF_CORE_READ(task, exit_code) >> 8) & 0xff;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
+	{
+		struct exit_mem_info mem = {};
+		mem.hiwater_rss = BPF_CORE_READ(task, signal, maxrss);
+		if (mem.hiwater_rss > 0) {
+			u32 pid_key = pid;
+			bpf_map_update_elem(&exit_mem, &pid_key, &mem, BPF_ANY);
+		}
+	}
+
 	/* send data to user-space for post-processing */
 	bpf_ringbuf_submit(e, 0);
 	return 0;
@@ -209,6 +229,9 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 	char filepath[MAX_FILENAME_LEN];
 	int dfd, flags;
 	const char *filename;
+
+	if (!is_cgroup_tracked())
+		return 0;
 
 	pid = bpf_get_current_pid_tgid() >> 32;
 
@@ -257,6 +280,9 @@ int trace_open(struct trace_event_raw_sys_enter *ctx)
 	int flags;
 	const char *filename;
 
+	if (!is_cgroup_tracked())
+		return 0;
+
 	pid = bpf_get_current_pid_tgid() >> 32;
 
 	/* Get syscall arguments */
@@ -293,4 +319,9 @@ int trace_open(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
-
+#include "process_ext/bpf_fs.h"
+#include "process_ext/bpf_write.h"
+#include "process_ext/bpf_net.h"
+#include "process_ext/bpf_signals.h"
+#include "process_ext/bpf_mem.h"
+#include "process_ext/bpf_cow.h"

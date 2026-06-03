@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
-#ifndef __PROCESS_NEW_RESOURCE_SAMPLER_H
-#define __PROCESS_NEW_RESOURCE_SAMPLER_H
+#ifndef __PROCESS_EXT_RESOURCE_SAMPLER_H
+#define __PROCESS_EXT_RESOURCE_SAMPLER_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -356,4 +356,4 @@ static inline void sample_resources(pid_t target_pid,
 	fflush(stdout);
 }
 
-#endif /* __PROCESS_NEW_RESOURCE_SAMPLER_H */
+#endif /* __PROCESS_EXT_RESOURCE_SAMPLER_H */

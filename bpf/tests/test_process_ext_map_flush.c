@@ -24,7 +24,7 @@ typedef uint64_t __u64;
 
 /* ---- headers under test ----------------------------------------------- */
 #include "process.h"
-#include "process_new.h"
+#include "process_ext/types.h"
 #include "process_ext/map_flush.h"
 
 /* ---- test harness ------------------------------------------------------ */

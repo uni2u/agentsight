@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 eunomia-bpf org.
 """
-Integration tests for the process_new eBPF tracer.
+Integration tests for the process eBPF tracer.
 
 Requires root privileges (sudo python3 tests/test_integration.py).
 """
@@ -17,17 +17,16 @@ import socket
 import sys
 
 BPF_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROCESS_NEW = os.path.join(BPF_DIR, "process_new")
-PROCESS_OLD = os.path.join(BPF_DIR, "process")
+PROCESS = os.path.join(BPF_DIR, "process")
 
 
 class TracerSession:
-    """Start process_new in background, collect JSON output."""
+    """Start process in background, collect JSON output."""
 
     def __init__(self, *extra_args, wait_attach=2):
         self.outfile = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
         self.proc = subprocess.Popen(
-            [PROCESS_NEW] + list(extra_args),
+            [PROCESS] + list(extra_args),
             stdout=self.outfile,
             stderr=subprocess.DEVNULL,
         )
@@ -573,72 +572,6 @@ def test_multi_app():
         sess.cleanup()
 
 
-def test_compat():
-    """Compare process and process_new output fields (process_new should be superset)."""
-    print("test_compat: process_new EXEC/EXIT fields are superset of process fields")
-    if not os.path.exists(PROCESS_OLD):
-        print(f"  [SKIP] Old binary not found at {PROCESS_OLD}")
-        return
-
-    def collect_events(binary, *extra_args):
-        outfile = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
-        proc = subprocess.Popen(
-            [binary] + list(extra_args),
-            stdout=outfile,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(2)
-        subprocess.run(["/bin/echo", "compat_test"], capture_output=True)
-        time.sleep(1)
-        proc.send_signal(signal.SIGINT)
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-        outfile.close()
-        events = []
-        with open(outfile.name) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-        os.unlink(outfile.name)
-        return events
-
-    old_events = collect_events(PROCESS_OLD, "-m", "0")
-    new_events = collect_events(PROCESS_NEW, "-m", "0")
-
-    # Get field sets from EXEC events
-    old_exec_fields = set()
-    for e in old_events:
-        if e.get("event") == "EXEC":
-            old_exec_fields.update(e.keys())
-            break
-
-    new_exec_fields = set()
-    for e in new_events:
-        if e.get("event") == "EXEC":
-            new_exec_fields.update(e.keys())
-            break
-
-    print(f"  [INFO] Old EXEC fields: {old_exec_fields}")
-    print(f"  [INFO] New EXEC fields: {new_exec_fields}")
-
-    missing = old_exec_fields - new_exec_fields
-    assert len(missing) == 0, (
-        f"FAIL: process_new EXEC missing fields from process: {missing}"
-    )
-    print(f"  [PASS] process_new EXEC fields are superset of process fields")
-
-    extra_fields = new_exec_fields - old_exec_fields
-    if extra_fields:
-        print(f"  [INFO] process_new has additional fields: {extra_fields}")
-
-
 def test_summary_json_schema():
     """Verify each SUMMARY event has correct field types."""
     print("test_summary_json_schema: SUMMARY event field type validation")
@@ -954,7 +887,6 @@ ALL_TESTS = [
     test_file_open,
     test_trace_all,
     test_multi_app,
-    test_compat,
     test_summary_json_schema,
     test_flush_on_sigint,
     test_trace_mem,
@@ -970,9 +902,9 @@ def main():
         print("ERROR: Integration tests require root privileges (run with sudo).")
         sys.exit(1)
 
-    if not os.path.exists(PROCESS_NEW):
-        print(f"ERROR: process_new binary not found at {PROCESS_NEW}")
-        print("Run 'make process_new' in the bpf directory first.")
+    if not os.path.exists(PROCESS):
+        print(f"ERROR: process binary not found at {PROCESS}")
+        print("Run 'make process' in the bpf directory first.")
         sys.exit(1)
 
     # Parse -k PATTERN for filtering tests
@@ -992,8 +924,8 @@ def main():
     failed = 0
     skipped = 0
 
-    print(f"\n=== process_new Integration Tests ===")
-    print(f"Binary: {PROCESS_NEW}")
+    print(f"\n=== process Integration Tests ===")
+    print(f"Binary: {PROCESS}")
     print(f"Running {len(tests_to_run)} tests\n")
 
     for test_fn in tests_to_run:

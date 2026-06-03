@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 /*
- * Unit tests for process_new.h data structures and constants:
+ * Unit tests for process_ext/types.h data structures and constants:
  *   - sizeof(struct agg_key) matches expected layout
  *   - sizeof(struct agg_value) matches expected layout
  *   - event_type_new enum values equal their documented constants
@@ -26,7 +26,7 @@ typedef uint64_t __u64;
 #endif
 
 #include "process.h"
-#include "process_new.h"
+#include "process_ext/types.h"
 
 /* ---- test harness ------------------------------------------------------ */
 #define RESET  "\033[0m"
@@ -249,7 +249,7 @@ static void test_event_type_new_no_collision_with_legacy(void)
 }
 
 /* ======================================================================== */
-/* process.h constants used by process_new.h                                */
+/* process.h constants used by process_ext/types.h                          */
 /* ======================================================================== */
 
 static void test_process_h_constants(void)
@@ -278,8 +278,8 @@ static void print_test_summary(void)
 
 int main(void)
 {
-	printf(BLUE "===== process_new.h Header Test Suite =====" RESET "\n");
-	printf("Testing data structures and constants from process_new.h\n");
+	printf(BLUE "===== process_ext/types.h Test Suite =====" RESET "\n");
+	printf("Testing data structures and constants from process_ext/types.h\n");
 
 	/* DETAIL_LEN */
 	test_detail_len_value();

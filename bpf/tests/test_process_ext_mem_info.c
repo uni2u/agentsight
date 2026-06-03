@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 /*
- * Unit tests for process_new/mem_info.h:
+ * Unit tests for process_ext/mem_info.h:
  *   - read_proc_mem_info() reads /proc/<pid>/statm correctly
  *   - read_proc_mem_info() returns false for non-existent PID
  *   - read_proc_mem_info() populates rss_pages, shared_pages, etc.
@@ -263,7 +263,7 @@ static void print_test_summary(void)
 int main(void)
 {
 	printf(BLUE "===== mem_info.h Test Suite =====" RESET "\n");
-	printf("Testing functions from process_new/mem_info.h\n");
+	printf("Testing functions from process_ext/mem_info.h\n");
 
 	test_read_self_succeeds();
 	test_read_self_populates_rss();

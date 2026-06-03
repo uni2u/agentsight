@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
-#ifndef __PROCESS_NEW_MEM_INFO_H
-#define __PROCESS_NEW_MEM_INFO_H
+#ifndef __PROCESS_EXT_MEM_INFO_H
+#define __PROCESS_EXT_MEM_INFO_H
 
 #include <stdio.h>
 #include <string.h>
@@ -54,4 +54,4 @@ static inline bool read_proc_mem_info(pid_t pid, struct proc_mem_info *info)
 	return true;
 }
 
-#endif /* __PROCESS_NEW_MEM_INFO_H */
+#endif /* __PROCESS_EXT_MEM_INFO_H */

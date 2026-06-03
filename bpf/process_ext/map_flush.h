@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
-#ifndef __PROCESS_NEW_MAP_FLUSH_H
-#define __PROCESS_NEW_MAP_FLUSH_H
+#ifndef __PROCESS_EXT_MAP_FLUSH_H
+#define __PROCESS_EXT_MAP_FLUSH_H
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "process_new.h"
+#include "process_ext/types.h"
 
 static const char *event_type_name(unsigned int type)
 {
@@ -125,7 +125,7 @@ static void print_summary_json(const struct agg_key *key, const struct agg_value
 	printf("}\n");
 }
 
-static void flush_agg_map(int map_fd)
+static inline void flush_agg_map(int map_fd)
 {
 	struct agg_key key = {}, next_key;
 	struct agg_value val;
@@ -140,7 +140,7 @@ static void flush_agg_map(int map_fd)
 	fflush(stdout);
 }
 
-static void flush_pid_from_agg_map(int map_fd, uint32_t target_pid)
+static inline void flush_pid_from_agg_map(int map_fd, uint32_t target_pid)
 {
 	struct agg_key key = {}, next_key;
 	struct agg_value val;
@@ -164,7 +164,7 @@ static void flush_pid_from_agg_map(int map_fd, uint32_t target_pid)
 }
 
 /* Check and report overflow count, returns the total count across all CPUs */
-static uint64_t check_overflow(int overflow_map_fd)
+static inline uint64_t check_overflow(int overflow_map_fd)
 {
 	uint32_t zero = 0;
 	int num_cpus = libbpf_num_possible_cpus();
@@ -195,4 +195,4 @@ static uint64_t check_overflow(int overflow_map_fd)
 	return total;
 }
 
-#endif /* __PROCESS_NEW_MAP_FLUSH_H */
+#endif /* __PROCESS_EXT_MAP_FLUSH_H */
