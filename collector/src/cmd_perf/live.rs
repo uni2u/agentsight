@@ -71,7 +71,6 @@ impl Default for LiveCaptureSnapshot {
 }
 
 struct LiveCaptureState {
-    by_pid: HashMap<u32, CaptureCounters>,
     session_paths_by_pid: HashMap<u32, BTreeSet<PathBuf>>,
     view: MaterializedView,
     parse_errors: u64,
@@ -80,7 +79,6 @@ struct LiveCaptureState {
 impl Default for LiveCaptureState {
     fn default() -> Self {
         Self {
-            by_pid: HashMap::new(),
             session_paths_by_pid: HashMap::new(),
             view: MaterializedView::new(),
             parse_errors: 0,
@@ -159,12 +157,13 @@ impl LiveEbpfCapture {
         let Ok(state) = self.state.lock() else {
             return LiveCaptureSnapshot::default();
         };
+        let snapshot = state.view.export_snapshot(SnapshotOptions {
+            audit_limit: 10_000,
+        });
         LiveCaptureSnapshot {
-            by_pid: state.by_pid.clone(),
+            by_pid: capture_counters_by_pid(&snapshot),
             session_paths_by_pid: state.session_paths_by_pid.clone(),
-            snapshot: state.view.export_snapshot(SnapshotOptions {
-                audit_limit: 10_000,
-            }),
+            snapshot,
             parse_errors: state.parse_errors,
         }
     }
@@ -533,36 +532,26 @@ fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
             .or_default()
             .insert(path);
     }
+}
 
-    let Some(event_name) = event.data.get("event").and_then(|value| value.as_str()) else {
-        return;
-    };
-    let kind = if event_name == "SUMMARY" {
-        event
-            .data
-            .get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or(event_name)
-    } else {
-        event_name
-    };
-    let counters = state.by_pid.entry(event.pid).or_default();
-    match kind {
-        "EXEC" => counters.execs += 1,
-        "EXIT" => {
-            if event
-                .data
-                .get("exit_code")
-                .and_then(|value| value.as_u64())
-                .is_some_and(|code| code != 0)
-            {
-                counters.failures += 1;
+fn capture_counters_by_pid(snapshot: &Snapshot) -> HashMap<u32, CaptureCounters> {
+    let mut by_pid = HashMap::new();
+    for row in &snapshot.audit_events {
+        let Some(pid) = row.pid else { continue };
+        let counters = by_pid.entry(pid).or_insert_with(CaptureCounters::default);
+        match row.audit_type.as_str() {
+            "process" if row.action.as_deref() == Some("exec") => counters.execs += 1,
+            "process" if row.action.as_deref() == Some("exit") => {
+                if row.status.as_deref() == Some("failure") {
+                    counters.failures += 1;
+                }
             }
+            "file" => counters.files += 1,
+            "network" => counters.network += 1,
+            _ => {}
         }
-        value if value.contains("FILE_") || value == "WRITE" => counters.files += 1,
-        value if value.starts_with("NET_") => counters.network += 1,
-        _ => {}
     }
+    by_pid
 }
 
 fn session_path_from_process_event(data: &Value) -> Option<PathBuf> {
@@ -1116,9 +1105,13 @@ mod tests {
         }
 
         let snapshot = state.lock().unwrap();
-        assert_eq!(snapshot.by_pid.get(&42).unwrap().files, 1);
-        assert_eq!(snapshot.by_pid.get(&7).unwrap().files, 1);
-        assert_eq!(snapshot.by_pid.get(&9).unwrap().files, 1);
+        let view_snapshot = snapshot.view.export_snapshot(SnapshotOptions {
+            audit_limit: 10_000,
+        });
+        let counters = capture_counters_by_pid(&view_snapshot);
+        assert_eq!(counters.get(&42).unwrap().files, 1);
+        assert_eq!(counters.get(&7).unwrap().files, 1);
+        assert_eq!(counters.get(&9).unwrap().files, 1);
         assert!(
             snapshot.session_paths_by_pid[&42]
                 .contains(&local_sessions::normalize_session_log_path(&claude_path))

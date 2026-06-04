@@ -2,12 +2,13 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::framework::core::Event;
+use crate::framework::semantic::llm::TokenUsage;
 use crate::framework::semantic::{
     CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
     extract_token_usage_from_sse, normalize_event, provider_from_host,
 };
 use crate::view::types::{
-    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
     ToolCallRow, ViewUpdate,
 };
 use serde_json::Value;
@@ -73,12 +74,12 @@ impl ViewProjector {
         emit(updates, ViewUpdate::AuditEvent(row));
     }
 
-    fn emit_tool_call(updates: &mut Vec<ViewUpdate>, row: ToolCallRow) {
-        emit(updates, ViewUpdate::ToolCall(row));
+    fn emit_process_node(updates: &mut Vec<ViewUpdate>, row: ProcessNodeRow) {
+        emit(updates, ViewUpdate::ProcessNode(row));
     }
 
-    fn emit_session(updates: &mut Vec<ViewUpdate>, row: SessionRow) {
-        emit(updates, ViewUpdate::Session(row));
+    fn emit_tool_call(updates: &mut Vec<ViewUpdate>, row: ToolCallRow) {
+        emit(updates, ViewUpdate::ToolCall(row));
     }
 
     fn ingest(&mut self, event: &CanonicalEvent, updates: &mut Vec<ViewUpdate>) {
@@ -92,6 +93,12 @@ impl ViewProjector {
             EventKind::ProcessExit => self.ingest_process_audit(event, "exit", updates),
             EventKind::FsOpen if is_writable_open(event) => self.ingest_file_audit(event, updates),
             EventKind::FsWrite | EventKind::FsMutation => self.ingest_file_audit(event, updates),
+            EventKind::Unknown if is_process_summary_write_event(event) => {
+                self.ingest_file_audit(event, updates)
+            }
+            EventKind::Unknown if is_process_network_event(event) => {
+                self.ingest_network_audit(event, updates)
+            }
             _ => {}
         }
     }
@@ -212,8 +219,6 @@ impl ViewProjector {
             &req.comm,
             provider.as_deref(),
             &model,
-            req.host.as_deref(),
-            request_body_json.as_deref(),
             response_body_json.as_deref(),
             confidence,
             updates,
@@ -222,28 +227,22 @@ impl ViewProjector {
             call_row.output_tokens = usage.output_tokens;
             call_row.total_tokens = usage.total_tokens;
         }
-        Self::emit_audit_event(
+        emit_llm_audit(
             updates,
-            AuditEventRow {
-                id: format!("audit-{llm_call_id}"),
-                timestamp_ms: resp.timestamp_ms,
-                audit_type: "llm".to_string(),
-                pid: Some(req.pid),
-                comm: Some(req.comm.clone()),
-                subject: Some(model.clone()),
-                action: Some("call".to_string()),
-                target: req.host.clone(),
-                status: Some(
-                    if status_code.map(|c| c >= 400).unwrap_or(false) {
-                        "failure"
-                    } else {
-                        "success"
-                    }
-                    .to_string(),
-                ),
-                summary: Some("LLM call".to_string()),
-                details: parse_json_value(response_body_json.as_deref().unwrap_or("{}")),
+            &llm_call_id,
+            resp.timestamp_ms,
+            req.pid,
+            &req.comm,
+            Some(&model),
+            "call",
+            req.host.as_deref(),
+            if status_code.map(|c| c >= 400).unwrap_or(false) {
+                "failure"
+            } else {
+                "success"
             },
+            "LLM call",
+            response_body_json.as_deref(),
         );
         emit(updates, ViewUpdate::LlmCall(call_row));
     }
@@ -269,21 +268,18 @@ impl ViewProjector {
             request_body_json.as_deref(),
             None,
         );
-        Self::emit_audit_event(
+        emit_llm_audit(
             updates,
-            AuditEventRow {
-                id: format!("audit-{llm_call_id}"),
-                timestamp_ms: req.timestamp_ms,
-                audit_type: "llm".to_string(),
-                pid: Some(req.pid),
-                comm: Some(req.comm.clone()),
-                subject: req.model.clone(),
-                action: Some("request".to_string()),
-                target: req.host.clone(),
-                status: Some("orphan_request".to_string()),
-                summary: Some("LLM request".to_string()),
-                details: parse_json_value(request_body_json.as_deref().unwrap_or("{}")),
-            },
+            &llm_call_id,
+            req.timestamp_ms,
+            req.pid,
+            &req.comm,
+            req.model.as_deref(),
+            "request",
+            req.host.as_deref(),
+            "orphan_request",
+            "LLM request",
+            request_body_json.as_deref(),
         );
         emit(updates, ViewUpdate::LlmCall(call_row));
     }
@@ -324,8 +320,6 @@ impl ViewProjector {
             &comm,
             provider.as_deref(),
             &model,
-            resp.host.as_deref(),
-            None,
             response_body_text.as_deref(),
             0.35,
             updates,
@@ -334,21 +328,18 @@ impl ViewProjector {
             call_row.output_tokens = usage.output_tokens;
             call_row.total_tokens = usage.total_tokens;
         }
-        Self::emit_audit_event(
+        emit_llm_audit(
             updates,
-            AuditEventRow {
-                id: format!("audit-{llm_call_id}"),
-                timestamp_ms: resp.timestamp_ms,
-                audit_type: "llm".to_string(),
-                pid: Some(pid),
-                comm: Some(comm.clone()),
-                subject: Some(model.clone()),
-                action: Some("response".to_string()),
-                target: resp.host.clone(),
-                status: Some("orphan_response".to_string()),
-                summary: Some("LLM response".to_string()),
-                details: parse_json_value(response_body_text.as_deref().unwrap_or("{}")),
-            },
+            &llm_call_id,
+            resp.timestamp_ms,
+            pid,
+            &comm,
+            Some(&model),
+            "response",
+            resp.host.as_deref(),
+            "orphan_response",
+            "LLM response",
+            response_body_text.as_deref(),
         );
         emit(updates, ViewUpdate::LlmCall(call_row));
     }
@@ -362,8 +353,6 @@ impl ViewProjector {
         comm: &str,
         provider: Option<&str>,
         model: &str,
-        host: Option<&str>,
-        request_body_json: Option<&str>,
         response_body_json: Option<&str>,
         confidence: f32,
         updates: &mut Vec<ViewUpdate>,
@@ -383,40 +372,19 @@ impl ViewProjector {
             let token_id = format!("token-{llm_call_id}");
             usage_row = Some(Self::emit_token_usage(
                 updates,
-                TokenUsageRow {
-                    id: token_id,
-                    llm_call_id: llm_call_id.to_string(),
-                    timestamp_ms: resp.timestamp_ms,
-                    pid: Some(pid),
-                    comm: Some(comm.to_string()),
-                    provider: provider.map(str::to_string),
-                    model: Some(model.to_string()),
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    cache_creation_tokens: usage.cache_creation_tokens,
-                    cache_read_tokens: usage.cache_read_tokens,
-                    total_tokens: usage.total_tokens(),
-                    source: "response_usage".to_string(),
-                    view_source: "view".to_string(),
-                    confidence: Some(confidence),
-                },
+                token_usage_row(
+                    &token_id,
+                    llm_call_id,
+                    resp.timestamp_ms,
+                    pid,
+                    Some(comm),
+                    provider,
+                    Some(model),
+                    &usage,
+                    "response_usage",
+                    confidence,
+                ),
             ));
-            self.upsert_known_agent_session(
-                pid,
-                comm,
-                resp.timestamp_ms,
-                Some(resp.timestamp_ms),
-                provider,
-                host,
-                Some(model),
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.total_tokens(),
-                request_body_json,
-                response_body_json,
-                confidence,
-                updates,
-            );
         }
         self.ingest_sse_tools(resp, llm_call_id, pid, confidence, updates);
         usage_row
@@ -466,40 +434,27 @@ impl ViewProjector {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 let llm_call_id = format!("claude-telemetry-{}-{idx}", event.event_id);
+                let usage = TokenUsage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_tokens: cache,
+                    total_override: Some(total),
+                    ..Default::default()
+                };
                 Self::emit_token_usage(
                     updates,
-                    TokenUsageRow {
-                        id: format!("token-{llm_call_id}"),
-                        llm_call_id: llm_call_id.clone(),
-                        timestamp_ms: event.timestamp_ms,
-                        pid: Some(pid),
-                        comm: Some(comm.to_string()),
-                        provider: Some("anthropic".to_string()),
-                        model: Some(model.to_string()),
-                        input_tokens: input,
-                        output_tokens: output,
-                        cache_creation_tokens: 0,
-                        cache_read_tokens: cache,
-                        total_tokens: total,
-                        source: "claude_telemetry".to_string(),
-                        view_source: "view".to_string(),
-                        confidence: Some(0.80),
-                    },
-                );
-                self.upsert_session_for_agent(
-                    "claude-code",
-                    "Claude Code",
-                    pid,
-                    comm,
-                    event.timestamp_ms,
-                    Some(event.timestamp_ms),
-                    Some(model),
-                    input,
-                    output,
-                    total,
-                    0.80,
-                    "claude-telemetry",
-                    updates,
+                    token_usage_row(
+                        &format!("token-{llm_call_id}"),
+                        &llm_call_id,
+                        event.timestamp_ms,
+                        pid,
+                        Some(comm),
+                        Some("anthropic"),
+                        Some(model),
+                        &usage,
+                        "claude_telemetry",
+                        0.80,
+                    ),
                 );
             } else if message == "tengu_tool_use_success" {
                 let tool_name = item.get("tool_name").and_then(Value::as_str).unwrap_or("?");
@@ -512,7 +467,7 @@ impl ViewProjector {
                     updates,
                     ToolCallRow {
                         id: format!("claude-tool-telemetry-{}-{idx}", event.event_id),
-                        session_id: Some(format!("claude-code-pid-{pid}")),
+                        session_id: None,
                         conversation_id: None,
                         timestamp_ms: event.timestamp_ms,
                         tool_name: Some(tool_name.to_string()),
@@ -561,40 +516,27 @@ impl ViewProjector {
                 continue;
             }
             let llm_call_id = format!("gemini-stdout-{}-{}", event.event_id, sanitize_id(model));
+            let usage = TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_tokens: cache,
+                total_override: Some(total),
+                ..Default::default()
+            };
             Self::emit_token_usage(
                 updates,
-                TokenUsageRow {
-                    id: format!("token-{llm_call_id}"),
-                    llm_call_id: llm_call_id.clone(),
-                    timestamp_ms: event.timestamp_ms,
-                    pid: Some(pid),
-                    comm: Some(comm.to_string()),
-                    provider: Some("gcp.gen_ai".to_string()),
-                    model: Some(model.to_string()),
-                    input_tokens: input,
-                    output_tokens: output,
-                    cache_creation_tokens: 0,
-                    cache_read_tokens: cache,
-                    total_tokens: total,
-                    source: "gemini_cli_stdout_stats".to_string(),
-                    view_source: "view".to_string(),
-                    confidence: Some(0.85),
-                },
-            );
-            self.upsert_session_for_agent(
-                "gemini-cli",
-                "Gemini CLI",
-                pid,
-                comm,
-                event.timestamp_ms,
-                Some(event.timestamp_ms),
-                Some(model),
-                input,
-                output,
-                total,
-                0.85,
-                "gemini-stdio",
-                updates,
+                token_usage_row(
+                    &format!("token-{llm_call_id}"),
+                    &llm_call_id,
+                    event.timestamp_ms,
+                    pid,
+                    Some(comm),
+                    Some("gcp.gen_ai"),
+                    Some(model),
+                    &usage,
+                    "gemini_cli_stdout_stats",
+                    0.85,
+                ),
             );
         }
     }
@@ -610,14 +552,6 @@ impl ViewProjector {
         let Some(events) = event.attributes.get("sse_events").and_then(Value::as_array) else {
             return;
         };
-        let session_id = classify_agent(
-            event.comm.as_deref().unwrap_or_default(),
-            event.host.as_deref(),
-            None,
-            Some(&event.attributes.to_string()),
-            event.model.as_deref(),
-        )
-        .map(|agent| format!("{}-pid-{pid}", agent.agent_type));
         for (idx, sse) in events.iter().enumerate() {
             let Some(block) = sse.pointer("/parsed_data/content_block") else {
                 continue;
@@ -635,7 +569,7 @@ impl ViewProjector {
                 updates,
                 ToolCallRow {
                     id: format!("tool-{llm_call_id}-{tool_id}"),
-                    session_id: session_id.clone(),
+                    session_id: None,
                     conversation_id: Some(format!("conv-{llm_call_id}")),
                     timestamp_ms: event.timestamp_ms,
                     tool_name: Some(name.to_string()),
@@ -653,90 +587,6 @@ impl ViewProjector {
                 },
             );
         }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn upsert_known_agent_session(
-        &mut self,
-        pid: u32,
-        comm: &str,
-        start_timestamp_ms: u64,
-        end_timestamp_ms: Option<u64>,
-        provider: Option<&str>,
-        host: Option<&str>,
-        model: Option<&str>,
-        input_tokens: i64,
-        output_tokens: i64,
-        total_tokens: i64,
-        request_body_json: Option<&str>,
-        response_body_json: Option<&str>,
-        confidence: f32,
-        updates: &mut Vec<ViewUpdate>,
-    ) {
-        let classifier_text = [request_body_json, response_body_json]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let agent = classify_agent(comm, host.or(provider), Some(&classifier_text), None, model);
-        if let Some(agent) = agent {
-            self.upsert_session_for_agent(
-                agent.agent_type,
-                agent.agent_name,
-                pid,
-                comm,
-                start_timestamp_ms,
-                end_timestamp_ms,
-                model,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                confidence,
-                "llm",
-                updates,
-            );
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn upsert_session_for_agent(
-        &mut self,
-        agent_type: &'static str,
-        agent_name: &'static str,
-        pid: u32,
-        comm: &str,
-        start_timestamp_ms: u64,
-        end_timestamp_ms: Option<u64>,
-        model: Option<&str>,
-        input_tokens: i64,
-        output_tokens: i64,
-        total_tokens: i64,
-        confidence: f32,
-        view_source: &str,
-        updates: &mut Vec<ViewUpdate>,
-    ) {
-        let id = format!("{agent_type}-pid-{pid}");
-        let attrs = serde_json::json!({ "source": view_source }).to_string();
-        Self::emit_session(
-            updates,
-            SessionRow {
-                id,
-                agent_type: agent_type.to_string(),
-                agent_name: Some(agent_name.to_string()),
-                pid: Some(pid),
-                comm: Some(comm.to_string()),
-                start_timestamp_ms,
-                end_timestamp_ms,
-                status: "observed".to_string(),
-                model: model.map(str::to_string),
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                view_source: "view".to_string(),
-                confidence: Some(confidence as f64),
-                attributes: parse_json_value(&attrs),
-            },
-        );
     }
 
     fn ingest_process_audit(
@@ -762,6 +612,9 @@ impl ViewProjector {
                 details: event.attributes.clone(),
             },
         );
+        if let Some(row) = process_node_from_event(event, action) {
+            Self::emit_process_node(updates, row);
+        }
     }
 
     fn ingest_file_audit(&mut self, event: &CanonicalEvent, updates: &mut Vec<ViewUpdate>) {
@@ -787,50 +640,98 @@ impl ViewProjector {
             },
         );
     }
+
+    fn ingest_network_audit(&mut self, event: &CanonicalEvent, updates: &mut Vec<ViewUpdate>) {
+        let target = event
+            .attributes
+            .get("detail")
+            .or_else(|| event.attributes.get("host"))
+            .and_then(Value::as_str);
+        let action = process_event_name(&event.attributes).unwrap_or("network");
+        Self::emit_audit_event(
+            updates,
+            AuditEventRow {
+                id: format!("audit-{}", event.event_id),
+                timestamp_ms: event.timestamp_ms,
+                audit_type: "network".to_string(),
+                pid: event.pid,
+                comm: event.comm.clone(),
+                subject: event.comm.clone(),
+                action: Some(action.to_string()),
+                target: target.map(str::to_string),
+                status: Some("observed".to_string()),
+                summary: event.summary.clone(),
+                details: event.attributes.clone(),
+            },
+        );
+    }
 }
 
 fn emit(updates: &mut Vec<ViewUpdate>, update: ViewUpdate) {
     updates.push(update);
 }
 
-struct AgentClass {
-    agent_type: &'static str,
-    agent_name: &'static str,
+#[allow(clippy::too_many_arguments)]
+fn emit_llm_audit(
+    updates: &mut Vec<ViewUpdate>,
+    llm_call_id: &str,
+    timestamp_ms: u64,
+    pid: u32,
+    comm: &str,
+    subject: Option<&str>,
+    action: &str,
+    target: Option<&str>,
+    status: &str,
+    summary: &str,
+    details_json: Option<&str>,
+) {
+    emit(
+        updates,
+        ViewUpdate::AuditEvent(AuditEventRow {
+            id: format!("audit-{llm_call_id}"),
+            timestamp_ms,
+            audit_type: "llm".to_string(),
+            pid: Some(pid),
+            comm: Some(comm.to_string()),
+            subject: subject.map(str::to_string),
+            action: Some(action.to_string()),
+            target: target.map(str::to_string),
+            status: Some(status.to_string()),
+            summary: Some(summary.to_string()),
+            details: parse_json_value(details_json.unwrap_or("{}")),
+        }),
+    );
 }
 
-fn classify_agent(
-    comm: &str,
-    host: Option<&str>,
-    request_text: Option<&str>,
-    response_text: Option<&str>,
+#[allow(clippy::too_many_arguments)]
+fn token_usage_row(
+    id: &str,
+    llm_call_id: &str,
+    timestamp_ms: u64,
+    pid: u32,
+    comm: Option<&str>,
+    provider: Option<&str>,
     model: Option<&str>,
-) -> Option<AgentClass> {
-    let haystack = [Some(comm), host, request_text, response_text, model]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_ascii_lowercase();
-    if haystack.contains("openclaw") {
-        Some(AgentClass {
-            agent_type: "openclaw",
-            agent_name: "OpenClaw",
-        })
-    } else if haystack.contains("gemini")
-        || haystack.contains("cloudcode-pa.googleapis.com")
-        || haystack.contains("generativelanguage")
-    {
-        Some(AgentClass {
-            agent_type: "gemini-cli",
-            agent_name: "Gemini CLI",
-        })
-    } else if haystack.contains("claude") || haystack.contains("anthropic") {
-        Some(AgentClass {
-            agent_type: "claude-code",
-            agent_name: "Claude Code",
-        })
-    } else {
-        None
+    usage: &TokenUsage,
+    source: &str,
+    confidence: f32,
+) -> TokenUsageRow {
+    TokenUsageRow {
+        id: id.to_string(),
+        llm_call_id: llm_call_id.to_string(),
+        timestamp_ms,
+        pid: Some(pid),
+        comm: comm.map(str::to_string),
+        provider: provider.map(str::to_string),
+        model: model.map(str::to_string),
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_creation_tokens: usage.cache_creation_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        total_tokens: usage.total_tokens(),
+        source: source.to_string(),
+        view_source: "view".to_string(),
+        confidence: Some(confidence),
     }
 }
 
@@ -850,6 +751,56 @@ fn process_audit_status(action: &str, attributes: &Value) -> &'static str {
     }
 }
 
+fn process_node_from_event(event: &CanonicalEvent, action: &str) -> Option<ProcessNodeRow> {
+    let pid = event.pid?;
+    let status = process_audit_status(action, &event.attributes).to_string();
+    Some(ProcessNodeRow {
+        id: format!("process-{pid}"),
+        pid,
+        ppid: event.ppid,
+        root_pid: None,
+        start_timestamp_ms: (action == "exec").then_some(event.timestamp_ms),
+        end_timestamp_ms: (action == "exit").then_some(event.timestamp_ms),
+        comm: event.comm.clone(),
+        command: process_command(&event.attributes),
+        argv: process_argv(&event.attributes),
+        cwd: event
+            .attributes
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        exit_code: (action == "exit")
+            .then(|| event.attributes.get("exit_code").and_then(Value::as_i64))
+            .flatten()
+            .map(|value| value as i32),
+        status: Some(status),
+        view_source: "view".to_string(),
+        confidence: event.confidence,
+    })
+}
+
+fn process_command(attributes: &Value) -> Option<String> {
+    attributes
+        .get("filename")
+        .and_then(Value::as_str)
+        .or_else(|| attributes.get("command").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| process_argv(attributes).first().cloned())
+}
+
+fn process_argv(attributes: &Value) -> Vec<String> {
+    attributes
+        .get("argv")
+        .and_then(Value::as_array)
+        .map(|argv| {
+            argv.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn is_writable_open(event: &CanonicalEvent) -> bool {
     let flags = event
         .attributes
@@ -861,6 +812,21 @@ fn is_writable_open(event: &CanonicalEvent) -> bool {
     const O_TRUNC: i64 = 0o1000;
     const O_APPEND: i64 = 0o2000;
     (flags & O_ACCMODE) != 0 || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
+}
+
+fn is_process_summary_write_event(event: &CanonicalEvent) -> bool {
+    event.source == "process"
+        && process_event_name(&event.attributes) == Some("SUMMARY")
+        && event.attributes.get("type").and_then(Value::as_str) == Some("WRITE")
+}
+
+fn is_process_network_event(event: &CanonicalEvent) -> bool {
+    event.source == "process"
+        && process_event_name(&event.attributes).is_some_and(|name| name.starts_with("NET_"))
+}
+
+fn process_event_name(attributes: &Value) -> Option<&str> {
+    attributes.get("event").and_then(Value::as_str)
 }
 
 fn parse_json_str(text: &str) -> Option<Value> {

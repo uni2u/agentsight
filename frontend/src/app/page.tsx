@@ -48,6 +48,21 @@ interface SnapshotAuditEvent {
   details?: Record<string, unknown> | null;
 }
 
+interface SnapshotProcessNode {
+  id: string;
+  pid: number;
+  ppid?: number | null;
+  root_pid?: number | null;
+  start_timestamp_ms?: number | null;
+  end_timestamp_ms?: number | null;
+  comm?: string | null;
+  command?: string | null;
+  argv?: string[];
+  cwd?: string | null;
+  exit_code?: number | null;
+  status?: string | null;
+}
+
 interface SnapshotSession {
   id: string;
   agent_type: string;
@@ -70,23 +85,27 @@ interface AgentSightSnapshot {
   summary?: Record<string, unknown>;
   token_summary?: SnapshotTokenSummary[];
   network_targets?: SnapshotNetworkTarget[];
+  process_nodes?: SnapshotProcessNode[];
   audit_events?: SnapshotAuditEvent[];
   sessions?: SnapshotSession[];
 }
 
 function snapshotToEvents(snapshot: AgentSightSnapshot): Event[] {
+  const processEvents = materializedProcessNodeEvents(snapshot.process_nodes);
   return [
-    ...materializedAuditEvents(snapshot.audit_events),
+    ...materializedAuditEvents(snapshot.audit_events, processEvents.length > 0),
+    ...processEvents,
     ...materializedNetworkEvents(snapshot.network_targets),
     ...materializedSessionEvents(snapshot.sessions),
     ...materializedTokenEvents(snapshot.token_summary, snapshot.generated_at),
   ].sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function materializedAuditEvents(rows?: SnapshotAuditEvent[]): Event[] {
+function materializedAuditEvents(rows?: SnapshotAuditEvent[], skipProcessRows = false): Event[] {
   if (!Array.isArray(rows)) return [];
   return rows
     .filter(row => typeof row.timestamp_ms === 'number')
+    .filter(row => !(skipProcessRows && row.audit_type === 'process'))
     .map(row => {
       const details = isRecord(row.details) ? row.details : {};
       const eventName = auditEventName(row);
@@ -112,6 +131,32 @@ function materializedAuditEvents(rows?: SnapshotAuditEvent[]): Event[] {
         },
       };
     });
+}
+
+function materializedProcessNodeEvents(rows?: SnapshotProcessNode[]): Event[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter(row => typeof row.pid === 'number')
+    .map(row => ({
+      id: `process-node-${row.id}`,
+      timestamp: row.start_timestamp_ms ?? row.end_timestamp_ms ?? 0,
+      source: 'process',
+      pid: row.pid,
+      comm: row.comm ?? '',
+      data: {
+        event: 'PROCESS_NODE',
+        ppid: row.ppid,
+        root_pid: row.root_pid,
+        filename: row.command,
+        command: row.command,
+        argv: row.argv ?? [],
+        cwd: row.cwd,
+        exit_code: row.exit_code,
+        status: row.status,
+        start_timestamp_ms: row.start_timestamp_ms,
+        end_timestamp_ms: row.end_timestamp_ms,
+      },
+    }));
 }
 
 function materializedNetworkEvents(rows?: SnapshotNetworkTarget[]): Event[] {
@@ -215,6 +260,7 @@ function parseSnapshotContent(content: string): Event[] | null {
 
 function isSnapshotPayload(snapshot: AgentSightSnapshot): boolean {
   return Array.isArray(snapshot.audit_events)
+    || Array.isArray(snapshot.process_nodes)
     || Array.isArray(snapshot.network_targets)
     || Array.isArray(snapshot.sessions)
     || Array.isArray(snapshot.token_summary);
@@ -257,6 +303,8 @@ function viewUpdateToEvents(kind: string, row: Record<string, unknown>, index: n
   switch (kind) {
     case 'audit_event':
       return materializedAuditEvents([r]);
+    case 'process_node':
+      return materializedProcessNodeEvents([r]);
     case 'network_target':
       return materializedNetworkEvents([r]);
     case 'session':
@@ -303,7 +351,7 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [logContent, setLogContent] = useState<string>('');
   const [events, setEvents] = useState<Event[]>([]);
-  const [viewMode, setViewMode] = useState<ViewMode>('process-tree');
+  const [viewMode, setViewMode] = useState<ViewMode>('timeline');
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string>('');
@@ -564,10 +612,10 @@ export default function Home() {
               <LogView events={events} />
             ) : viewMode === 'timeline' ? (
               <TimelineView events={events} />
-            ) : viewMode === 'metrics' ? (
-              <ResourceMetricsView events={events} />
-            ) : (
+            ) : viewMode === 'process-tree' ? (
               <ProcessTreeView events={events} />
+            ) : (
+              <ResourceMetricsView events={events} />
             )
           ) : (
             <div className="bg-white rounded-lg shadow-md p-12 text-center">

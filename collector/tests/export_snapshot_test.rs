@@ -120,9 +120,8 @@ fn replay_then_export_snapshot_for_static_web() {
         "cloudcode-pa.googleapis.com"
     );
     assert_eq!(data["network_targets"][0]["count"], 1);
-    assert_eq!(data["sessions"][0]["agent_type"], "gemini-cli");
-    assert_eq!(data["sessions"][0]["total_tokens"], 15);
-    assert_eq!(data["agents"][0]["agent_type"], "gemini-cli");
+    assert!(data["sessions"].as_array().expect("sessions").is_empty());
+    assert!(data["agents"].as_array().expect("agents").is_empty());
 }
 
 #[test]
@@ -340,6 +339,16 @@ fn default_agent_run_summary_commands_are_real() {
             .expect("audit events")
             .iter()
             .any(|event| event["target"] == "/workspace/app/package-lock.json")
+    );
+    assert!(
+        snapshot_json["process_nodes"]
+            .as_array()
+            .expect("process nodes")
+            .iter()
+            .any(|process| process["pid"] == 5001
+                && process["ppid"] == 5000
+                && process["argv"][0] == "node"),
+        "{snapshot_json}"
     );
 }
 

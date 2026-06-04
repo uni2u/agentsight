@@ -248,7 +248,6 @@ ownership, match confidence, and source provenance.
 Minimal new rows:
 
 ```text
-ProcessTreeRow
 ProcessNodeRow
 SessionProcessMatchRow
 ```
@@ -290,14 +289,21 @@ unattributed
 
 ## Refactor Direction
 
-1. Add an `AgentRegistry` for static agent rules and display metadata.
-2. Add a `ProcessTreeBuilder` that emits flat `ProcessTree` and `ProcessNode`
-   rows from proc/eBPF evidence.
-3. Add a narrow `SessionProcessMatcher` that emits `SessionProcessMatchRow`.
-4. Move agent-specific classifier logic out of `ViewProjector`.
-5. Treat `SessionRow.pid` as derived from the best match.
-6. Let frontend consume view-native rows instead of converting snapshots and
-   updates back into pseudo raw events.
+Deletion-first checklist:
+
+- [x] Remove `ViewProjector` agent-session inference from LLM/token telemetry.
+- [x] Remove the saved-DB top path that reconstructed process families from
+  audit events.
+- [x] Add view-native `ProcessNodeRow` so snapshots can expose process structure
+  without frontend audit-event tree reconstruction.
+- [x] Restore frontend process-tree rendering and prefer `process_nodes` when
+  present, keeping raw JSONL upload compatibility.
+- [x] Keep live `/proc` process-family handling as the live process-tree builder;
+  saved snapshots use `process_nodes`.
+- [x] Treat `SessionRow.pid` as compatibility/display data only; do not add new
+  writes that use it as the canonical session-process relationship.
+- [ ] Add explicit `SessionProcessMatchRow` only when session-process matching has
+  enough evidence to avoid reusing `SessionRow.pid` as ownership.
 
 ## Invariant
 

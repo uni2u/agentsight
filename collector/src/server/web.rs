@@ -124,6 +124,15 @@ async fn handle_request(
             )
             .await
         }
+        (&Method::GET, "/api/v1/process-nodes") | (&Method::GET, "/api/v1/process/nodes") => {
+            serve_view_api(
+                db_path,
+                &log_file,
+                query.as_deref(),
+                ApiResource::ProcessNodes,
+            )
+            .await
+        }
         (&Method::GET, "/api/v1/sessions") => {
             serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Sessions).await
         }
@@ -176,6 +185,7 @@ enum ApiResource {
     TokenSummary,
     Events,
     AuditEvents,
+    ProcessNodes,
     Sessions,
     Agents,
 }
@@ -202,6 +212,7 @@ async fn serve_view_api(
                 ApiResource::Events | ApiResource::AuditEvents => {
                     serde_json::to_value(snapshot.audit_events)?
                 }
+                ApiResource::ProcessNodes => serde_json::to_value(snapshot.process_nodes)?,
                 ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
                 ApiResource::Agents => serde_json::to_value(snapshot.agents)?,
             };

@@ -8,9 +8,9 @@ pub(crate) use projector::ViewProjector;
 
 use crate::framework::core::Event;
 use crate::view::types::{
-    AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, Snapshot,
-    SnapshotOptions, SnapshotSummary, TokenSummary, TokenUsageRow, ToolCallRow, ViewResult,
-    ViewUpdate, ViewUpdateSink,
+    AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow,
+    SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, TokenSummary, TokenUsageRow,
+    ToolCallRow, ViewResult, ViewUpdate, ViewUpdateSink,
 };
 use chrono::{SecondsFormat, Utc};
 use std::collections::BTreeMap;
@@ -137,6 +137,7 @@ struct ViewState {
     llm_calls: BTreeMap<String, LlmCallRow>,
     token_usage: BTreeMap<String, TokenUsageRow>,
     audit_events: BTreeMap<String, AuditEventRow>,
+    process_nodes: BTreeMap<String, ProcessNodeRow>,
     tool_calls: BTreeMap<String, ToolCallRow>,
     sessions: BTreeMap<String, SessionRow>,
     network_targets: BTreeMap<String, NetworkTargetRow>,
@@ -155,6 +156,7 @@ impl ViewState {
             ViewUpdate::AuditEvent(row) => {
                 self.audit_events.insert(row.id.clone(), row.clone());
             }
+            ViewUpdate::ProcessNode(row) => self.upsert_process_node(row),
             ViewUpdate::ToolCall(row) => {
                 self.tool_calls.insert(row.id.clone(), row.clone());
             }
@@ -200,6 +202,43 @@ impl ViewState {
             max_optional_timestamp(existing.last_timestamp_ms, row.last_timestamp_ms);
     }
 
+    fn upsert_process_node(&mut self, row: &ProcessNodeRow) {
+        let Some(existing) = self.process_nodes.get_mut(&row.id) else {
+            self.process_nodes.insert(row.id.clone(), row.clone());
+            return;
+        };
+
+        existing.start_timestamp_ms =
+            min_optional_timestamp(existing.start_timestamp_ms, row.start_timestamp_ms);
+        existing.end_timestamp_ms =
+            max_optional_timestamp(existing.end_timestamp_ms, row.end_timestamp_ms);
+        if row.ppid.is_some() {
+            existing.ppid = row.ppid;
+        }
+        if row.root_pid.is_some() {
+            existing.root_pid = row.root_pid;
+        }
+        if row.comm.is_some() {
+            existing.comm = row.comm.clone();
+        }
+        if row.command.is_some() {
+            existing.command = row.command.clone();
+        }
+        if !row.argv.is_empty() {
+            existing.argv = row.argv.clone();
+        }
+        if row.cwd.is_some() {
+            existing.cwd = row.cwd.clone();
+        }
+        if row.exit_code.is_some() {
+            existing.exit_code = row.exit_code;
+        }
+        if row.status.is_some() {
+            existing.status = row.status.clone();
+        }
+        existing.confidence = max_optional_f32(existing.confidence, row.confidence);
+    }
+
     fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {
         Snapshot {
             schema_version: 1,
@@ -207,6 +246,7 @@ impl ViewState {
             summary: self.snapshot_summary(options),
             token_summary: self.token_summary("model"),
             network_targets: self.network_targets(),
+            process_nodes: self.process_nodes(),
             audit_events: self.audit_events(options.audit_limit),
             sessions: self.sessions(),
             agents: self.agents(),
@@ -230,6 +270,10 @@ impl ViewState {
         for row in self.audit_events.values() {
             observe(Some(row.timestamp_ms));
         }
+        for row in self.process_nodes.values() {
+            observe(row.start_timestamp_ms);
+            observe(row.end_timestamp_ms);
+        }
         for row in self.tool_calls.values() {
             observe(Some(row.timestamp_ms));
         }
@@ -244,16 +288,18 @@ impl ViewState {
         for row in &self.resource_samples {
             observe(Some(row.timestamp_ms));
         }
-        let (input_tokens, output_tokens, total_tokens) =
-            self.effective_tokens()
-                .into_iter()
-                .fold((0, 0, 0), |acc, token| {
-                    (
-                        acc.0 + token.input_tokens,
-                        acc.1 + token.output_tokens,
-                        acc.2 + token.total_tokens,
-                    )
-                });
+        let effective_tokens = self.effective_tokens();
+        let (input_tokens, output_tokens, total_tokens) = if effective_tokens.is_empty() {
+            self.session_token_totals()
+        } else {
+            effective_tokens.into_iter().fold((0, 0, 0), |acc, token| {
+                (
+                    acc.0 + token.input_tokens,
+                    acc.1 + token.output_tokens,
+                    acc.2 + token.total_tokens,
+                )
+            })
+        };
 
         SnapshotSummary {
             source: if self.source.is_empty() {
@@ -277,7 +323,11 @@ impl ViewState {
 
     fn token_summary(&self, group_by: &str) -> Vec<TokenSummary> {
         let mut groups: BTreeMap<String, TokenSummary> = BTreeMap::new();
-        for token in self.effective_tokens() {
+        let effective_tokens = self.effective_tokens();
+        if effective_tokens.is_empty() {
+            return self.session_token_summary();
+        }
+        for token in effective_tokens {
             let group = token_group(token, group_by);
             let entry = groups.entry(group.clone()).or_insert(TokenSummary {
                 group,
@@ -293,6 +343,52 @@ impl ViewState {
             entry.cache_creation_tokens += token.cache_creation_tokens;
             entry.cache_read_tokens += token.cache_read_tokens;
             entry.total_tokens += token.total_tokens;
+            entry.calls += 1;
+        }
+        let mut rows = groups.into_values().collect::<Vec<_>>();
+        rows.sort_by(|a, b| {
+            b.total_tokens
+                .cmp(&a.total_tokens)
+                .then_with(|| a.group.cmp(&b.group))
+        });
+        rows
+    }
+
+    fn session_token_totals(&self) -> (i64, i64, i64) {
+        self.sessions.values().fold((0, 0, 0), |acc, session| {
+            (
+                acc.0 + session.input_tokens,
+                acc.1 + session.output_tokens,
+                acc.2 + session.total_tokens,
+            )
+        })
+    }
+
+    fn session_token_summary(&self) -> Vec<TokenSummary> {
+        let mut groups: BTreeMap<String, TokenSummary> = BTreeMap::new();
+        for session in self.sessions.values() {
+            if session.input_tokens == 0 && session.output_tokens == 0 && session.total_tokens == 0
+            {
+                continue;
+            }
+            let group = session
+                .model
+                .as_ref()
+                .filter(|model| !model.is_empty())
+                .cloned()
+                .unwrap_or_else(|| session.agent_type.clone());
+            let entry = groups.entry(group.clone()).or_insert(TokenSummary {
+                group,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 0,
+                calls: 0,
+            });
+            entry.input_tokens += session.input_tokens;
+            entry.output_tokens += session.output_tokens;
+            entry.total_tokens += session.total_tokens;
             entry.calls += 1;
         }
         let mut rows = groups.into_values().collect::<Vec<_>>();
@@ -390,6 +486,31 @@ impl ViewState {
         rows
     }
 
+    fn process_nodes(&self) -> Vec<ProcessNodeRow> {
+        let parent_by_pid = self
+            .process_nodes
+            .values()
+            .map(|row| (row.pid, row.ppid))
+            .collect::<BTreeMap<_, _>>();
+        let mut rows = self
+            .process_nodes
+            .values()
+            .cloned()
+            .map(|mut row| {
+                row.root_pid
+                    .get_or_insert_with(|| root_pid(row.pid, &parent_by_pid));
+                row
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| {
+            a.start_timestamp_ms
+                .cmp(&b.start_timestamp_ms)
+                .then_with(|| a.pid.cmp(&b.pid))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        rows
+    }
+
     fn sessions(&self) -> Vec<SessionRow> {
         let mut rows = self.sessions.values().cloned().collect::<Vec<_>>();
         rows.sort_by(|a, b| {
@@ -435,6 +556,7 @@ impl ViewState {
         (self.llm_calls.len()
             + self.token_usage.len()
             + self.audit_events.len()
+            + self.process_nodes.len()
             + self.tool_calls.len()
             + self.sessions.len()
             + self.network_targets.len()
@@ -516,6 +638,21 @@ fn network_target_key(row: &NetworkTargetRow) -> String {
     )
 }
 
+fn root_pid(pid: u32, parent_by_pid: &BTreeMap<u32, Option<u32>>) -> u32 {
+    let mut current = pid;
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.insert(current) {
+        let Some(Some(parent)) = parent_by_pid.get(&current) else {
+            break;
+        };
+        if !parent_by_pid.contains_key(parent) {
+            break;
+        }
+        current = *parent;
+    }
+    current
+}
+
 fn observe_timestamp(start: &mut Option<u64>, end: &mut Option<u64>, timestamp: Option<u64>) {
     let Some(timestamp) = timestamp else {
         return;
@@ -541,6 +678,14 @@ fn max_optional_timestamp(left: Option<u64>, right: Option<u64>) -> Option<u64> 
 }
 
 fn max_optional_f64(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn max_optional_f32(left: Option<f32>, right: Option<f32>) -> Option<f32> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.max(right)),
         (Some(value), None) | (None, Some(value)) => Some(value),

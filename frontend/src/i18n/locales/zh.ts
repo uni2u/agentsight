@@ -8,7 +8,7 @@ type TranslationKey = keyof typeof en;
 export const zh: Record<TranslationKey, string> = {
   // App
   'app.title': 'AgentSight 分析器',
-  'app.subtitle': '上传并分析 eBPF Agent 追踪日志，支持多种视图模式',
+  'app.subtitle': '上传并分析 eBPF Agent 追踪日志',
   'app.eventsLoaded': '{count} 个事件已加载',
   'app.file': '文件：',
   'app.syncing': '同步中...',

@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 pub type ViewResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -76,6 +75,7 @@ pub struct Snapshot {
     pub summary: SnapshotSummary,
     pub token_summary: Vec<TokenSummary>,
     pub network_targets: Vec<NetworkTargetRow>,
+    pub process_nodes: Vec<ProcessNodeRow>,
     pub audit_events: Vec<AuditEventRow>,
     pub sessions: Vec<SessionRow>,
     pub agents: Vec<AgentRow>,
@@ -89,6 +89,7 @@ impl Snapshot {
             summary: SnapshotSummary::empty(source),
             token_summary: Vec::new(),
             network_targets: Vec::new(),
+            process_nodes: Vec::new(),
             audit_events: Vec::new(),
             sessions: Vec::new(),
             agents: Vec::new(),
@@ -96,64 +97,27 @@ impl Snapshot {
     }
 
     pub(crate) fn model_rows(&self) -> Vec<(String, i64, i64, i64, i64)> {
-        let mut models = self
-            .token_summary
+        self.token_summary
             .iter()
             .filter(|row| row.input_tokens != 0 || row.output_tokens != 0 || row.total_tokens != 0)
             .map(|row| {
                 (
                     row.group.clone(),
-                    (
-                        row.input_tokens,
-                        row.output_tokens,
-                        row.total_tokens,
-                        row.calls,
-                    ),
+                    row.input_tokens,
+                    row.output_tokens,
+                    row.total_tokens,
+                    row.calls,
                 )
             })
-            .collect::<BTreeMap<_, _>>();
-
-        for session in &self.sessions {
-            if session.input_tokens == 0 && session.output_tokens == 0 && session.total_tokens == 0
-            {
-                continue;
-            }
-            let model = session
-                .model
-                .as_ref()
-                .filter(|model| !model.is_empty())
-                .cloned()
-                .unwrap_or_else(|| session.agent_type.clone());
-            models.entry(model).or_insert((
-                session.input_tokens,
-                session.output_tokens,
-                session.total_tokens,
-                1,
-            ));
-        }
-
-        models
-            .into_iter()
-            .map(|(model, (input, output, total, calls))| (model, input, output, total, calls))
             .collect()
     }
 
     pub(crate) fn materialized_token_totals(&self) -> (i64, i64, i64) {
-        if self.summary.total_tokens > 0
-            || self.summary.input_tokens > 0
-            || self.summary.output_tokens > 0
-        {
-            return (
-                self.summary.input_tokens,
-                self.summary.output_tokens,
-                self.summary.total_tokens,
-            );
-        }
-
-        let input_tokens = self.sessions.iter().map(|s| s.input_tokens).sum();
-        let output_tokens = self.sessions.iter().map(|s| s.output_tokens).sum();
-        let total_tokens = self.sessions.iter().map(|s| s.total_tokens).sum();
-        (input_tokens, output_tokens, total_tokens)
+        (
+            self.summary.input_tokens,
+            self.summary.output_tokens,
+            self.summary.total_tokens,
+        )
     }
 }
 
@@ -229,6 +193,24 @@ pub struct AuditEventRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessNodeRow {
+    pub id: String,
+    pub pid: u32,
+    pub ppid: Option<u32>,
+    pub root_pid: Option<u32>,
+    pub start_timestamp_ms: Option<u64>,
+    pub end_timestamp_ms: Option<u64>,
+    pub comm: Option<String>,
+    pub command: Option<String>,
+    pub argv: Vec<String>,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub status: Option<String>,
+    pub view_source: String,
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRow {
     pub id: String,
     pub session_id: Option<String>,
@@ -284,6 +266,7 @@ pub enum ViewUpdate {
     LlmCall(LlmCallRow),
     TokenUsage(TokenUsageRow),
     AuditEvent(AuditEventRow),
+    ProcessNode(ProcessNodeRow),
     ToolCall(ToolCallRow),
     Session(SessionRow),
     NetworkTarget(NetworkTargetRow),

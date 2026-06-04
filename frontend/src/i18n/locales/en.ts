@@ -4,7 +4,7 @@
 export const en = {
   // App (page.tsx)
   'app.title': 'AgentSight Analyzer',
-  'app.subtitle': 'Upload and analyze eBPF agent trace logs with dual view modes',
+  'app.subtitle': 'Upload and analyze eBPF agent trace logs',
   'app.eventsLoaded': '{count} events loaded',
   'app.file': 'File:',
   'app.syncing': 'Syncing...',

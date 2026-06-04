@@ -1,5 +1,11 @@
 # Production Observability Refactor Plan
 
+Status: historical plan. The current implementation uses
+`framework/semantic`, `view/projector`, `view::types`, `stores/sqlite`, and
+`sources/sqlite` rather than the module layout below. Keep this file as
+background context; use `docs/design/view-session-process-model.md` for the
+active session/process model.
+
 This plan breaks the architecture into small, reviewable changes. It preserves
 the existing JSONL-first workflow while adding SQLite, generic semantics, and
 adapters.
@@ -218,7 +224,7 @@ Deliverables:
 
 Scope:
 
-- Existing log/timeline/process-tree upload flow remains.
+- Existing log/timeline/process-tree upload flow remains. Snapshot process-tree rendering should prefer view-native `process_nodes`.
 - Session details can be placeholder until adapters exist.
 
 Acceptance:

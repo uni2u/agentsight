@@ -2,8 +2,8 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::view::types::{
-    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
-    ToolCallRow, ViewResult, ViewUpdate,
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, SessionRow,
+    TokenUsageRow, ToolCallRow, ViewResult, ViewUpdate,
 };
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::Value;
@@ -49,6 +49,7 @@ impl SqliteStore {
             ViewUpdate::LlmCall(row) => self.insert_llm_call(row),
             ViewUpdate::TokenUsage(row) => self.insert_token_usage(row),
             ViewUpdate::AuditEvent(row) => self.insert_audit_event(row),
+            ViewUpdate::ProcessNode(row) => self.upsert_process_node(row),
             ViewUpdate::ToolCall(row) => self.insert_tool_call(row),
             ViewUpdate::Session(row) => self.upsert_session(row),
             ViewUpdate::NetworkTarget(row) => self.upsert_network_target(row),
@@ -170,6 +171,55 @@ impl SqliteStore {
                 audit.status.as_deref(),
                 audit.summary.as_deref(),
                 audit.details.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn upsert_process_node(&self, process: &ProcessNodeRow) -> ViewResult<()> {
+        self.conn.execute(
+            "INSERT INTO process_nodes (
+                id, pid, ppid, root_pid, start_timestamp_ms, end_timestamp_ms,
+                comm, command, argv_json, cwd, exit_code, status, view_source, confidence
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+                ppid = COALESCE(excluded.ppid, ppid),
+                root_pid = COALESCE(excluded.root_pid, root_pid),
+                start_timestamp_ms = CASE
+                    WHEN start_timestamp_ms IS NULL THEN excluded.start_timestamp_ms
+                    WHEN excluded.start_timestamp_ms IS NULL THEN start_timestamp_ms
+                    ELSE MIN(start_timestamp_ms, excluded.start_timestamp_ms)
+                END,
+                end_timestamp_ms = CASE
+                    WHEN end_timestamp_ms IS NULL THEN excluded.end_timestamp_ms
+                    WHEN excluded.end_timestamp_ms IS NULL THEN end_timestamp_ms
+                    ELSE MAX(end_timestamp_ms, excluded.end_timestamp_ms)
+                END,
+                comm = COALESCE(excluded.comm, comm),
+                command = COALESCE(excluded.command, command),
+                argv_json = CASE
+                    WHEN excluded.argv_json != '[]' THEN excluded.argv_json
+                    ELSE argv_json
+                END,
+                cwd = COALESCE(excluded.cwd, cwd),
+                exit_code = COALESCE(excluded.exit_code, exit_code),
+                status = COALESCE(excluded.status, status),
+                confidence = MAX(COALESCE(confidence, 0), COALESCE(excluded.confidence, 0))",
+            params![
+                process.id,
+                process.pid as i64,
+                process.ppid.map(|v| v as i64),
+                process.root_pid.map(|v| v as i64),
+                process.start_timestamp_ms.map(|v| v as i64),
+                process.end_timestamp_ms.map(|v| v as i64),
+                process.comm.as_deref(),
+                process.command.as_deref(),
+                serde_json::to_string(&process.argv)?,
+                process.cwd.as_deref(),
+                process.exit_code.map(|v| v as i64),
+                process.status.as_deref(),
+                process.view_source,
+                process.confidence.unwrap_or(1.0),
             ],
         )?;
         Ok(())
@@ -367,6 +417,38 @@ impl SqliteStore {
              ORDER BY timestamp_ms, id",
         )?;
         let rows = stmt.query_map([], read_audit_event_row)?;
+        collect_rows(rows)
+    }
+
+    pub(crate) fn process_node_rows(&self) -> ViewResult<Vec<ProcessNodeRow>> {
+        if !sqlite_table_exists(&self.conn, "process_nodes")? {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pid, ppid, root_pid, start_timestamp_ms, end_timestamp_ms,
+                    comm, command, argv_json, cwd, exit_code, status, view_source, confidence
+             FROM process_nodes
+             ORDER BY COALESCE(start_timestamp_ms, end_timestamp_ms, 0), pid, id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let argv_json: String = row.get(8)?;
+            Ok(ProcessNodeRow {
+                id: row.get(0)?,
+                pid: row.get::<_, i64>(1)? as u32,
+                ppid: row.get::<_, Option<i64>>(2)?.map(|v| v as u32),
+                root_pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+                start_timestamp_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                end_timestamp_ms: row.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                comm: row.get(6)?,
+                command: row.get(7)?,
+                argv: serde_json::from_str(&argv_json).unwrap_or_default(),
+                cwd: row.get(9)?,
+                exit_code: row.get::<_, Option<i64>>(10)?.map(|v| v as i32),
+                status: row.get(11)?,
+                view_source: row.get(12)?,
+                confidence: row.get(13)?,
+            })
+        })?;
         collect_rows(rows)
     }
 
@@ -570,6 +652,26 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_audit_type_time ON audit_events(audit_type, timestamp_ms);
 CREATE INDEX IF NOT EXISTS idx_audit_pid_time ON audit_events(pid, timestamp_ms);
+
+CREATE TABLE IF NOT EXISTS process_nodes (
+  id TEXT PRIMARY KEY,
+  pid INTEGER NOT NULL,
+  ppid INTEGER,
+  root_pid INTEGER,
+  start_timestamp_ms INTEGER,
+  end_timestamp_ms INTEGER,
+  comm TEXT,
+  command TEXT,
+  argv_json TEXT NOT NULL DEFAULT '[]',
+  cwd TEXT,
+  exit_code INTEGER,
+  status TEXT,
+  view_source TEXT NOT NULL,
+  confidence REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_nodes_pid ON process_nodes(pid);
+CREATE INDEX IF NOT EXISTS idx_process_nodes_parent ON process_nodes(ppid);
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,

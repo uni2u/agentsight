@@ -5,12 +5,10 @@ use crate::output::{
     AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopOptions, TopSection, clear_screen,
     print_agent_top, print_json, print_stat,
 };
-use crate::sources::proc as procfs;
 use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::text::short_session_id;
 use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, ViewResult};
-use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -148,7 +146,7 @@ fn build_session_top<'a>(
     let mut notes =
         vec!["static session view; run without --db for live /proc agent process top".to_string()];
     if options.pid.is_some() || options.comm.is_some() {
-        notes.push("filter applied before process-family aggregation".to_string());
+        notes.push("filter applied to saved rows before aggregation".to_string());
     }
     AgentTopOutput {
         mode: "static session",
@@ -225,14 +223,6 @@ fn show_section(view: &str, title: &str) -> bool {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-struct ProcessMeta {
-    pid: u32,
-    ppid: Option<u32>,
-    comm: String,
-    command: String,
-}
-
 fn session_agent_rows(
     snapshot: &Snapshot,
     resources: &ResourcePeaks,
@@ -240,260 +230,132 @@ fn session_agent_rows(
 ) -> Vec<AgentTopRow> {
     let top_model = dominant_model(snapshot);
     let db_age_s = snapshot_age_s(snapshot);
-    let mut processes = BTreeMap::<u32, ProcessMeta>::new();
-    for row in &snapshot.audit_events {
-        let Some(pid) = row.pid else { continue };
-        let entry = processes.entry(pid).or_insert_with(|| ProcessMeta {
-            pid,
-            ppid: details_ppid(&row.details),
-            comm: row.comm.clone().unwrap_or_else(|| "unknown".to_string()),
-            command: process_command(row.audit_type.as_str(), &row.details, row.target.as_deref())
-                .unwrap_or_else(|| row.comm.clone().unwrap_or_else(|| "unknown".to_string())),
-        });
-        if entry.ppid.is_none() {
-            entry.ppid = details_ppid(&row.details);
-        }
-        if let Some(comm) = &row.comm
-            && entry.comm == "unknown"
-        {
-            entry.comm = comm.clone();
-        }
-        if let Some(command) =
-            process_command(row.audit_type.as_str(), &row.details, row.target.as_deref())
-            && (entry.command == "unknown"
-                || entry.command == entry.comm
-                || entry.command.starts_with("exec "))
-        {
-            entry.command = command;
-        }
-    }
-
-    let roots = session_roots(&processes, options);
-    let mut rows = Vec::new();
-    let hosts_by_pid = hosts_by_pid(snapshot);
-    let tokens_by_pid = session_tokens_by_pid(snapshot);
-    let mut assigned_global_tokens = false;
-
-    for root_pid in roots {
-        let family = process_family(root_pid, &processes);
-        if family.is_empty() {
-            continue;
-        }
-        let family_set: HashSet<u32> = family.iter().copied().collect();
-        let mut execs = 0usize;
-        let mut failures = 0usize;
-        let mut files = BTreeSet::new();
-        for row in &snapshot.audit_events {
-            let Some(pid) = row.pid else { continue };
-            if !family_set.contains(&pid) {
-                continue;
-            }
-            match row.audit_type.as_str() {
-                "process" if row.action.as_deref() == Some("exec") => execs += 1,
-                "process" if row.action.as_deref() == Some("exit") => {
-                    if row.status.as_deref() == Some("failure") {
-                        failures += 1;
-                    }
-                }
-                "file" => {
-                    if let Some(target) = &row.target {
-                        files.insert(target.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let network = family
-            .iter()
-            .filter_map(|pid| hosts_by_pid.get(pid))
-            .flatten()
-            .collect::<BTreeSet<_>>()
-            .len();
-        let family_tokens = family
-            .iter()
-            .filter_map(|pid| tokens_by_pid.get(pid))
-            .sum::<i64>();
-        let tokens = if family_tokens > 0 {
-            Some(family_tokens)
-        } else if tokens_by_pid.is_empty()
-            && !assigned_global_tokens
-            && snapshot.summary.total_tokens > 0
-        {
-            assigned_global_tokens = true;
-            Some(snapshot.summary.total_tokens)
-        } else {
-            None
-        };
-        let root = processes.get(&root_pid);
-        let agent = root
-            .map(|p| procfs::agent_name_from_command(&p.comm, &p.command))
-            .unwrap_or_else(|| "agent".to_string());
-        rows.push(AgentTopRow {
-            session: format!("db:{root_pid}"),
-            agent,
-            pid: Some(root_pid),
-            model: top_model.clone(),
-            age_s: db_age_s,
-            cpu_percent: if rows.is_empty() {
-                resources.max_cpu_percent
-            } else {
-                0.0
-            },
-            rss_mb: if rows.is_empty() {
-                resources.max_rss_mb
-            } else {
-                0
-            },
-            processes: family.len(),
-            tokens,
+    let rows = snapshot
+        .sessions
+        .iter()
+        .filter(|session| options.matches(None, session.comm.as_deref(), None))
+        .map(|session| AgentTopRow {
+            session: short_session_id(&session.id),
+            agent: session
+                .agent_name
+                .clone()
+                .unwrap_or_else(|| session.agent_type.clone()),
+            pid: session.pid,
+            model: session.model.clone().or_else(|| top_model.clone()),
+            age_s: session_age_s(session, snapshot),
+            cpu_percent: resources.max_cpu_percent,
+            rss_mb: resources.max_rss_mb,
+            processes: 0,
+            tokens: (session.total_tokens > 0).then_some(session.total_tokens),
             tools: 0,
-            execs,
-            failures,
-            files: files.len(),
-            network,
+            execs: 0,
+            failures: 0,
+            files: 0,
+            network: 0,
             unattributed: 0,
             trace: "db".to_string(),
-            command: root
-                .map(|p| p.command.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
-        });
-    }
-
-    if rows.is_empty() && (!snapshot.sessions.is_empty() || !snapshot.agents.is_empty()) {
-        for session in &snapshot.sessions {
-            if !options.matches(session.pid, session.comm.as_deref(), None) {
-                continue;
-            }
-            rows.push(AgentTopRow {
-                session: short_session_id(&session.id),
-                agent: session
-                    .agent_name
-                    .clone()
-                    .unwrap_or_else(|| session.agent_type.clone()),
-                pid: session.pid,
-                model: session.model.clone().or_else(|| top_model.clone()),
-                age_s: session_age_s(session, snapshot),
-                cpu_percent: resources.max_cpu_percent,
-                rss_mb: resources.max_rss_mb,
-                processes: 1,
-                tokens: (session.total_tokens > 0).then_some(session.total_tokens),
-                tools: 0,
-                execs: 0,
-                failures: 0,
-                files: 0,
-                network: 0,
-                unattributed: 0,
-                trace: "db".to_string(),
-                command: session
-                    .comm
-                    .clone()
-                    .unwrap_or_else(|| session.agent_type.clone()),
-            });
-        }
-    }
-
-    rows
-}
-
-fn session_roots(processes: &BTreeMap<u32, ProcessMeta>, options: &TopOptions) -> Vec<u32> {
-    if let Some(pid) = options.pid {
-        return processes
-            .contains_key(&pid)
-            .then_some(vec![pid])
-            .unwrap_or_default();
-    }
-    let mut roots = Vec::new();
-    for process in processes.values() {
-        if !options.matches(
-            Some(process.pid),
-            Some(&process.comm),
-            Some(&process.command),
-        ) {
-            continue;
-        }
-        let parent_known = process
-            .ppid
-            .and_then(|ppid| processes.get(&ppid))
-            .is_some_and(|parent| {
-                options.matches(Some(parent.pid), Some(&parent.comm), Some(&parent.command))
-            });
-        if !parent_known {
-            roots.push(process.pid);
-        }
-    }
-    if roots.is_empty() && options.comm.is_none() {
-        roots = processes
-            .values()
-            .filter(|process| {
-                process
-                    .ppid
-                    .is_none_or(|ppid| !processes.contains_key(&ppid))
-            })
-            .map(|process| process.pid)
-            .collect();
-    }
-    roots.sort_unstable();
-    roots
-}
-
-fn process_family(root: u32, processes: &BTreeMap<u32, ProcessMeta>) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(pid) = stack.pop() {
-        if out.contains(&pid) {
-            continue;
-        }
-        out.push(pid);
-        for process in processes.values() {
-            if process.ppid == Some(pid) {
-                stack.push(process.pid);
-            }
-        }
-    }
-    out
-}
-
-fn details_ppid(details: &Value) -> Option<u32> {
-    details
-        .get("ppid")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32)
-}
-
-fn details_command(details: &Value) -> Option<String> {
-    details
-        .get("full_command")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| {
-            details.get("argv").and_then(|v| v.as_array()).map(|argv| {
-                argv.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
+            command: session
+                .comm
+                .clone()
+                .unwrap_or_else(|| session.agent_type.clone()),
         })
-        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if !rows.is_empty() {
+        return rows;
+    }
+
+    saved_session_row(snapshot, resources, options, top_model, db_age_s)
+        .into_iter()
+        .collect()
 }
 
-fn process_command(audit_type: &str, details: &Value, target: Option<&str>) -> Option<String> {
-    if audit_type != "process" {
+fn saved_session_row(
+    snapshot: &Snapshot,
+    resources: &ResourcePeaks,
+    options: &TopOptions,
+    top_model: Option<String>,
+    db_age_s: Option<f64>,
+) -> Option<AgentTopRow> {
+    let mut execs = 0usize;
+    let mut failures = 0usize;
+    let mut files = BTreeSet::new();
+    let mut pids = BTreeSet::new();
+
+    for row in snapshot
+        .audit_events
+        .iter()
+        .filter(|row| options.matches(row.pid, row.comm.as_deref(), row.target.as_deref()))
+    {
+        if let Some(pid) = row.pid {
+            pids.insert(pid);
+        }
+        match row.audit_type.as_str() {
+            "process" if row.action.as_deref() == Some("exec") => execs += 1,
+            "process" if row.action.as_deref() == Some("exit") => {
+                if row.status.as_deref() == Some("failure") {
+                    failures += 1;
+                }
+            }
+            "file" => {
+                if let Some(target) = &row.target {
+                    files.insert(target.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let network = snapshot
+        .network_targets
+        .iter()
+        .filter(|target| options.matches(target.pid, target.comm.as_deref(), Some(&target.host)))
+        .filter_map(|target| {
+            if let Some(pid) = target.pid {
+                pids.insert(pid);
+            }
+            (target.count > 0).then_some(target.host.clone())
+        })
+        .collect::<BTreeSet<_>>()
+        .len();
+    let (_, _, total_tokens) = snapshot.materialized_token_totals();
+    if execs == 0
+        && failures == 0
+        && files.is_empty()
+        && network == 0
+        && total_tokens == 0
+        && resources.samples == 0
+    {
         return None;
     }
-    details_command(details).or_else(|| target.map(str::to_string))
-}
 
-fn hosts_by_pid(snapshot: &Snapshot) -> BTreeMap<u32, BTreeSet<String>> {
-    let mut out = BTreeMap::new();
-    for target in &snapshot.network_targets {
-        if let Some(pid) = target.pid {
-            out.entry(pid)
-                .or_insert_with(BTreeSet::new)
-                .insert(target.host.clone());
-        }
-    }
-    out
+    Some(AgentTopRow {
+        session: "db".to_string(),
+        agent: snapshot
+            .agents
+            .first()
+            .map(|agent| {
+                agent
+                    .agent_name
+                    .clone()
+                    .unwrap_or_else(|| agent.agent_type.clone())
+            })
+            .unwrap_or_else(|| "saved".to_string()),
+        pid: (pids.len() == 1).then(|| *pids.iter().next().unwrap()),
+        model: top_model,
+        age_s: db_age_s,
+        cpu_percent: resources.max_cpu_percent,
+        rss_mb: resources.max_rss_mb,
+        processes: pids.len(),
+        tokens: (total_tokens > 0).then_some(total_tokens),
+        tools: 0,
+        execs,
+        failures,
+        files: files.len(),
+        network,
+        unattributed: 0,
+        trace: "db".to_string(),
+        command: "saved session".to_string(),
+    })
 }
 
 fn network_target_counts(snapshot: &Snapshot) -> BTreeMap<String, i64> {
@@ -502,18 +364,6 @@ fn network_target_counts(snapshot: &Snapshot) -> BTreeMap<String, i64> {
         *counts.entry(target.host.clone()).or_default() += target.count.max(0);
     }
     counts
-}
-
-fn session_tokens_by_pid(snapshot: &Snapshot) -> BTreeMap<u32, i64> {
-    let mut out = BTreeMap::new();
-    for session in &snapshot.sessions {
-        if let Some(pid) = session.pid
-            && session.total_tokens > 0
-        {
-            *out.entry(pid).or_insert(0) += session.total_tokens;
-        }
-    }
-    out
 }
 
 fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
@@ -646,14 +496,12 @@ fn dominant_model(snapshot: &Snapshot) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::types::AuditEventRow;
+    use crate::view::MaterializedView;
+    use crate::view::types::{AuditEventRow, ViewUpdate};
 
     #[test]
     fn stat_tokens_fall_back_to_agent_sessions() {
-        let mut snapshot = Snapshot::empty("sqlite");
-        snapshot.summary.llm_calls = 1;
-        snapshot.summary.sessions = 1;
-        snapshot.sessions = vec![SessionRow {
+        let session = SessionRow {
             id: "session-1".to_string(),
             agent_type: "claude-code".to_string(),
             agent_name: Some("claude".to_string()),
@@ -669,9 +517,13 @@ mod tests {
             view_source: "claude-code".to_string(),
             confidence: Some(0.9),
             attributes: serde_json::json!({}),
-        }];
+        };
+        let mut view = MaterializedView::new();
+        view.load_update(ViewUpdate::Session(session));
+        let snapshot = view.export_snapshot(SnapshotOptions { audit_limit: 0 });
 
         assert_eq!(snapshot.materialized_token_totals(), (3, 10, 27667));
+        assert_eq!(snapshot.token_summary[0].group, "claude-opus-4-6");
     }
 
     #[test]

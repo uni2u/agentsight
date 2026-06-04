@@ -20,6 +20,9 @@ pub(crate) fn load_view(path: impl AsRef<Path>) -> ViewResult<MaterializedView> 
     for row in store.all_audit_event_rows()? {
         view.load_update(ViewUpdate::AuditEvent(row));
     }
+    for row in store.process_node_rows()? {
+        view.load_update(ViewUpdate::ProcessNode(row));
+    }
     for row in store.tool_call_rows()? {
         view.load_update(ViewUpdate::ToolCall(row));
     }
