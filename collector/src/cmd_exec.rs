@@ -5,7 +5,7 @@ use futures::stream::StreamExt;
 
 use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
 use crate::cmd_trace::{
-    DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent, drain_stream_for,
+    DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent_with_view, drain_stream_for,
     prepare_process_seeds, start_web_server_if_enabled,
 };
 use crate::framework::{
@@ -22,6 +22,7 @@ use crate::output::{
     print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
 };
 use crate::session::sessions_dir;
+use crate::view::MaterializedView;
 
 /// Launch a target command and automatically trace it with eBPF.
 ///
@@ -201,17 +202,13 @@ pub(crate) async fn run_exec(
     };
 
     prepare_process_seeds(&mut cfg)?;
-    let mut agent = build_trace_agent(binary_extractor, &cfg)?;
+    let live_view = MaterializedView::shared();
+    let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
 
-    let server_handle = start_web_server_if_enabled(
-        enable_server,
-        server_listen,
-        server_port,
-        log_file,
-        db_path_for_summary.as_deref(),
-    )
-    .await
-    .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let server_handle =
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = match agent.run().await {
         Ok(stream) => stream,

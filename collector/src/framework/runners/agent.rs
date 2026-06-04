@@ -86,13 +86,14 @@ mod tests {
     use crate::framework::analyzers::{HTTPParser, MaterializingAnalyzer, SSEProcessor};
     use crate::framework::runners::FakeRunner;
     use crate::sinks::FileLogger;
+    use crate::view::MaterializedView;
     use futures::stream::StreamExt;
     use std::time::Duration;
     use tempfile::NamedTempFile;
     use tokio::time::timeout;
 
     fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
-        MaterializingAnalyzer::new().add_view_sink(Box::new(
+        MaterializingAnalyzer::with_view(MaterializedView::shared()).add_view_sink(Box::new(
             FileLogger::new(path).expect("create test file logger"),
         ))
     }

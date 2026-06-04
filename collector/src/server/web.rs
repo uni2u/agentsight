@@ -2,8 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::server::assets::FrontendAssets;
-use crate::sources::sqlite::load_view as load_sqlite_view;
-use crate::view::MaterializedView;
+use crate::view::SharedMaterializedView;
 use crate::view::types::SnapshotOptions;
 use http_body_util::Full;
 use hyper::server::conn::http1;
@@ -19,22 +18,17 @@ use tokio::net::TcpListener;
 
 pub struct WebServer {
     assets: Arc<FrontendAssets>,
-    log_file: String,
-    db_path: Option<String>,
+    view: SharedMaterializedView,
 }
 
 impl WebServer {
     pub fn new(
-        log_file: &str,
-        db_path: Option<&str>,
+        view: SharedMaterializedView,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let assets = FrontendAssets::new()?;
         Ok(Self {
             assets: Arc::new(assets),
-            log_file: log_file.to_string(),
-            db_path: db_path
-                .map(str::to_string)
-                .or_else(|| std::env::var("AGENTSIGHT_DB_PATH").ok()),
+            view,
         })
     }
 
@@ -66,14 +60,12 @@ impl WebServer {
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             let assets = Arc::clone(&self.assets);
-            let log_file = self.log_file.clone();
-            let db_path = self.db_path.clone();
+            let view = Arc::clone(&self.view);
 
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
-                let service = service_fn(move |req| {
-                    handle_request(req, assets.clone(), log_file.clone(), db_path.clone())
-                });
+                let service =
+                    service_fn(move |req| handle_request(req, assets.clone(), view.clone()));
 
                 if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                     log::error!("❌ Error serving connection: {:?}", err);
@@ -86,8 +78,7 @@ impl WebServer {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     assets: Arc<FrontendAssets>,
-    log_file: String,
-    db_path: Option<String>,
+    view: SharedMaterializedView,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     let query = req.uri().query().map(str::to_string);
@@ -98,46 +89,28 @@ async fn handle_request(
         // API endpoints first
         (&Method::GET, "/api/assets") => serve_assets_list(assets).await,
         (&Method::GET, "/api/v1/snapshot") => {
-            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Snapshot).await
+            serve_view_api(view, query.as_deref(), ApiResource::Snapshot).await
         }
         (&Method::GET, "/api/v1/summary") => {
-            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Summary).await
+            serve_view_api(view, query.as_deref(), ApiResource::Summary).await
         }
         (&Method::GET, "/api/v1/token-summary") | (&Method::GET, "/api/v1/token/summary") => {
-            serve_view_api(
-                db_path,
-                &log_file,
-                query.as_deref(),
-                ApiResource::TokenSummary,
-            )
-            .await
+            serve_view_api(view, query.as_deref(), ApiResource::TokenSummary).await
         }
         (&Method::GET, "/api/v1/events") => {
-            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Events).await
+            serve_view_api(view, query.as_deref(), ApiResource::Events).await
         }
         (&Method::GET, "/api/v1/audit-events") | (&Method::GET, "/api/v1/audit/events") => {
-            serve_view_api(
-                db_path,
-                &log_file,
-                query.as_deref(),
-                ApiResource::AuditEvents,
-            )
-            .await
+            serve_view_api(view, query.as_deref(), ApiResource::AuditEvents).await
         }
         (&Method::GET, "/api/v1/process-nodes") | (&Method::GET, "/api/v1/process/nodes") => {
-            serve_view_api(
-                db_path,
-                &log_file,
-                query.as_deref(),
-                ApiResource::ProcessNodes,
-            )
-            .await
+            serve_view_api(view, query.as_deref(), ApiResource::ProcessNodes).await
         }
         (&Method::GET, "/api/v1/sessions") => {
-            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Sessions).await
+            serve_view_api(view, query.as_deref(), ApiResource::Sessions).await
         }
         (&Method::GET, "/api/v1/agents") => {
-            serve_view_api(db_path, &log_file, query.as_deref(), ApiResource::Agents).await
+            serve_view_api(view, query.as_deref(), ApiResource::Agents).await
         }
         // Serve static assets (catch-all for GET requests)
         (&Method::GET, _) => serve_asset(assets, path).await,
@@ -191,30 +164,34 @@ enum ApiResource {
 }
 
 async fn serve_view_api(
-    db_path: Option<String>,
-    log_file: &str,
+    view: SharedMaterializedView,
     query: Option<&str>,
     resource: ApiResource,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let audit_limit = query_param_usize(query, "audit_limit").unwrap_or(10_000);
     let group_by = query_param(query, "group_by").unwrap_or_else(|| "model".to_string());
-    let log_file = log_file.to_string();
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-            let view = load_api_view(db_path.as_deref(), &log_file)?;
-            let options = SnapshotOptions { audit_limit };
-            let snapshot = view.export_snapshot(options);
+            let view = view
+                .lock()
+                .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
             let value = match resource {
                 ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by))?,
-                ApiResource::Snapshot => serde_json::to_value(snapshot)?,
-                ApiResource::Summary => serde_json::to_value(snapshot.summary)?,
-                ApiResource::Events | ApiResource::AuditEvents => {
-                    serde_json::to_value(snapshot.audit_events)?
+                _ => {
+                    let snapshot = view.export_snapshot(SnapshotOptions { audit_limit });
+                    match resource {
+                        ApiResource::Snapshot => serde_json::to_value(snapshot)?,
+                        ApiResource::Summary => serde_json::to_value(snapshot.summary)?,
+                        ApiResource::Events | ApiResource::AuditEvents => {
+                            serde_json::to_value(snapshot.audit_events)?
+                        }
+                        ApiResource::ProcessNodes => serde_json::to_value(snapshot.process_nodes)?,
+                        ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
+                        ApiResource::Agents => serde_json::to_value(snapshot.agents)?,
+                        ApiResource::TokenSummary => unreachable!(),
+                    }
                 }
-                ApiResource::ProcessNodes => serde_json::to_value(snapshot.process_nodes)?,
-                ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
-                ApiResource::Agents => serde_json::to_value(snapshot.agents)?,
             };
             Ok(value)
         },
@@ -232,19 +209,6 @@ async fn serve_view_api(
             &format!("view query task failed: {}", e),
         )),
     }
-}
-
-fn load_api_view(
-    db_path: Option<&str>,
-    log_file: &str,
-) -> Result<MaterializedView, Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(db_path) = db_path {
-        return load_sqlite_view(db_path);
-    }
-    let mut view = MaterializedView::new();
-    view.set_source("jsonl");
-    view.ingest_jsonl_file(log_file)?;
-    Ok(view)
 }
 
 async fn serve_assets_list(

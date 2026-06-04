@@ -15,6 +15,9 @@ use crate::view::types::{
 use chrono::{SecondsFormat, Utc};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+pub(crate) type SharedMaterializedView = Arc<Mutex<MaterializedView>>;
 
 pub(crate) struct MaterializedView {
     projector: ViewProjector,
@@ -29,6 +32,10 @@ impl MaterializedView {
             state: ViewState::default(),
             sinks: Vec::new(),
         }
+    }
+
+    pub(crate) fn shared() -> SharedMaterializedView {
+        Arc::new(Mutex::new(Self::new()))
     }
 
     pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewUpdateSink>) {

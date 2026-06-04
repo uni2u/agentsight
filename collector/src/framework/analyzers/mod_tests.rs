@@ -1,6 +1,7 @@
 use super::*;
 use crate::framework::runners::{EventStream, FakeRunner, Runner};
 use crate::sinks::FileLogger;
+use crate::view::MaterializedView;
 use futures::stream::StreamExt;
 use serde_json::json;
 use std::sync::{
@@ -12,7 +13,7 @@ use tempfile::NamedTempFile;
 use tokio::time::Duration;
 
 fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
-    MaterializingAnalyzer::new().add_view_sink(Box::new(
+    MaterializingAnalyzer::with_view(MaterializedView::shared()).add_view_sink(Box::new(
         FileLogger::new(path).expect("create test file logger"),
     ))
 }

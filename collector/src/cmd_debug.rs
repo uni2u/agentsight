@@ -13,14 +13,16 @@ use crate::framework::{
     binary_extractor::BinaryExtractor,
     runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner},
 };
+use crate::view::{MaterializedView, SharedMaterializedView};
 
 fn make_file_materializer(
+    view: SharedMaterializedView,
     log_file: &str,
     rotate_logs: bool,
     max_log_size: u64,
 ) -> Result<MaterializingAnalyzer, RunnerError> {
     Ok(
-        MaterializingAnalyzer::new().add_view_sink(Box::new(make_file_logger(
+        MaterializingAnalyzer::with_view(view).add_view_sink(Box::new(make_file_logger(
             log_file,
             rotate_logs,
             max_log_size,
@@ -112,7 +114,9 @@ pub(crate) async fn run_raw_ssl(
         println!("Starting SSL event stream with raw JSON output (press Ctrl+C to stop):");
     }
 
+    let live_view = MaterializedView::shared();
     ssl_runner = ssl_runner.add_analyzer(Box::new(make_file_materializer(
+        live_view.clone(),
         log_file,
         rotate_logs,
         max_log_size,
@@ -120,7 +124,7 @@ pub(crate) async fn run_raw_ssl(
 
     // Start web server if enabled
     let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
@@ -156,7 +160,9 @@ pub(crate) async fn run_raw_process(
     // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
+    let live_view = MaterializedView::shared();
     process_runner = process_runner.add_analyzer(Box::new(make_file_materializer(
+        live_view.clone(),
         log_file,
         rotate_logs,
         max_log_size,
@@ -164,7 +170,7 @@ pub(crate) async fn run_raw_process(
 
     // Start web server if enabled
     let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
@@ -203,7 +209,9 @@ pub(crate) async fn run_raw_stdio(
     // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
+    let live_view = MaterializedView::shared();
     stdio_runner = stdio_runner.add_analyzer(Box::new(make_file_materializer(
+        live_view.clone(),
         log_file,
         rotate_logs,
         max_log_size,
@@ -211,7 +219,7 @@ pub(crate) async fn run_raw_stdio(
 
     // Start web server if enabled
     let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
@@ -279,7 +287,9 @@ pub(crate) async fn run_system(
     system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
     // Add materialized view logger
+    let live_view = MaterializedView::shared();
     system_runner = system_runner.add_analyzer(Box::new(make_file_materializer(
+        live_view.clone(),
         log_file,
         rotate_logs,
         max_log_size,
@@ -287,7 +297,7 @@ pub(crate) async fn run_system(
 
     // Start web server if enabled
     let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, log_file, None)
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
             .await
             .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 

@@ -25,6 +25,7 @@ use crate::output::{
 use crate::server::WebServer;
 use crate::sinks::{FileLogger, OtelExporter, SqliteSink};
 use crate::sources::proc::{PidSeed, ProcSnapshot};
+use crate::view::{MaterializedView, SharedMaterializedView};
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
 pub(crate) const DEFAULT_RECORD_STDIO_MAX_BYTES: u32 = 65_536;
@@ -46,7 +47,7 @@ pub(crate) struct OtelConfig {
 /// All options for a trace/record/exec monitoring session.
 ///
 /// Collapses what used to be ~28 positional arguments threaded through
-/// `run_trace` and `build_trace_agent`. The `Default` impl is the neutral
+/// trace and record commands. The `Default` impl is the neutral
 /// "nothing enabled" baseline; the `trace` and `record` handlers each
 /// fill in only the fields they care about.
 #[derive(Default)]
@@ -145,11 +146,10 @@ pub(crate) fn prepare_process_seeds(cfg: &mut TraceConfig) -> Result<(), RunnerE
     Ok(())
 }
 
-/// Build a configured AgentRunner from trace options without running it.
-/// Shared by `run_trace` and `run_exec` so they configure runners identically.
-pub(crate) fn build_trace_agent(
+pub(crate) fn build_trace_agent_with_view(
     binary_extractor: &BinaryExtractor,
     cfg: &TraceConfig,
+    view: SharedMaterializedView,
 ) -> Result<AgentRunner, RunnerError> {
     // Bind config fields to the local names the body below uses.
     let ssl_enabled = cfg.ssl;
@@ -342,7 +342,7 @@ pub(crate) fn build_trace_agent(
 
     // Add global materialized view. The file log and optional exporters consume
     // view updates, not raw runner events.
-    let mut materializer = MaterializingAnalyzer::new();
+    let mut materializer = MaterializingAnalyzer::with_view(view);
     if let Some(path) = db_path {
         materializer =
             materializer.add_view_sink(Box::new(SqliteSink::new(path).map_err(|e| {
@@ -413,24 +413,18 @@ pub(crate) async fn run_trace(
         .unwrap_or(DEFAULT_SERVER_LISTEN)
         .to_string();
     let server_port = cfg.server_port;
-    let log_file = cfg.log_file.clone();
-    let db_path = cfg.db_path.clone();
 
     prepare_process_seeds(&mut cfg)?;
-    let mut agent = build_trace_agent(binary_extractor, &cfg)?;
+    let live_view = MaterializedView::shared();
+    let mut agent = build_trace_agent_with_view(binary_extractor, &cfg, live_view.clone())?;
 
     print_trace_start(agent.runner_count(), agent.analyzer_count());
 
     // Start web server if enabled
-    let _server_handle = start_web_server_if_enabled(
-        enable_server,
-        &server_listen,
-        server_port,
-        &log_file,
-        db_path.as_deref(),
-    )
-    .await
-    .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let _server_handle =
+        start_web_server_if_enabled(enable_server, &server_listen, server_port, live_view)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
 
     let mut stream = agent.run().await?;
 
@@ -446,8 +440,7 @@ pub(crate) async fn start_web_server_if_enabled(
     enable_server: bool,
     listen: &str,
     port: u16,
-    log_file: &str,
-    db_path: Option<&str>,
+    view: SharedMaterializedView,
 ) -> Result<Option<StartedWebServer>, Box<dyn std::error::Error>> {
     if !enable_server {
         return Ok(None);
@@ -461,8 +454,8 @@ pub(crate) async fn start_web_server_if_enabled(
     let addr = format!("{}:{}", listen, port)
         .parse()
         .map_err(|e| format!("Invalid server address: {}", e))?;
-    let web_server = WebServer::new(log_file, db_path)
-        .map_err(|e| format!("Failed to create web server: {}", e))?;
+    let web_server =
+        WebServer::new(view).map_err(|e| format!("Failed to create web server: {}", e))?;
 
     let host = if listen == "0.0.0.0" || listen == "::" {
         "127.0.0.1"

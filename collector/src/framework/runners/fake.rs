@@ -190,6 +190,7 @@ mod tests {
     use super::*;
     use crate::framework::analyzers::{Analyzer, HTTPParser, MaterializingAnalyzer, SSEProcessor};
     use crate::sinks::FileLogger;
+    use crate::view::MaterializedView;
     use futures::stream::StreamExt;
     use std::fs;
 
@@ -197,7 +198,7 @@ mod tests {
     use std::time::Instant;
 
     fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
-        MaterializingAnalyzer::new().add_view_sink(Box::new(
+        MaterializingAnalyzer::with_view(MaterializedView::shared()).add_view_sink(Box::new(
             FileLogger::new(path).expect("create test file logger"),
         ))
     }
