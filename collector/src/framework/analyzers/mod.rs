@@ -17,6 +17,7 @@ pub trait Analyzer: Send + Sync {
 pub mod auth_header_remover;
 pub mod common;
 pub mod event;
+mod filter_base;
 mod filter_metrics;
 pub mod http_filter;
 pub mod http_parser;

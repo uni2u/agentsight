@@ -31,6 +31,9 @@ use crate::view::{MaterializedView, SharedMaterializedView};
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
 pub(crate) const DEFAULT_RECORD_STDIO_MAX_BYTES: u32 = 65_536;
 
+pub(crate) const DEFAULT_SSL_FILTER: &str = "data=0\\r\\n\\r\\n";
+pub(crate) const DEFAULT_HTTP_FILTER: &str = "request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=";
+
 pub(crate) struct StartedWebServer {
     pub(crate) url: String,
     pub(crate) _handle: tokio::task::JoinHandle<()>,

@@ -110,11 +110,7 @@ async fn handle_request(
             // 404 for non-GET methods
             _ => {
                 log::info!("❌ 404 Not Found: {} {}", req.method(), path);
-                Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header("Content-Type", "text/plain")
-                    .body(Full::new(Bytes::from("Not Found")))
-                    .unwrap()
+                plain_response(StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec())
             }
         }
     };
@@ -129,28 +125,16 @@ async fn serve_asset(
     if let Some(content) = assets.get(path) {
         let content_type = assets.get_content_type(path);
         log::info!("✅ Serving asset: {} ({})", path, content_type);
-        Ok(Response::builder()
-            .header("Content-Type", content_type)
-            .header("Cache-Control", "public, max-age=31536000")
-            .body(Full::new(Bytes::from(content.to_vec())))
-            .unwrap())
+        Ok(plain_response(StatusCode::OK, &content_type, content.to_vec()))
     } else if is_frontend_route(path) {
         let content = assets
             .get("/")
             .unwrap_or_else(|| Bytes::new().to_vec().into());
         log::info!("✅ Serving frontend route: {}", path);
-        Ok(Response::builder()
-            .header("Content-Type", "text/html")
-            .header("Cache-Control", "no-cache")
-            .body(Full::new(Bytes::from(content.to_vec())))
-            .unwrap())
+        Ok(plain_response(StatusCode::OK, "text/html", content.to_vec()))
     } else {
         log::info!("❌ Asset not found: {}", path);
-        Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("Content-Type", "text/plain")
-            .body(Full::new(Bytes::from("Asset not found")))
-            .unwrap())
+        Ok(plain_response(StatusCode::NOT_FOUND, "text/plain", b"Asset not found".to_vec()))
     }
 }
 
@@ -256,21 +240,21 @@ async fn serve_assets_list(
     });
 
     log::info!("📋 Serving assets list ({} assets)", all_assets.len());
-    Ok(Response::builder()
-        .header("Content-Type", "application/json")
+    Ok(json_response(StatusCode::OK, &response))
+}
+
+fn plain_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
-        .body(Full::new(Bytes::from(response.to_string())))
-        .unwrap())
+        .body(Full::new(Bytes::from(body)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
 }
 
 fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<Full<Bytes>> {
     let body = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-    Response::builder()
-        .status(status)
-        .header("Content-Type", "application/json")
-        .header("Access-Control-Allow-Origin", "*")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap()
+    plain_response(status, "application/json", body)
 }
 
 fn json_error(status: StatusCode, message: &str) -> Response<Full<Bytes>> {

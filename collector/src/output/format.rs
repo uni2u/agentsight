@@ -820,7 +820,7 @@ fn print_ranked((title, unit, rows): &TopSection) {
     println!();
 }
 
-fn format_count(value: i64) -> String {
+pub(crate) fn format_count(value: i64) -> String {
     let abs = value.abs();
     if abs >= 1_000_000 {
         format!("{:.1}M", value as f64 / 1_000_000.0)

@@ -525,11 +525,15 @@ fn parse_http2_frames(mut bytes: &[u8]) -> Option<Vec<HTTP2Frame<'_>>> {
             | ((bytes[offset + 7] as u32) << 8)
             | bytes[offset + 8] as u32;
         offset += 9;
-        if length > bytes.len().saturating_sub(offset) || frame_type > 0x9 {
+        if length > bytes.len().saturating_sub(offset) {
             return None;
         }
         let payload = &bytes[offset..offset + length];
         offset += length;
+        // Skip unknown frame types per HTTP/2 spec (only process 0x0..=0x9)
+        if frame_type > 0x9 {
+            continue;
+        }
         frames.push(HTTP2Frame {
             frame_type,
             flags,

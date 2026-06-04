@@ -466,22 +466,22 @@ fn label_style() -> Style {
 fn tui_activity_label(row: &AgentTopRow) -> String {
     let mut parts = Vec::new();
     if row.processes > 0 {
-        parts.push(format!("{} proc", format_compact_i64(row.processes as i64)));
+        parts.push(format!("{} proc", super::format::format_count(row.processes as i64)));
     }
     if row.tools > 0 {
-        parts.push(format!("{} tool", format_compact_i64(row.tools as i64)));
+        parts.push(format!("{} tool", super::format::format_count(row.tools as i64)));
     }
     if row.execs > 0 {
-        parts.push(format!("{} exec", format_compact_i64(row.execs as i64)));
+        parts.push(format!("{} exec", super::format::format_count(row.execs as i64)));
     }
     if row.failures > 0 {
-        parts.push(format!("{} fail", format_compact_i64(row.failures as i64)));
+        parts.push(format!("{} fail", super::format::format_count(row.failures as i64)));
     }
     if row.files > 0 {
-        parts.push(format!("{} file", format_compact_i64(row.files as i64)));
+        parts.push(format!("{} file", super::format::format_count(row.files as i64)));
     }
     if row.network > 0 {
-        parts.push(format!("{} net", format_compact_i64(row.network as i64)));
+        parts.push(format!("{} net", super::format::format_count(row.network as i64)));
     }
     if parts.is_empty() {
         "-".to_string()
@@ -582,17 +582,6 @@ fn normalize_view_key(view: &str) -> String {
 
 fn format_token_value(value: Option<i64>) -> String {
     value
-        .map(format_compact_i64)
+        .map(super::format::format_count)
         .unwrap_or_else(|| "-".to_string())
-}
-
-fn format_compact_i64(value: i64) -> String {
-    let abs = value.abs();
-    if abs >= 1_000_000 {
-        format!("{:.1}m", value as f64 / 1_000_000.0)
-    } else if abs >= 10_000 {
-        format!("{:.1}k", value as f64 / 1_000.0)
-    } else {
-        value.to_string()
-    }
 }

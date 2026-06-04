@@ -58,23 +58,22 @@ impl FrontendAssets {
         })
     }
 
-    /// Get any asset by path from the serve directory
     pub fn get(&self, path: &str) -> Option<Cow<'static, [u8]>> {
-        // Handle root path
         let file_path = if path == "/" || path == "/index.html" {
             self.serve_dir.join("index.html")
         } else {
-            // Remove leading slash for file lookup
             let normalized_path = path.strip_prefix('/').unwrap_or(path);
             self.serve_dir.join(normalized_path)
         };
 
-        // Try to read from serve directory
-        if let Ok(content) = fs::read(&file_path) {
-            Some(Cow::Owned(content))
-        } else {
-            None
+        // Prevent path traversal (e.g. "/../../../etc/passwd")
+        let canonical = file_path.canonicalize().ok()?;
+        let serve_root = self.serve_dir.canonicalize().ok()?;
+        if !canonical.starts_with(&serve_root) {
+            return None;
         }
+
+        fs::read(&canonical).ok().map(Cow::Owned)
     }
 
     /// Get MIME type for a file path

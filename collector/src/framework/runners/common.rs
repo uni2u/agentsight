@@ -145,13 +145,15 @@ impl BinaryExecutor {
         }
     }
 
-    /// Add additional command-line arguments
     pub fn with_args(mut self, args: &[String]) -> Self {
         self.additional_args = args.to_vec();
         self
     }
 
-    /// Set runner name for debugging purposes
+    pub fn set_args(&mut self, args: &[String]) {
+        self.additional_args = args.to_vec();
+    }
+
     pub fn with_runner_name(mut self, name: String) -> Self {
         self.runner_name = Some(name);
         self
