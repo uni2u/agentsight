@@ -47,11 +47,11 @@ impl SessionCache {
         self.cached_sessions.iter().take(target).cloned().collect()
     }
 
-    pub(crate) fn discover_with_snapshot(
+    pub(crate) fn snapshot(
         &mut self,
         options: &crate::output::TopOptions,
         limit: usize,
-    ) -> (Vec<LocalSession>, Snapshot) {
+    ) -> Snapshot {
         self.refresh(limit);
         let filtered: Vec<LocalSession> = self
             .cached_sessions
@@ -59,9 +59,7 @@ impl SessionCache {
             .filter(|s| matches_filter(s, options.pid, options.comm.as_deref()))
             .cloned()
             .collect();
-        let snapshot =
-            materialized_view(&filtered).export_snapshot(SnapshotOptions { audit_limit: 0 });
-        (filtered, snapshot)
+        materialized_view(&filtered).export_snapshot(SnapshotOptions { audit_limit: 0 })
     }
 
     fn refresh(&mut self, limit: usize) {
@@ -131,19 +129,6 @@ pub(crate) struct LocalSession {
     pub(crate) tools: BTreeMap<String, usize>,
     pub(crate) prompt_preview: Option<String>,
     pub(crate) duration_ms: u64,
-}
-
-impl LocalSession {
-    pub(crate) fn age_s(&self) -> Option<f64> {
-        SystemTime::now()
-            .duration_since(self.updated)
-            .ok()
-            .map(|duration| duration.as_secs_f64())
-    }
-
-    pub(crate) fn tools_total(&self) -> usize {
-        self.tools.values().sum()
-    }
 }
 
 pub(crate) fn discover(limit: usize) -> Vec<LocalSession> {
@@ -228,6 +213,7 @@ fn session_row(session: &LocalSession) -> SessionRow {
             "path": session.path.to_string_lossy(),
             "display_id": session.display_id,
             "prompt_preview": session.prompt_preview.clone(),
+            "tools_total": session.tools.values().sum::<usize>(),
         }),
     }
 }

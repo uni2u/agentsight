@@ -248,10 +248,12 @@ fn file_directory(path: &str) -> String {
 pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = match db {
+    let mut view = match db {
         Some(db) => load_sqlite_view(db)?,
-        None => agent_native_view()?,
+        None => MaterializedView::new(),
     };
+    let sessions = agent_native_sessions::discover(25);
+    agent_native_sessions::import_into_view(&mut view, &sessions);
     print_session_summary(&SessionSummary::from_view(&view)?);
     Ok(())
 }

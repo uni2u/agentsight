@@ -11,9 +11,9 @@ use crate::output::{
     print_agent_top, print_top_sudo_prompt,
 };
 use crate::sources::proc::{self as procfs, ProcInfo, ProcSnapshot as LiveSample};
-use crate::sources::session::{self as local_sessions, LocalSession};
+use crate::sources::session as local_sessions;
 use crate::view::MaterializedView;
-use crate::view::types::{AuditCounters, Snapshot, SnapshotOptions};
+use crate::view::types::{AuditCounters, SessionRow, Snapshot, SnapshotOptions};
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -113,14 +113,14 @@ impl LiveSessionBindings {
 
     fn link_trace(
         &mut self,
-        session: &LocalSession,
+        session_path: &Path,
         row: &AgentTopRow,
         sample: &LiveSample,
         path_evidence: &HashMap<u32, BTreeMap<PathBuf, &'static str>>,
     ) -> Option<&'static str> {
         let pid = row.pid?;
         let proc_info = sample.procs.get(&pid)?;
-        let path = local_sessions::normalize_session_log_path(&session.path);
+        let path = local_sessions::normalize_session_log_path(session_path);
 
         if let Some(evidence) = path_evidence.get(&pid) {
             if let Some(trace) = evidence.get(&path).copied() {
@@ -200,12 +200,10 @@ impl LiveView {
     ) -> io::Result<AgentTopOutput<'static>> {
         let sample = LiveSample::collect()?;
         let capture_snapshot = capture.map(LiveEbpfCapture::snapshot);
-        let (local_sessions, session_snapshot) =
-            self.session_cache.discover_with_snapshot(options, limit);
+        let session_snapshot = self.session_cache.snapshot(options, limit);
         let mut top = self.build_top(
             &sample,
             capture_snapshot.as_ref(),
-            &local_sessions,
             &session_snapshot,
             options,
         );
@@ -220,7 +218,6 @@ impl LiveView {
         &mut self,
         sample: &LiveSample,
         capture: Option<&LiveCaptureSnapshot>,
-        local_sessions: &[LocalSession],
         session_snapshot: &Snapshot,
         options: &TopOptions,
     ) -> AgentTopOutput<'a> {
@@ -237,23 +234,19 @@ impl LiveView {
         self.bindings.retain_live(&live_rows, sample);
         let mut used_live_pids = HashSet::new();
         let mut rows = Vec::new();
-        let session_rows = session_snapshot
-            .sessions
-            .iter()
-            .map(|row| (row.id.as_str(), row))
-            .collect::<HashMap<_, _>>();
 
-        for session in local_sessions {
-            let session_row = session_rows.get(local_sessions::view_id(session).as_str());
+        for session in &session_snapshot.sessions {
+            let session_path = session_attr(session, "path").map(PathBuf::from);
             let live_match = live_rows.iter().enumerate().find_map(|(idx, row)| {
                 if row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
-                    || row.agent != session.agent
+                    || row.agent != session.agent_type
                     || !options.matches(row.pid, Some(&row.agent), Some(&row.command))
                 {
                     return None;
                 }
+                let path = session_path.as_deref()?;
                 self.bindings
-                    .link_trace(session, row, sample, &path_evidence)
+                    .link_trace(path, row, sample, &path_evidence)
                     .map(|trace| (idx, trace))
             });
             let live = live_match
@@ -264,11 +257,11 @@ impl LiveView {
             if let Some(pid) = live.as_ref().and_then(|(row, _)| row.pid) {
                 used_live_pids.insert(pid);
             }
-            let command = session
-                .prompt_preview
-                .clone()
+            let command = session_attr(session, "prompt_preview")
+                .map(ToString::to_string)
                 .or_else(|| live.as_ref().map(|(row, _)| row.command.clone()))
-                .unwrap_or_else(|| session.path.display().to_string());
+                .or_else(|| session_path.as_ref().map(|path| path.display().to_string()))
+                .unwrap_or_else(|| session.id.clone());
             let trace = if let Some((_, link_trace)) = &live {
                 format!("agent-native+proc+{link_trace}")
             } else {
@@ -277,15 +270,14 @@ impl LiveView {
             let age_s = live
                 .as_ref()
                 .and_then(|(row, _)| row.age_s)
-                .or_else(|| session.age_s());
-            let tools = session.tools_total();
+                .or_else(|| session_age_s(session));
             rows.push(AgentTopRow {
-                session: session.display_id.clone(),
-                agent: session.agent.clone(),
+                session: session_attr(session, "display_id")
+                    .unwrap_or(session.id.as_str())
+                    .to_string(),
+                agent: session.agent_type.clone(),
                 pid: live.as_ref().and_then(|(row, _)| row.pid),
-                model: session_row
-                    .and_then(|row| row.model.clone())
-                    .or_else(|| session.model.clone()),
+                model: session.model.clone(),
                 age_s,
                 cpu_percent: live
                     .as_ref()
@@ -296,9 +288,12 @@ impl LiveView {
                     .as_ref()
                     .map(|(row, _)| row.processes)
                     .unwrap_or_default(),
-                tokens: session_row
-                    .and_then(|row| (row.total_tokens > 0).then_some(row.total_tokens)),
-                tools,
+                tokens: (session.total_tokens > 0).then_some(session.total_tokens),
+                tools: session
+                    .attributes
+                    .get("tools_total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as usize,
                 execs: 0,
                 failures: 0,
                 files: 0,
@@ -392,6 +387,27 @@ impl LiveView {
             notes,
         }
     }
+}
+
+fn session_age_s(session: &SessionRow) -> Option<f64> {
+    let timestamp_ms = session
+        .end_timestamp_ms
+        .or(Some(session.start_timestamp_ms))?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    now_ms
+        .checked_sub(timestamp_ms)
+        .map(|age_ms| age_ms as f64 / 1000.0)
+}
+
+fn session_attr<'a>(session: &'a SessionRow, key: &str) -> Option<&'a str> {
+    session
+        .attributes
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 async fn start_live_ebpf_capture(
@@ -1133,14 +1149,7 @@ mod tests {
     #[test]
     fn local_session_binding_sticks_after_initial_path_evidence() {
         let (_temp, path) = local_sessions::create_temp_session_path("claude");
-
-        let session = local_sessions::parse_content(
-            "claude",
-            &path,
-            std::time::UNIX_EPOCH,
-            "{\"type\":\"result\",\"modelUsage\":{\"claude-opus\":{\"inputTokens\":1,\"outputTokens\":0}}}\n",
-        )
-        .unwrap();
+        let session_path = local_sessions::normalize_session_log_path(&path);
         let row = AgentTopRow {
             session: "proc:1".to_string(),
             agent: "claude".to_string(),
@@ -1164,27 +1173,29 @@ mod tests {
         let mut bindings = LiveSessionBindings::default();
 
         assert_eq!(
-            bindings.link_trace(&session, &row, &sample, &HashMap::new()),
+            bindings.link_trace(&session_path, &row, &sample, &HashMap::new()),
             None
         );
 
         let mut evidence = BTreeMap::new();
-        evidence.insert(
-            local_sessions::normalize_session_log_path(&path),
-            TRACE_PROC_FD,
-        );
+        evidence.insert(session_path.clone(), TRACE_PROC_FD);
         let path_evidence = HashMap::from([(1, evidence)]);
 
         assert_eq!(
-            bindings.link_trace(&session, &row, &sample, &path_evidence),
+            bindings.link_trace(&session_path, &row, &sample, &path_evidence),
             Some(TRACE_PROC_FD)
         );
         assert_eq!(
-            bindings.link_trace(&session, &row, &sample, &HashMap::new()),
+            bindings.link_trace(&session_path, &row, &sample, &HashMap::new()),
             Some(TRACE_STICKY_BINDING)
         );
         assert_eq!(
-            bindings.link_trace(&session, &row, &test_live_sample(1, 11), &HashMap::new()),
+            bindings.link_trace(
+                &session_path,
+                &row,
+                &test_live_sample(1, 11),
+                &HashMap::new()
+            ),
             None
         );
     }
@@ -1210,13 +1221,7 @@ mod tests {
         };
 
         let mut live_view = LiveView::default();
-        let top = live_view.build_top(
-            &test_live_sample(1, 10),
-            None,
-            &local_sessions,
-            &session_snapshot,
-            &options,
-        );
+        let top = live_view.build_top(&test_live_sample(1, 10), None, &session_snapshot, &options);
 
         assert_eq!(top.rows.len(), 1);
         assert_eq!(top.rows[0].pid, Some(1));
