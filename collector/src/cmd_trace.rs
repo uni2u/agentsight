@@ -17,8 +17,7 @@ use crate::output::{
     print_web_server_error, print_web_server_start,
 };
 use crate::runners::{
-    AgentRunner, EventStream, ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner,
-    SystemRunner,
+    AgentRunner, BinaryRunner, EventStream, ProcessRunner, Runner, RunnerError, SystemRunner,
 };
 use crate::server::WebServer;
 use crate::sinks::OtelExporter;
@@ -166,7 +165,7 @@ pub(crate) fn build_trace_agent_with_view(
 
     // Add SSL runner if enabled
     if ssl_enabled {
-        let mut ssl_runner = SslRunner::from_binary_extractor(binary_extractor.get_sslsniff_path());
+        let mut ssl_runner = BinaryRunner::ssl(binary_extractor.get_sslsniff_path());
 
         // Configure SSL runner arguments (sslsniff supports -p, -u, -c, -h, -v, --binary-path)
         let mut ssl_args = Vec::new();
@@ -210,25 +209,8 @@ pub(crate) fn build_trace_agent_with_view(
         }
 
         if ssl_http {
-            ssl_runner = ssl_runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(30000)));
-
-            let http_parser = if ssl_raw_data {
-                HTTPParser::new()
-            } else {
-                HTTPParser::new().disable_raw_data()
-            };
-            ssl_runner = ssl_runner.add_analyzer(Box::new(http_parser));
-
-            // Add HTTP filter to SSL runner if patterns are provided
-            if !http_filter.is_empty() {
-                ssl_runner = ssl_runner
-                    .add_analyzer(Box::new(HTTPFilter::with_patterns(http_filter.to_vec())));
-            }
-
-            // Add authorization header remover by default (unless disabled)
-            if !disable_auth_removal {
-                ssl_runner = ssl_runner.add_analyzer(Box::new(AuthHeaderRemover::new()));
-            }
+            ssl_runner =
+                add_http_analyzers(ssl_runner, ssl_raw_data, http_filter, disable_auth_removal);
         }
 
         agent = agent.add_runner(Box::new(ssl_runner));
@@ -239,7 +221,7 @@ pub(crate) fn build_trace_agent_with_view(
         let pid_filter =
             pid.ok_or_else(|| RunnerError::from("stdio capture currently requires --pid"))?;
         let mut stdio_runner =
-            StdioRunner::from_binary_extractor(binary_extractor.get_stdiocap_path()?);
+            BinaryRunner::stdio(binary_extractor.get_stdiocap_path()?);
         let mut stdio_args = build_stdio_args(
             pid_filter,
             stdio_uid,
@@ -501,4 +483,46 @@ pub(crate) async fn drain_stream_for(stream: &mut EventStream, duration: tokio::
 
 pub(crate) fn convert_runner_error(e: RunnerError) -> Box<dyn std::error::Error + Send + Sync> {
     Box::new(std::io::Error::other(e.to_string()))
+}
+
+pub(crate) fn add_http_analyzers(
+    runner: BinaryRunner,
+    include_raw_data: bool,
+    http_filter: &[String],
+    disable_auth_removal: bool,
+) -> BinaryRunner {
+    let mut runner = runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(30000)));
+    let parser = if include_raw_data {
+        HTTPParser::new()
+    } else {
+        HTTPParser::new().disable_raw_data()
+    };
+    runner = runner.add_analyzer(Box::new(parser));
+    if !http_filter.is_empty() {
+        runner = runner.add_analyzer(Box::new(HTTPFilter::with_patterns(http_filter.to_vec())));
+    }
+    if !disable_auth_removal {
+        runner = runner.add_analyzer(Box::new(AuthHeaderRemover::new()));
+    }
+    runner
+}
+
+pub(crate) async fn run_debug_runner<R: Runner>(
+    runner: R,
+    quiet: bool,
+    enable_server: bool,
+    server_listen: &str,
+    server_port: u16,
+) -> Result<(), RunnerError> {
+    let live_view = MaterializedView::shared();
+    let mut runner = runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
+        live_view.clone(),
+    )));
+    let _server_handle =
+        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
+            .await
+            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let mut stream = runner.run().await?;
+    drive_stream_until_shutdown(&mut stream, !quiet).await;
+    Ok(())
 }

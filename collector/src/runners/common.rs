@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::{EventStream, RunnerError};
+use super::{EventStream, Runner, RunnerError};
 use crate::analyzers::Analyzer;
 use crate::event::Event;
-use futures::stream::Stream;
+use async_trait::async_trait;
+use futures::stream::{Stream, StreamExt};
 use log::debug;
+use std::path::Path;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
@@ -377,11 +380,68 @@ impl AnalyzerProcessor {
         mut stream: EventStream,
         analyzers: &mut [Box<dyn Analyzer>],
     ) -> Result<EventStream, RunnerError> {
-        // Process through each analyzer in sequence
         for analyzer in analyzers.iter_mut() {
             stream = analyzer.process(stream).await?;
         }
-
         Ok(stream)
+    }
+}
+
+pub struct BinaryRunner {
+    analyzers: Vec<Box<dyn Analyzer>>,
+    executor: BinaryExecutor,
+    source: &'static str,
+    timestamp_field: &'static str,
+}
+
+impl BinaryRunner {
+    pub fn new(
+        runner_name: &str,
+        source: &'static str,
+        timestamp_field: &'static str,
+        binary_path: impl AsRef<Path>,
+    ) -> Self {
+        Self {
+            analyzers: Vec::new(),
+            executor: BinaryExecutor::new(binary_path.as_ref().to_string_lossy().into_owned())
+                .with_runner_name(runner_name.to_string()),
+            source,
+            timestamp_field,
+        }
+    }
+
+    pub fn ssl(binary_path: impl AsRef<Path>) -> Self {
+        Self::new("SSL", "ssl", "timestamp_ns", binary_path)
+    }
+
+    pub fn stdio(binary_path: impl AsRef<Path>) -> Self {
+        Self::new("Stdio", "stdio", "timestamp_ns", binary_path)
+    }
+
+    pub fn with_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let args: Vec<_> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+        self.executor = self.executor.with_args(&args);
+        self
+    }
+}
+
+#[async_trait]
+impl Runner for BinaryRunner {
+    async fn run(&mut self) -> Result<EventStream, RunnerError> {
+        let json_stream = self.executor.get_json_stream().await?;
+        let errors = Arc::new(AtomicU64::new(0));
+        let source = self.source;
+        let ts_field = self.timestamp_field;
+        let stream = json_stream.map(move |v| parse_json_event(source, ts_field, v, &errors));
+        AnalyzerProcessor::process_through_analyzers(Box::pin(stream), &mut self.analyzers).await
+    }
+
+    fn add_analyzer(mut self, analyzer: Box<dyn Analyzer>) -> Self {
+        self.analyzers.push(analyzer);
+        self
     }
 }

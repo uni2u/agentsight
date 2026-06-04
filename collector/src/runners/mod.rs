@@ -24,19 +24,16 @@ pub trait Runner: Send + Sync {
         Self: Sized;
 }
 
-pub mod agent; // Add agent runner for flexible composition
+pub mod agent;
 pub mod common;
 #[cfg(test)]
-pub mod fake; // Test-only fake runner (compiled only for tests)
+pub mod fake;
 pub mod process;
-pub mod ssl;
-pub mod stdio;
-pub mod system; // Add system runner for CPU and memory monitoring
+pub mod system;
 
-pub use agent::AgentRunner; // Export AgentRunner
+pub use agent::AgentRunner;
+pub use common::BinaryRunner;
 #[cfg(test)]
-pub use fake::FakeRunner; // Export FakeRunner (tests only)
+pub use fake::FakeRunner;
 pub use process::ProcessRunner;
-pub use ssl::SslRunner;
-pub use stdio::StdioRunner;
-pub use system::SystemRunner; // Export SystemRunner
+pub use system::SystemRunner;

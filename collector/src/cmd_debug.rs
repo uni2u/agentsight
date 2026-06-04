@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::analyzers::{
-    AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
-    TimestampNormalizer,
-};
+use crate::analyzers::{SSEProcessor, SSLFilter, TimestampNormalizer};
 use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{parse_container_ref, resolve_container_binary_path};
-use crate::cmd_trace::{
-    build_stdio_args, drive_stream_until_shutdown, start_web_server_if_enabled,
-};
-use crate::runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner};
-use crate::view::MaterializedView;
+use crate::cmd_trace::{add_http_analyzers, build_stdio_args, run_debug_runner};
+use crate::runners::{BinaryRunner, ProcessRunner, Runner, RunnerError, SystemRunner};
 
 /// Show raw SSL events as JSON with optional chunk merging and HTTP parsing
 pub(crate) async fn run_raw_ssl(
@@ -32,10 +26,8 @@ pub(crate) async fn run_raw_ssl(
     println!("Raw SSL Events");
     println!("{}", "=".repeat(60));
 
-    let mut ssl_runner = SslRunner::from_binary_extractor(binary_extractor.get_sslsniff_path());
+    let mut ssl_runner = BinaryRunner::ssl(binary_extractor.get_sslsniff_path());
 
-    // Translate a `docker://<container>` binary path to the explicit host-side
-    // SSL attach target (see resolve_container_binary_path).
     let container_resolved: Option<String> = match binary_path.and_then(parse_container_ref) {
         Some(reference) => {
             Some(resolve_container_binary_path(reference).map_err(RunnerError::from)?)
@@ -44,46 +36,27 @@ pub(crate) async fn run_raw_ssl(
     };
     let binary_path = container_resolved.as_deref().or(binary_path);
 
-    // Build arguments list with binary_path if provided
     let mut final_args = Vec::new();
     if let Some(path) = binary_path {
         final_args.push("--binary-path".to_string());
         final_args.push(path.to_string());
     }
     final_args.extend_from_slice(args);
-
-    // Add all arguments if we have any
     if !final_args.is_empty() {
         ssl_runner = ssl_runner.with_args(&final_args);
     }
 
-    // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     ssl_runner = ssl_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    // Add SSL filter if patterns are provided
     if !ssl_filter_patterns.is_empty() {
         ssl_runner = ssl_runner.add_analyzer(Box::new(SSLFilter::with_patterns(
             ssl_filter_patterns.to_vec(),
         )));
     }
 
-    // Add analyzers based on flags - when HTTP parser is enabled, always enable SSE merge first
     if enable_http_parser {
-        ssl_runner = ssl_runner.add_analyzer(Box::new(SSEProcessor::new_with_timeout(30000)));
-        let parser = if include_raw_data {
-            HTTPParser::new()
-        } else {
-            HTTPParser::new().disable_raw_data()
-        };
-        ssl_runner = ssl_runner.add_analyzer(Box::new(parser));
-        if !http_filter_patterns.is_empty() {
-            ssl_runner = ssl_runner.add_analyzer(Box::new(HTTPFilter::with_patterns(
-                http_filter_patterns.to_vec(),
-            )));
-        }
-        if !disable_auth_removal {
-            ssl_runner = ssl_runner.add_analyzer(Box::new(AuthHeaderRemover::new()));
-        }
+        ssl_runner =
+            add_http_analyzers(ssl_runner, include_raw_data, http_filter_patterns, disable_auth_removal);
         println!(
             "Starting SSL event stream with SSE processing + HTTP parsing (press Ctrl+C to stop):"
         );
@@ -94,21 +67,7 @@ pub(crate) async fn run_raw_ssl(
         println!("Starting SSL event stream with raw JSON output (press Ctrl+C to stop):");
     }
 
-    let live_view = MaterializedView::shared();
-    ssl_runner = ssl_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
-        live_view.clone(),
-    )));
-
-    // Start web server if enabled
-    let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
-            .await
-            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
-
-    let mut stream = ssl_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream, !quiet).await;
-
-    Ok(())
+    run_debug_runner(ssl_runner, quiet, enable_server, server_listen, server_port).await
 }
 
 /// Show raw process events as JSON
@@ -125,31 +84,13 @@ pub(crate) async fn run_raw_process(
 
     let mut process_runner =
         ProcessRunner::from_binary_extractor(binary_extractor.get_process_path());
-
-    // Add additional arguments if provided
     if !args.is_empty() {
         process_runner = process_runner.with_args(args);
     }
-
-    // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    let live_view = MaterializedView::shared();
-    process_runner = process_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
-        live_view.clone(),
-    )));
-
-    // Start web server if enabled
-    let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
-            .await
-            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
-
     println!("Starting process event stream with raw JSON output (press Ctrl+C to stop):");
-    let mut stream = process_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream, !quiet).await;
-
-    Ok(())
+    run_debug_runner(process_runner, quiet, enable_server, server_listen, server_port).await
 }
 
 /// Show raw stdio events as JSON
@@ -168,34 +109,16 @@ pub(crate) async fn run_raw_stdio(
     println!("Raw Stdio Events");
     println!("{}", "=".repeat(60));
 
-    let mut stdio_runner =
-        StdioRunner::from_binary_extractor(binary_extractor.get_stdiocap_path()?);
-
     let stdio_args = build_stdio_args(pid, uid, comm, all_fds, max_bytes);
-    stdio_runner = stdio_runner.with_args(&stdio_args);
-
-    // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
-    stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
-
-    let live_view = MaterializedView::shared();
-    stdio_runner = stdio_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
-        live_view.clone(),
-    )));
-
-    // Start web server if enabled
-    let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
-            .await
-            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
+    let stdio_runner = BinaryRunner::stdio(binary_extractor.get_stdiocap_path()?)
+        .with_args(&stdio_args)
+        .add_analyzer(Box::new(TimestampNormalizer::new()));
 
     println!(
         "Starting stdio event stream for PID {} (press Ctrl+C to stop):",
         pid
     );
-    let mut stream = stdio_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream, !quiet).await;
-
-    Ok(())
+    run_debug_runner(stdio_runner, quiet, enable_server, server_listen, server_port).await
 }
 
 /// Monitor system resources (CPU and memory)
@@ -216,7 +139,6 @@ pub(crate) async fn run_system(
 
     let mut system_runner = SystemRunner::new().interval(interval);
 
-    // Configure monitoring target
     if let Some(pid) = pid {
         system_runner = system_runner.pid(pid);
         println!("Monitoring PID: {}", pid);
@@ -227,14 +149,11 @@ pub(crate) async fn run_system(
         println!("Monitoring system-wide resources");
     }
 
-    // Configure options
     system_runner = system_runner.include_children(include_children);
-
     if let Some(threshold) = cpu_threshold {
         system_runner = system_runner.cpu_threshold(threshold);
         println!("CPU alert threshold: {}%", threshold);
     }
-
     if let Some(threshold) = memory_threshold {
         system_runner = system_runner.memory_threshold(threshold);
         println!("Memory alert threshold: {} MB", threshold);
@@ -245,22 +164,6 @@ pub(crate) async fn run_system(
     println!("{}", "=".repeat(60));
     println!("Starting system monitoring (press Ctrl+C to stop):");
 
-    // Add TimestampNormalizer first
     system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
-
-    let live_view = MaterializedView::shared();
-    system_runner = system_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
-        live_view.clone(),
-    )));
-
-    // Start web server if enabled
-    let _server_handle =
-        start_web_server_if_enabled(enable_server, server_listen, server_port, live_view)
-            .await
-            .map_err(|e| RunnerError::from(format!("Failed to start server: {}", e)))?;
-
-    let mut stream = system_runner.run().await?;
-    drive_stream_until_shutdown(&mut stream, !quiet).await;
-
-    Ok(())
+    run_debug_runner(system_runner, quiet, enable_server, server_listen, server_port).await
 }
