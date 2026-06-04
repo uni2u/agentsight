@@ -697,34 +697,6 @@ fn print_session_timeline(summary: &SessionSummary) {
     println!();
 }
 
-pub(crate) fn print_local_audit(source: &str, file: &str, data: &Value) {
-    println!("Local {source} session: {file}\n");
-
-    if let Some(models) = data.get("models").and_then(|v| v.as_object()) {
-        for (name, usage) in models {
-            if let Some(arr) = usage.as_array() {
-                let get = |i: usize| arr.get(i).and_then(|v| v.as_u64()).unwrap_or(0);
-                println!(
-                    "  {name} — {} tokens (in: {}, out: {})",
-                    get(2),
-                    get(0),
-                    get(1)
-                );
-            }
-        }
-        println!();
-    }
-
-    if let Some(tools) = data.get("tools").and_then(|v| v.as_object()) {
-        println!("Tool calls:");
-        let mut sorted: Vec<_> = tools.iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.1.as_u64()));
-        for (name, count) in &sorted {
-            println!("  {name:<30} {count}");
-        }
-    }
-}
-
 pub(crate) fn print_session_list(dir: &Path, entries: &[std::fs::DirEntry]) {
     if entries.is_empty() {
         println!("No session databases found in {}", dir.display());
@@ -949,7 +921,7 @@ mod tests {
 
     #[test]
     fn live_top_row_stays_live_when_child_process_failed() {
-        assert_eq!(top_row("local+proc+ebpf", 1).state_label(), "live");
+        assert_eq!(top_row("agent-native+proc+ebpf", 1).state_label(), "live");
         assert_eq!(top_row("db", 1).state_label(), "failed");
     }
 }

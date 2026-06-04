@@ -22,8 +22,8 @@ GET /api/v1/summary
 GET /api/v1/token-summary?group_by=model|provider|comm|pid
 GET /api/v1/audit-events?audit_limit=
 GET /api/v1/process-nodes
-GET /api/v1/agents
 GET /api/v1/sessions
+GET /api/v1/agents
 ```
 
 The frontend consumes `/api/v1/snapshot` as the single contract. Process tree UI

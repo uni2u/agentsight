@@ -270,9 +270,9 @@ impl LiveView {
                 .or_else(|| live.as_ref().map(|(row, _)| row.command.clone()))
                 .unwrap_or_else(|| session.path.display().to_string());
             let trace = if let Some((_, link_trace)) = &live {
-                format!("local+proc+{link_trace}")
+                format!("agent-native+proc+{link_trace}")
             } else {
-                "local".to_string()
+                "agent-native".to_string()
             };
             let age_s = live
                 .as_ref()
@@ -324,7 +324,7 @@ impl LiveView {
         let capture_total_tokens = capture
             .map(|capture| capture.snapshot.summary.total_tokens)
             .unwrap_or_default();
-        let has_local = rows.iter().any(|row| row.trace.contains("local"));
+        let has_agent_native = rows.iter().any(|row| row.trace.contains("agent-native"));
         let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
         let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
         let has_session_file_link = rows.iter().any(|row| {
@@ -333,20 +333,21 @@ impl LiveView {
                 || row.trace.contains("sticky")
         });
         let mut notes = Vec::new();
-        if has_local {
+        if has_agent_native {
             notes.push(
-                "session tokens/tools come from local ~/.claude or ~/.codex logs".to_string(),
+                "agent-native sessions are the primary token/tool source (~/.claude, ~/.codex)"
+                    .to_string(),
             );
         }
         if has_proc {
             notes.push("proc evidence uses /proc for CPU/RSS/process families".to_string());
         }
         if has_session_file_link {
-            notes.push("local sessions bind to live pids after the process touches the matching JSONL log path; binding stays until pid exits or a new session path is observed".to_string());
+            notes.push("agent-native sessions bind to live pids after the process touches the matching session path; binding stays until pid exits or a new session path is observed".to_string());
         }
         if has_ebpf {
             notes.push(
-                "ebpf evidence is live process capture; SSL/network/token details still require record/stat or local agent logs"
+                "ebpf evidence is live process capture; SSL/network details still require record/stat"
                     .to_string(),
             );
         }
@@ -361,12 +362,12 @@ impl LiveView {
         if rows.is_empty() {
             if options.pid.is_some() || options.comm.is_some() {
                 notes.push(
-                    "no active process or local session matched the filter; try another -p/-c value or inspect a saved session with --db"
+                    "no active process or agent-native session matched the filter; try another -p/-c value or inspect a saved session with --db"
                         .to_string(),
                 );
             } else {
                 notes.push(
-                    "no active known agent process or local Claude/Codex session found; use -c/-p, run an agent, or pass --db"
+                    "no active known agent process or agent-native Claude/Codex session found; use -c/-p, run an agent, or pass --db"
                         .to_string(),
                 );
             }
@@ -485,7 +486,7 @@ fn prepare_live_ebpf_privileges() -> Result<Option<String>, String> {
 
     let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
     if !interactive {
-        return Err("live eBPF capture requires sudo; non-interactive top is showing /proc + local sessions only".to_string());
+        return Err("live eBPF capture requires sudo; non-interactive top is showing /proc + agent-native sessions only".to_string());
     }
 
     print_top_sudo_prompt();
@@ -1247,13 +1248,14 @@ mod tests {
                 files: 0,
                 network: 0,
                 unattributed: 0,
-                trace: "local+proc+ebpf_file".to_string(),
+                trace: "agent-native+proc+ebpf_file".to_string(),
                 command: "codex".to_string(),
             }],
             sections: Vec::new(),
             failures: Vec::new(),
             notes: vec![
-                "session tokens/tools come from local ~/.claude or ~/.codex logs".to_string(),
+                "agent-native sessions are the primary token/tool source (~/.claude, ~/.codex)"
+                    .to_string(),
                 "proc evidence uses /proc for CPU/RSS/process families".to_string(),
                 "live eBPF capture did not start: sudo unavailable".to_string(),
             ],
@@ -1261,7 +1263,7 @@ mod tests {
 
         assert_eq!(
             tui_status_line(&top),
-            "local logs | /proc | eBPF | session path linked | tokens 15"
+            "agent-native | /proc | eBPF | session path linked | tokens 15"
         );
         assert_eq!(
             tui_diagnostic_lines(&top, 1),

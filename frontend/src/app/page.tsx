@@ -18,6 +18,21 @@ import {
 
 type ViewMode = 'log' | 'timeline' | 'process-tree' | 'metrics';
 
+function viewModeFromPath(pathname: string): ViewMode {
+  const path = pathname.replace(/\/$/, '');
+  if (path === '/logs') return 'log';
+  if (path === '/tree') return 'process-tree';
+  if (path === '/metrics') return 'metrics';
+  return 'timeline';
+}
+
+function pathForViewMode(mode: ViewMode): string {
+  if (mode === 'log') return '/logs';
+  if (mode === 'process-tree') return '/tree';
+  if (mode === 'metrics') return '/metrics';
+  return '/timeline';
+}
+
 export default function Home() {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<AgentSightSnapshot | null>(null);
@@ -48,6 +63,15 @@ export default function Home() {
   useEffect(() => {
     void syncData();
   }, [syncData]);
+
+  useEffect(() => {
+    setViewMode(viewModeFromPath(window.location.pathname));
+  }, []);
+
+  const selectViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    window.history.replaceState(null, '', pathForViewMode(mode));
+  };
 
   const clearData = () => {
     setSnapshot(null);
@@ -90,7 +114,7 @@ export default function Home() {
                   {(['log', 'timeline', 'process-tree', 'metrics'] as ViewMode[]).map(mode => (
                     <button
                       key={mode}
-                      onClick={() => setViewMode(mode)}
+                      onClick={() => selectViewMode(mode)}
                       className={`px-3 py-1 text-sm rounded-md transition-colors ${
                         viewMode === mode
                           ? 'bg-blue-600 text-white'

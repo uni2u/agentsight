@@ -273,7 +273,7 @@ enum Commands {
         /// SQLite database path (defaults to latest session)
         #[arg(long)]
         db: Option<String>,
-        /// Read the latest agent-native local session log instead of SQLite
+        /// Read agent-native Claude/Codex sessions
         #[arg(long)]
         local: bool,
     },
@@ -312,7 +312,7 @@ enum DbCommands {
         /// SQLite database path (defaults to latest session)
         #[arg(long)]
         db: Option<String>,
-        /// Read the latest agent-native local session log instead of SQLite
+        /// Read agent-native Claude/Codex sessions
         #[arg(long)]
         local: bool,
     },
@@ -613,7 +613,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     if let Ok(db) = resolve_db_or_latest(db) {
                         run_audit_query(&db, audit_type.as_deref(), *limit, *json)?;
                     } else {
-                        cli_db::run_local_audit(*json)?;
+                        cli_db::run_agent_native_audit(*json)?;
                     }
                 }
                 DbCommands::Prompts { db, limit, json } => {

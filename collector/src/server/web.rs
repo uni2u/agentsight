@@ -2,6 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::server::assets::FrontendAssets;
+use crate::sources::session::{self as agent_native_sessions, SessionCache};
 use crate::view::SharedMaterializedView;
 use crate::view::types::SnapshotOptions;
 use http_body_util::Full;
@@ -13,12 +14,14 @@ use serde::Serialize;
 use serde_json::Value;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 pub struct WebServer {
     assets: Arc<FrontendAssets>,
     view: SharedMaterializedView,
+    agent_native_sessions: Arc<Mutex<SessionCache>>,
 }
 
 impl WebServer {
@@ -29,6 +32,7 @@ impl WebServer {
         Ok(Self {
             assets: Arc::new(assets),
             view,
+            agent_native_sessions: Arc::new(Mutex::new(SessionCache::new())),
         })
     }
 
@@ -61,11 +65,18 @@ impl WebServer {
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
             let assets = Arc::clone(&self.assets);
             let view = Arc::clone(&self.view);
+            let agent_native_sessions = Arc::clone(&self.agent_native_sessions);
 
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
-                let service =
-                    service_fn(move |req| handle_request(req, assets.clone(), view.clone()));
+                let service = service_fn(move |req| {
+                    handle_request(
+                        req,
+                        assets.clone(),
+                        view.clone(),
+                        agent_native_sessions.clone(),
+                    )
+                });
 
                 if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
                     log::error!("❌ Error serving connection: {:?}", err);
@@ -79,49 +90,34 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     assets: Arc<FrontendAssets>,
     view: SharedMaterializedView,
+    agent_native_sessions: Arc<Mutex<SessionCache>>,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path();
     let query = req.uri().query().map(str::to_string);
 
     log::info!("📨 {} {}", req.method(), path);
 
-    let response = match (req.method(), path) {
-        // API endpoints first
-        (&Method::GET, "/api/assets") => serve_assets_list(assets).await,
-        (&Method::GET, "/api/v1/snapshot") => {
-            serve_view_api(view, query.as_deref(), ApiResource::Snapshot).await
-        }
-        (&Method::GET, "/api/v1/summary") => {
-            serve_view_api(view, query.as_deref(), ApiResource::Summary).await
-        }
-        (&Method::GET, "/api/v1/token-summary") => {
-            serve_view_api(view, query.as_deref(), ApiResource::TokenSummary).await
-        }
-        (&Method::GET, "/api/v1/audit-events") => {
-            serve_view_api(view, query.as_deref(), ApiResource::AuditEvents).await
-        }
-        (&Method::GET, "/api/v1/process-nodes") => {
-            serve_view_api(view, query.as_deref(), ApiResource::ProcessNodes).await
-        }
-        (&Method::GET, "/api/v1/sessions") => {
-            serve_view_api(view, query.as_deref(), ApiResource::Sessions).await
-        }
-        (&Method::GET, "/api/v1/agents") => {
-            serve_view_api(view, query.as_deref(), ApiResource::Agents).await
-        }
-        // Serve static assets (catch-all for GET requests)
-        (&Method::GET, _) => serve_asset(assets, path).await,
+    let response = if req.method() == Method::GET
+        && let Some(resource) = api_resource_for_path(path)
+    {
+        serve_view_api(view, agent_native_sessions, query.as_deref(), resource).await?
+    } else {
+        match (req.method(), path) {
+            (&Method::GET, "/api/assets") => serve_assets_list(assets).await?,
+            // Serve static assets (catch-all for GET requests)
+            (&Method::GET, _) => serve_asset(assets, path).await?,
 
-        // 404 for non-GET methods
-        _ => {
-            log::info!("❌ 404 Not Found: {} {}", req.method(), path);
-            Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header("Content-Type", "text/plain")
-                .body(Full::new(Bytes::from("Not Found")))
-                .unwrap())
+            // 404 for non-GET methods
+            _ => {
+                log::info!("❌ 404 Not Found: {} {}", req.method(), path);
+                Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header("Content-Type", "text/plain")
+                    .body(Full::new(Bytes::from("Not Found")))
+                    .unwrap()
+            }
         }
-    }?;
+    };
 
     Ok(response)
 }
@@ -138,6 +134,16 @@ async fn serve_asset(
             .header("Cache-Control", "public, max-age=31536000")
             .body(Full::new(Bytes::from(content.to_vec())))
             .unwrap())
+    } else if is_frontend_route(path) {
+        let content = assets
+            .get("/")
+            .unwrap_or_else(|| Bytes::new().to_vec().into());
+        log::info!("✅ Serving frontend route: {}", path);
+        Ok(Response::builder()
+            .header("Content-Type", "text/html")
+            .header("Cache-Control", "no-cache")
+            .body(Full::new(Bytes::from(content.to_vec())))
+            .unwrap())
     } else {
         log::info!("❌ Asset not found: {}", path);
         Ok(Response::builder()
@@ -146,6 +152,14 @@ async fn serve_asset(
             .body(Full::new(Bytes::from("Asset not found")))
             .unwrap())
     }
+}
+
+fn is_frontend_route(path: &str) -> bool {
+    !path.starts_with("/api/")
+        && !path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.contains('.'))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,8 +173,22 @@ enum ApiResource {
     Agents,
 }
 
+fn api_resource_for_path(path: &str) -> Option<ApiResource> {
+    match path {
+        "/api/v1/snapshot" => Some(ApiResource::Snapshot),
+        "/api/v1/summary" => Some(ApiResource::Summary),
+        "/api/v1/token-summary" => Some(ApiResource::TokenSummary),
+        "/api/v1/audit-events" => Some(ApiResource::AuditEvents),
+        "/api/v1/process-nodes" => Some(ApiResource::ProcessNodes),
+        "/api/v1/sessions" => Some(ApiResource::Sessions),
+        "/api/v1/agents" => Some(ApiResource::Agents),
+        _ => None,
+    }
+}
+
 async fn serve_view_api(
     view: SharedMaterializedView,
+    agent_native_sessions: Arc<Mutex<SessionCache>>,
     query: Option<&str>,
     resource: ApiResource,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
@@ -169,9 +197,14 @@ async fn serve_view_api(
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-            let view = view
+            let agent_native_rows = agent_native_sessions
+                .lock()
+                .map_err(|_| std::io::Error::other("agent-native session cache lock poisoned"))?
+                .discover_cached(25, Duration::from_secs(1));
+            let mut view = view
                 .lock()
                 .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
+            agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
             let value = match resource {
                 ApiResource::TokenSummary => serde_json::to_value(view.token_summary(&group_by))?,
                 _ => {

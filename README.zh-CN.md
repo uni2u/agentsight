@@ -76,7 +76,7 @@ docker run --privileged --pid=host --network=host \
   -v /sys:/sys:ro -v /usr:/usr:ro -v /lib:/lib:ro \
   -v $(pwd)/logs:/logs \
   ghcr.io/eunomia-bpf/agentsight:latest \
-  record --comm python --log-file /logs/record.log
+  record --comm python
 
 # 监控 Claude Code（挂载 home 目录以访问二进制文件）
 docker run --privileged --pid=host --network=host \
@@ -84,7 +84,7 @@ docker run --privileged --pid=host --network=host \
   -v $HOME/.local/share/claude:/claude:ro \
   -v $(pwd)/logs:/logs \
   ghcr.io/eunomia-bpf/agentsight:latest \
-  record --comm claude --binary-path /claude/versions/2.1.39 --log-file /logs/record.log
+  record --comm claude --binary-path /claude/versions/2.1.39
 ```
 
 #### 从源码构建

@@ -4,6 +4,7 @@
 mod projection;
 pub mod types;
 
+use crate::sources::session::AGENT_NATIVE_SOURCE;
 use crate::view::types::{
     AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow,
     SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, TokenSummary, TokenUsageRow,
@@ -195,9 +196,9 @@ impl MaterializedView {
         {
             existing.model = row.model.clone();
         }
-        existing.input_tokens += row.input_tokens;
-        existing.output_tokens += row.output_tokens;
-        existing.total_tokens += row.total_tokens;
+        existing.input_tokens = existing.input_tokens.max(row.input_tokens);
+        existing.output_tokens = existing.output_tokens.max(row.output_tokens);
+        existing.total_tokens = existing.total_tokens.max(row.total_tokens);
         existing.confidence = max_optional(existing.confidence, row.confidence);
     }
 
@@ -577,10 +578,12 @@ fn token_has_higher_priority(candidate: &TokenUsageRow, current: &TokenUsageRow)
 
 fn token_source_priority(source: &str) -> u8 {
     match source {
-        "response_usage" | "orphan_response_usage" => 0,
+        // Agent-native sources are authoritative — prefer them over SSL-captured data.
+        AGENT_NATIVE_SOURCE => 0,
         "gemini_cli_stdout_stats" => 1,
         "claude_telemetry" => 2,
-        _ => 3,
+        "response_usage" | "orphan_response_usage" => 3,
+        _ => 4,
     }
 }
 

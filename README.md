@@ -111,7 +111,8 @@ agentsight db export -o snapshot.json # export for web dashboard
 During a session, visit [http://127.0.0.1:7395](http://127.0.0.1:7395) for live traffic, process trees, and metrics:
 - **Timeline View**: http://127.0.0.1:7395/timeline
 - **Process Tree**: http://127.0.0.1:7395/tree
-- **Raw Logs**: http://127.0.0.1:7395/logs
+- **Event Log**: http://127.0.0.1:7395/logs
+- **Metrics View**: http://127.0.0.1:7395/metrics
 
 <div align="center">
   <img src="https://github.com/eunomia-bpf/agentsight/raw/master/docs/demo-tree.png" alt="AgentSight Demo - Process Tree Visualization" width="800">

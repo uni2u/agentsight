@@ -3,17 +3,16 @@
 
 use crate::output::{
     FileAccessSummary, SessionSummary, SummaryStats, print_audit_rows, print_exported_snapshot,
-    print_json, print_llm_prompts, print_local_audit, print_session_summary, print_token_summary,
-    prompt_text_chars, sorted_top_counts,
+    print_json, print_llm_prompts, print_session_summary, print_token_summary, prompt_text_chars,
+    sorted_top_counts,
 };
-use crate::sources::session::{self as local_sessions, LocalSession};
+use crate::sources::session as agent_native_sessions;
 use crate::sources::sqlite::load_view as load_sqlite_view;
+use crate::view::MaterializedView;
 use crate::view::types::{SnapshotOptions, TokenSummary};
 
 #[cfg(test)]
 use crate::stores::sqlite::SqliteStore;
-#[cfg(test)]
-use crate::view::MaterializedView;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -91,6 +90,12 @@ pub(crate) fn run_export(
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let view = load_sqlite_view(db)?;
+        Self::from_view(&view)
+    }
+
+    pub fn from_view(
+        view: &MaterializedView,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let snap = view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
         });
@@ -194,7 +199,7 @@ impl SessionSummary {
             tool_duration_ms.add(duration_ms);
         }
         Ok(Self {
-            source: "agentsight".into(),
+            source: s.source.clone(),
             duration_s: s.duration_s(),
             first_llm_after_ms,
             first_tool_after_ms,
@@ -210,37 +215,6 @@ impl SessionSummary {
             network_events,
             endpoints,
         })
-    }
-
-    pub fn from_local_session(session: &LocalSession) -> Self {
-        let prompt_chars = session
-            .prompt_preview
-            .as_ref()
-            .map(|prompt| {
-                let mut stats = SummaryStats::default();
-                stats.add(prompt.chars().count() as u64);
-                stats
-            })
-            .unwrap_or_default();
-        Self {
-            source: session.agent.clone(),
-            duration_s: session.duration_ms as f64 / 1000.0,
-            first_llm_after_ms: None,
-            first_tool_after_ms: None,
-            prompt_chars,
-            llm_latency_ms: SummaryStats::default(),
-            models: token_summary_tuples(
-                &local_sessions::materialized_snapshot(std::slice::from_ref(session)).token_summary,
-            ),
-            processes: BTreeMap::new(),
-            process_exits: BTreeMap::new(),
-            tool_calls: session.tools.clone(),
-            tool_duration_ms: SummaryStats::default(),
-            files: vec![],
-            file_access: FileAccessSummary::default(),
-            network_events: 0,
-            endpoints: vec![],
-        }
     }
 }
 
@@ -274,34 +248,37 @@ fn file_directory(path: &str) -> String {
 pub(crate) fn run_db_summary(
     db: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if db.is_none()
-        && let Some(session) = local_sessions::latest()
-    {
-        print_session_summary(&SessionSummary::from_local_session(&session));
-        return Ok(());
-    }
-    let db = db.ok_or("No session data found. Run `agentsight record` first, or pass --db.")?;
-    print_session_summary(&SessionSummary::from_sqlite(db)?);
+    let view = match db {
+        Some(db) => load_sqlite_view(db)?,
+        None => agent_native_view()?,
+    };
+    print_session_summary(&SessionSummary::from_view(&view)?);
     Ok(())
 }
 
-pub(crate) fn run_local_audit(json: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let session = local_sessions::latest()
-        .ok_or("No session data found. Install Claude Code or Codex, or pass --db.")?;
-    let data = session.to_json();
-
+pub(crate) fn run_agent_native_audit(
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let view = agent_native_view()?;
     if json {
-        print_json(&data)?;
-        return Ok(());
+        print_json(&view.export_snapshot(SnapshotOptions {
+            audit_limit: 50_000,
+        }))?;
+    } else {
+        print_session_summary(&SessionSummary::from_view(&view)?);
     }
-
-    print_local_audit(&session.agent, &session.path.display().to_string(), &data);
-
     Ok(())
 }
 
 pub(crate) fn count_local_sessions() -> Vec<(&'static str, std::path::PathBuf, usize, u64)> {
-    local_sessions::count_local_sessions()
+    agent_native_sessions::count_local_sessions()
+}
+
+fn agent_native_view() -> Result<MaterializedView, Box<dyn std::error::Error + Send + Sync>> {
+    agent_native_sessions::recent_view(25).ok_or_else(|| {
+        "No agent-native session data found. Run Claude Code or Codex, run `agentsight record`, or pass --db."
+            .into()
+    })
 }
 
 #[cfg(test)]
@@ -342,8 +319,8 @@ mod tests {
                  ) VALUES
                  ('token-response', 'llm-1', 1200, 42, 'claude', 'claude-sonnet-4',
                     10, 5, 15, 'response_usage', 0.95),
-                 ('token-telemetry', 'llm-1', 1201, 42, 'claude', 'claude-sonnet-4',
-                    100, 50, 150, 'claude_telemetry', 0.80)",
+                 ('token-native', 'llm-1', 1201, 42, 'claude', 'claude-sonnet-4',
+                    100, 50, 150, 'agent_native_session', 0.80)",
                 [],
             )
             .unwrap();
@@ -351,11 +328,12 @@ mod tests {
         let view = load_sqlite_view(&db).unwrap();
         let tokens = view.token_summary("model");
         assert_eq!(tokens[0].group, "claude-sonnet-4");
-        assert_eq!(tokens[0].total_tokens, 15);
+        // agent-native session tokens are preferred over SSL-captured response usage.
+        assert_eq!(tokens[0].total_tokens, 150);
         assert_eq!(tokens[0].calls, 1);
 
         let calls = view.llm_call_rows(10);
-        assert_eq!(calls[0].total_tokens, 15);
+        assert_eq!(calls[0].total_tokens, 150);
     }
 
     #[test]
@@ -549,7 +527,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(".claude/projects/test/session.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let session = local_sessions::parse_content(
+        let session = agent_native_sessions::parse_content(
             "claude",
             &path,
             std::time::UNIX_EPOCH,

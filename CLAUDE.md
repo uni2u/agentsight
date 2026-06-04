@@ -70,7 +70,7 @@ eBPF Programs (kernel) → JSON stdout → Rust Runners → Analyzer Chain → O
 - **`bpf/`** — C eBPF programs. `sslsniff` hooks SSL_read/SSL_write via uprobes; `process` tracks process lifecycle via tracepoints. Both emit JSON to stdout.
 - **`collector/src/framework/`** — Rust streaming framework:
   - `runners/` — Execute eBPF binaries and parse their JSON output into event streams (SslRunner, ProcessRunner, SystemRunner, FakeRunner)
-  - `analyzers/` — Pluggable stream processors: SSEProcessor, HTTPParser, SSLFilter, HTTPFilter, FileLogger, AuthHeaderRemover, TimestampNormalizer, OtelExporter (maps LLM HTTP pairs to OpenTelemetry `gen_ai.*` spans, exported via OTLP/HTTP JSON; enabled by `debug trace --otel`, see `docs/otel.md`)
+  - `analyzers/` — Pluggable stream processors: SSEProcessor, HTTPParser, SSLFilter, HTTPFilter, AuthHeaderRemover, TimestampNormalizer, OtelExporter (maps LLM HTTP pairs to OpenTelemetry `gen_ai.*` spans, exported via OTLP/HTTP JSON; enabled by `debug trace --otel`, see `docs/otel.md`)
   - `core/events.rs` — Standardized `Event` struct with JSON payloads
   - `binary_extractor.rs` — Extracts embedded eBPF binaries to temp files at runtime
 - **`collector/src/main.rs`** — CLI entry point. Main subcommands: `stat`, `top`, `record`, `report`, `prompts`, `list`, `db`, and `debug` (`ssl`, `process`, `stdio`, `trace`, `system`).
@@ -121,7 +121,7 @@ This logic is in `build_trace_agent()` in `collector/src/cmd_trace.rs`.
 
 ## CLI Subcommands
 
-- **`top`** — Primary live view. Run as `sudo ./agentsight top`; it loads eBPF probes and also reads agent-native local logs when present.
+- **`top`** — Primary live view. Run as `sudo ./agentsight top`; it loads eBPF probes and also reads agent-native sessions when present.
 - **`record`** — Optimized recording. Use `sudo ./agentsight record -- <command>` to launch and trace a command, or `sudo ./agentsight record -c <comm>` / `-p <pid>` to attach. It enables SSL, process, stdio when applicable, system monitoring, materialized view sinks, and the web UI by default.
 - **`stat`** — Query the latest saved session, or run `sudo ./agentsight stat -- <command>` and print counters when the command exits.
 - **`report` / `prompts` / `list` / `db`** — Query saved local SQLite sessions; these usually do not need sudo.

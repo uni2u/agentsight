@@ -117,7 +117,6 @@ export function snapshotEventCount(snapshot: AgentSightSnapshot | null): number 
     snapshot.network_targets,
     snapshot.resource_samples,
     snapshot.sessions,
-    snapshot.token_summary,
   ].reduce((total, rows) => total + (Array.isArray(rows) ? rows.length : 0), 0);
 }
 
@@ -129,7 +128,6 @@ export function snapshotToViewEvents(snapshot: AgentSightSnapshot | null): ViewE
     ...networkEvents(snapshot.network_targets),
     ...resourceEvents(snapshot.resource_samples),
     ...sessionEvents(snapshot.sessions),
-    ...tokenEvents(snapshot.token_summary, snapshot.generated_at),
   ].sort((a, b) => a.timestamp - b.timestamp);
 }
 
@@ -221,27 +219,6 @@ function sessionEvents(rows?: SnapshotSession[]): ViewEvent[] {
       input_tokens: row.input_tokens ?? 0,
       output_tokens: row.output_tokens ?? 0,
       total_tokens: row.total_tokens ?? 0,
-    },
-  }));
-}
-
-function tokenEvents(rows?: SnapshotTokenSummary[], generatedAt?: string): ViewEvent[] {
-  if (!Array.isArray(rows)) return [];
-  const parsedTimestamp = generatedAt ? Date.parse(generatedAt) : 0;
-  const timestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
-  return rows.map(row => ({
-    id: `tokens-${row.group}`,
-    timestamp,
-    source: 'token',
-    pid: 0,
-    comm: row.group,
-    data: {
-      event: 'TOKEN_SUMMARY',
-      model: row.group,
-      input_tokens: row.input_tokens ?? 0,
-      output_tokens: row.output_tokens ?? 0,
-      total_tokens: row.total_tokens ?? 0,
-      calls: row.calls ?? 0,
     },
   }));
 }

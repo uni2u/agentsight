@@ -139,9 +139,6 @@ sudo cargo run -- debug trace --ssl false
 # Advanced filtering
 sudo cargo run -- debug trace --pid 1234 --ssl-uid 1000 --http-filter "POST /api"
 
-# Custom output file
-sudo cargo run -- debug trace --log-file /var/log/agent.log --quiet
-
 # Web UI with visualization
 sudo cargo run -- debug trace --server
 
@@ -178,7 +175,6 @@ sudo cargo run -- debug trace --ssl false --process false --stdio --pid 1234
 - `--stdio-max-bytes`: Limit captured bytes per stdio event
 - `--ssl-uid`: Filter SSL events by user ID
 - `--ssl-handshake`: Show SSL handshake events
-- `--log-file`: Output file path
 - `--quiet`: Suppress console output
 
 ## Framework Architecture
@@ -200,8 +196,7 @@ let process_runner = ProcessRunner::from_binary_extractor(binary_path)
 // Agent Runner (combines SSL + Process)
 let agent_runner = AgentRunner::new("agent")
     .add_runner(Box::new(ssl_runner))
-    .add_runner(Box::new(process_runner))
-    .add_global_analyzer(Box::new(FileLogger::new("agent.log")));
+    .add_runner(Box::new(process_runner));
 ```
 
 ### Analyzers
@@ -212,7 +207,6 @@ Analyzers process event streams in configurable chains:
 - **HTTPParser**: Parses HTTP requests/responses from SSL traffic
 - **HTTPFilter**: Filters HTTP events by patterns
 - **SSLFilter**: Filters SSL events by patterns
-- **FileLogger**: Logs events to files
 
 Console output is rendered by the CLI after the runner/analyzer pipeline returns events.
 
@@ -268,8 +262,6 @@ sudo cargo run -- debug trace -c nginx --ssl-uid 33 --http-filter "GET /metrics"
 # Full system monitoring with web interface
 sudo cargo run -- debug trace --system --server
 
-# Log to file with quiet mode
-sudo cargo run -- debug trace --log-file /var/log/system.log --quiet
 ```
 
 ## Development

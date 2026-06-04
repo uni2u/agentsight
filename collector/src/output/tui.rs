@@ -225,8 +225,12 @@ fn render_top_footer(frame: &mut Frame<'_>, area: Rect, top: &AgentTopOutput<'_>
 
 pub(crate) fn tui_status_line(top: &AgentTopOutput<'_>) -> String {
     let mut parts = Vec::new();
-    if top.rows.iter().any(|row| row.trace.contains("local")) {
-        parts.push("local logs".to_string());
+    if top
+        .rows
+        .iter()
+        .any(|row| row.trace.contains("agent-native"))
+    {
+        parts.push("agent-native".to_string());
     }
     if top.rows.iter().any(|row| row.trace.contains("proc")) {
         parts.push("/proc".to_string());
@@ -281,9 +285,9 @@ pub(crate) fn tui_diagnostic_lines(top: &AgentTopOutput<'_>, limit: usize) -> Ve
 }
 
 fn is_tui_status_note(note: &str) -> bool {
-    note.starts_with("session tokens/tools come from")
+    note.starts_with("agent-native sessions are")
         || note.starts_with("proc evidence uses")
-        || note.starts_with("local sessions attach")
+        || note.starts_with("agent-native sessions bind")
         || note.starts_with("ebpf evidence is")
 }
 

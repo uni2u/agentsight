@@ -140,9 +140,6 @@ sudo cargo run -- debug trace --ssl false
 # 高级过滤
 sudo cargo run -- debug trace --pid 1234 --ssl-uid 1000 --http-filter "POST /api"
 
-# 自定义输出文件
-sudo cargo run -- debug trace --log-file /var/log/agent.log --quiet
-
 # 启用 Web 界面
 sudo cargo run -- debug trace --server
 
@@ -179,7 +176,6 @@ sudo cargo run -- debug trace --ssl false --process false --stdio --pid 1234
 - `--stdio-max-bytes`：限制每个 stdio 事件的捕获字节数
 - `--ssl-uid`：按用户 ID 过滤 SSL 事件
 - `--ssl-handshake`：显示 SSL 握手事件
-- `--log-file`：输出文件路径
 - `--quiet`：禁止控制台输出
 
 ## 框架架构
@@ -201,8 +197,7 @@ let process_runner = ProcessRunner::from_binary_extractor(binary_path)
 // Agent Runner（组合 SSL + Process）
 let agent_runner = AgentRunner::new("agent")
     .add_runner(Box::new(ssl_runner))
-    .add_runner(Box::new(process_runner))
-    .add_global_analyzer(Box::new(FileLogger::new("agent.log")));
+    .add_runner(Box::new(process_runner));
 ```
 
 ### Analyzer
@@ -213,7 +208,6 @@ Analyzer 在可配置的链中处理事件流：
 - **HTTPParser**：从 SSL 流量解析 HTTP 请求/响应
 - **HTTPFilter**：按模式过滤 HTTP 事件
 - **SSLFilter**：按模式过滤 SSL 事件
-- **FileLogger**：将事件记录到文件
 
 控制台输出由 CLI 在 runner/analyzer pipeline 产出事件后统一渲染。
 
@@ -269,8 +263,6 @@ sudo cargo run -- debug trace -c nginx --ssl-uid 33 --http-filter "GET /metrics"
 # 全系统监控 + Web 界面
 sudo cargo run -- debug trace --system --server
 
-# 静默模式记录到文件
-sudo cargo run -- debug trace --log-file /var/log/system.log --quiet
 ```
 
 ## 开发

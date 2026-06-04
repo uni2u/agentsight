@@ -48,7 +48,7 @@ fn top_level_help_surfaces_perf_strace_flow() {
 }
 
 #[test]
-fn local_summary_reads_codex_session_jsonl() {
+fn agent_native_summary_reads_codex_session_jsonl() {
     let temp = tempfile::tempdir().expect("tempdir");
     let session_dir = temp.path().join(".codex/sessions/2026/06/02");
     std::fs::create_dir_all(&session_dir).expect("session dir");
@@ -64,7 +64,10 @@ fn local_summary_reads_codex_session_jsonl() {
 
     let summary =
         agentsight_stdout_with_env(&["report", "--local"], &[("HOME", temp.path().as_os_str())]);
-    assert!(summary.contains("codex session"), "{summary}");
+    assert!(
+        summary.contains("agent_native_session session"),
+        "{summary}"
+    );
     assert!(summary.contains("gpt-5.5"), "{summary}");
     assert!(summary.contains("15 tokens"), "{summary}");
     assert!(summary.contains("shell(1)"), "{summary}");

@@ -5,17 +5,19 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::text::{short_session_id, truncate_text};
 use crate::view::MaterializedView;
-use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow};
+use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ToolCallRow};
+
+pub(crate) const AGENT_NATIVE_SOURCE: &str = "agent_native_session";
 
 pub(crate) struct SessionCache {
     entries: HashMap<PathBuf, CacheEntry>,
     cached_sessions: Vec<LocalSession>,
-    cached_snapshot: Option<Snapshot>,
-    dirty: bool,
+    last_refresh: Option<Instant>,
+    last_limit: usize,
 }
 
 struct CacheEntry {
@@ -28,9 +30,21 @@ impl SessionCache {
         Self {
             entries: HashMap::new(),
             cached_sessions: Vec::new(),
-            cached_snapshot: None,
-            dirty: true,
+            last_refresh: None,
+            last_limit: 0,
         }
+    }
+
+    pub(crate) fn discover_cached(&mut self, limit: usize, max_age: Duration) -> Vec<LocalSession> {
+        let target = limit.clamp(1, 25);
+        if self.last_limit < target
+            || self
+                .last_refresh
+                .is_none_or(|last| last.elapsed() >= max_age)
+        {
+            self.refresh(target);
+        }
+        self.cached_sessions.iter().take(target).cloned().collect()
     }
 
     pub(crate) fn discover_with_snapshot(
@@ -45,14 +59,8 @@ impl SessionCache {
             .filter(|s| matches_filter(s, options.pid, options.comm.as_deref()))
             .cloned()
             .collect();
-        let snapshot = if self.dirty || self.cached_snapshot.is_none() {
-            let snap = materialized_snapshot(&filtered);
-            self.cached_snapshot = Some(snap.clone());
-            self.dirty = false;
-            snap
-        } else {
-            self.cached_snapshot.clone().unwrap()
-        };
+        let snapshot =
+            materialized_view(&filtered).export_snapshot(SnapshotOptions { audit_limit: 0 });
         (filtered, snapshot)
     }
 
@@ -81,7 +89,6 @@ impl SessionCache {
             let session = match self.entries.get(&path) {
                 Some(entry) if entry.mtime == mtime => entry.session.clone(),
                 _ => {
-                    self.dirty = true;
                     let parsed = read_session_path_with_source(agent, &path, mtime);
                     self.entries.insert(
                         path.clone(),
@@ -103,12 +110,10 @@ impl SessionCache {
             }
         }
 
-        let before = self.entries.len();
         self.entries.retain(|path, _| live_paths.contains(path));
-        if self.entries.len() != before {
-            self.dirty = true;
-        }
         self.cached_sessions = sessions;
+        self.last_refresh = Some(Instant::now());
+        self.last_limit = target;
     }
 }
 
@@ -126,8 +131,6 @@ pub(crate) struct LocalSession {
     pub(crate) tools: BTreeMap<String, usize>,
     pub(crate) prompt_preview: Option<String>,
     pub(crate) duration_ms: u64,
-    pub(crate) num_turns: u64,
-    pub(crate) cost_usd: f64,
 }
 
 impl LocalSession {
@@ -140,17 +143,6 @@ impl LocalSession {
 
     pub(crate) fn tools_total(&self) -> usize {
         self.tools.values().sum()
-    }
-
-    pub(crate) fn to_json(&self) -> Value {
-        serde_json::json!({
-            "models": self.models,
-            "tools": self.tools,
-            "duration_ms": self.duration_ms,
-            "num_turns": self.num_turns,
-            "cost_usd": self.cost_usd,
-            "path": self.path,
-        })
     }
 }
 
@@ -185,28 +177,35 @@ pub(crate) fn discover(limit: usize) -> Vec<LocalSession> {
     sessions
 }
 
-pub(crate) fn latest() -> Option<LocalSession> {
-    discover(25).into_iter().next()
-}
-
 pub(crate) fn view_id(session: &LocalSession) -> String {
     format!("local:{}:{}", session.agent, session.display_id)
 }
 
 pub(crate) fn materialized_view(sessions: &[LocalSession]) -> MaterializedView {
     let mut view = MaterializedView::new();
-    view.set_source("local_session");
+    view.set_source(AGENT_NATIVE_SOURCE);
+    import_into_view(&mut view, sessions);
+    view
+}
+
+pub(crate) fn recent_view(limit: usize) -> Option<MaterializedView> {
+    let sessions = discover(limit);
+    (!sessions.is_empty()).then(|| materialized_view(&sessions))
+}
+
+pub(crate) fn import_into_view(view: &mut MaterializedView, sessions: &[LocalSession]) {
+    if !sessions.is_empty() {
+        view.set_source(AGENT_NATIVE_SOURCE);
+    }
     for session in sessions {
         view.load_session(session_row(session));
         for row in token_rows(session) {
             view.load_token_usage(row);
         }
+        for row in tool_rows(session) {
+            view.load_tool_call(row);
+        }
     }
-    view
-}
-
-pub(crate) fn materialized_snapshot(sessions: &[LocalSession]) -> Snapshot {
-    materialized_view(sessions).export_snapshot(SnapshotOptions { audit_limit: 0 })
 }
 
 fn session_row(session: &LocalSession) -> SessionRow {
@@ -223,15 +222,12 @@ fn session_row(session: &LocalSession) -> SessionRow {
         input_tokens: session.input_tokens,
         output_tokens: session.output_tokens,
         total_tokens: session.total_tokens,
-        view_source: "local_session".to_string(),
+        view_source: AGENT_NATIVE_SOURCE.to_string(),
         confidence: Some(0.95),
         attributes: serde_json::json!({
             "path": session.path.to_string_lossy(),
             "display_id": session.display_id,
             "prompt_preview": session.prompt_preview.clone(),
-            "duration_ms": session.duration_ms,
-            "num_turns": session.num_turns,
-            "tools": session.tools.clone(),
         }),
     }
 }
@@ -255,11 +251,40 @@ fn token_rows(session: &LocalSession) -> Vec<TokenUsageRow> {
             cache_creation_tokens: 0,
             cache_read_tokens: 0,
             total_tokens: *total,
-            source: "local_session".to_string(),
-            view_source: "local_session".to_string(),
+            source: AGENT_NATIVE_SOURCE.to_string(),
+            view_source: AGENT_NATIVE_SOURCE.to_string(),
             confidence: Some(0.95),
         })
         .collect()
+}
+
+fn tool_rows(session: &LocalSession) -> Vec<ToolCallRow> {
+    let session_id = view_id(session);
+    let timestamp_ms = updated_ms(session);
+    let mut rows = Vec::new();
+    for (tool, count) in &session.tools {
+        for index in 0..*count {
+            rows.push(ToolCallRow {
+                id: format!("tool-{session_id}-{}-{index}", sanitize_id(tool)),
+                session_id: Some(session_id.clone()),
+                conversation_id: None,
+                timestamp_ms,
+                tool_name: Some(tool.clone()),
+                tool_call_id: None,
+                start_timestamp_ms: Some(timestamp_ms),
+                end_timestamp_ms: Some(timestamp_ms),
+                duration_ms: None,
+                status: Some("observed".to_string()),
+                input: serde_json::json!({}),
+                output: serde_json::json!({}),
+                related_pid: None,
+                related_event_id: None,
+                view_source: AGENT_NATIVE_SOURCE.to_string(),
+                confidence: Some(0.95),
+            });
+        }
+    }
+    rows
 }
 
 fn updated_ms(session: &LocalSession) -> u64 {
@@ -391,8 +416,6 @@ pub(crate) fn parse_content(
     let mut tools = BTreeMap::new();
     let mut prompt_preview = None;
     let mut duration_ms = 0;
-    let mut num_turns = 0;
-    let mut cost_usd = 0.0;
     let mut codex_model = String::new();
 
     for line in content.lines() {
@@ -409,11 +432,6 @@ pub(crate) fn parse_content(
         match (agent, typ) {
             ("claude", "result") => {
                 duration_ms = json_u64(&obj, "duration_ms");
-                num_turns = json_u64(&obj, "num_turns");
-                cost_usd = obj
-                    .get("total_cost_usd")
-                    .and_then(|value| value.as_f64())
-                    .unwrap_or(0.0);
                 if let Some(model_usage) = obj.get("modelUsage").and_then(|value| value.as_object())
                 {
                     for (name, usage) in model_usage {
@@ -558,8 +576,6 @@ pub(crate) fn parse_content(
         tools,
         prompt_preview,
         duration_ms,
-        num_turns,
-        cost_usd,
     })
 }
 
