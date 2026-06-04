@@ -12,9 +12,9 @@ import { useTranslation } from '@/i18n';
 interface ProcessNodeProps {
   process: ProcessNodeType;
   depth: number;
-  expandedProcesses: Set<number>;
+  expandedProcesses: Set<string>;
   expandedEvents: Set<string>;
-  onToggleProcess: (pid: number) => void;
+  onToggleProcess: (id: string) => void;
   onToggleEvent: (eventId: string) => void;
 }
 
@@ -27,63 +27,32 @@ export function ProcessNode({
   onToggleEvent
 }: ProcessNodeProps) {
   const { t } = useTranslation();
-  const isExpanded = expandedProcesses.has(process.pid);
+  const isExpanded = expandedProcesses.has(process.id);
   const hasChildren = process.children.length > 0;
   const hasEvents = process.events.length > 0;
   const indent = depth * 24;
 
-  // Count events by type
   const eventCounts = process.events.reduce((counts, event) => {
     counts[event.type] = (counts[event.type] || 0) + 1;
     return counts;
   }, {} as Record<string, number>);
 
-  // Get event badges
   const getEventBadges = () => {
-    const badges = [];
-    if (eventCounts.prompt) {
-      badges.push(
-        <span key="prompt" className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full font-semibold">
-          {t(eventCounts.prompt === 1 ? 'badge.prompt_one' : 'badge.prompt_other', { count: eventCounts.prompt })}
+    return [
+      ['prompt', 'bg-blue-100 text-blue-800 font-semibold', (count: number) => t(count === 1 ? 'badge.prompt_one' : 'badge.prompt_other', { count })],
+      ['response', 'bg-green-100 text-green-800 font-semibold', (count: number) => t(count === 1 ? 'badge.response_one' : 'badge.response_other', { count })],
+      ['ssl', 'bg-orange-100 text-orange-800', (count: number) => t('badge.ssl', { count })],
+      ['file', 'bg-cyan-100 text-cyan-800', (count: number) => t(count === 1 ? 'badge.file_one' : 'badge.file_other', { count })],
+      ['process', 'bg-purple-100 text-purple-800', (count: number) => t('badge.process', { count })],
+      ['stdio', 'bg-indigo-100 text-indigo-800', (count: number) => t('badge.stdio', { count })],
+    ].flatMap(([type, className, label]) => {
+      const count = eventCounts[type as string];
+      return count ? [(
+        <span key={type as string} className={`px-2 py-1 text-xs rounded-full ${className}`}>
+          {(label as (count: number) => string)(count)}
         </span>
-      );
-    }
-    if (eventCounts.response) {
-      badges.push(
-        <span key="response" className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full font-semibold">
-          {t(eventCounts.response === 1 ? 'badge.response_one' : 'badge.response_other', { count: eventCounts.response })}
-        </span>
-      );
-    }
-    if (eventCounts.ssl) {
-      badges.push(
-        <span key="ssl" className="px-2 py-1 bg-orange-100 text-orange-800 text-xs rounded-full">
-          {t('badge.ssl', { count: eventCounts.ssl })}
-        </span>
-      );
-    }
-    if (eventCounts.file) {
-      badges.push(
-        <span key="file" className="px-2 py-1 bg-cyan-100 text-cyan-800 text-xs rounded-full">
-          {t(eventCounts.file === 1 ? 'badge.file_one' : 'badge.file_other', { count: eventCounts.file })}
-        </span>
-      );
-    }
-    if (eventCounts.process) {
-      badges.push(
-        <span key="process" className="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded-full">
-          {t('badge.process', { count: eventCounts.process })}
-        </span>
-      );
-    }
-    if (eventCounts.stdio) {
-      badges.push(
-        <span key="stdio" className="px-2 py-1 bg-indigo-100 text-indigo-800 text-xs rounded-full">
-          {t('badge.stdio', { count: eventCounts.stdio })}
-        </span>
-      );
-    }
-    return badges;
+      )] : [];
+    });
   };
 
   const renderEvent = (event: ParsedEvent) => {
@@ -100,13 +69,13 @@ export function ProcessNode({
     );
   };
 
-  const renderTimelineItem = (item: TimelineItem, index: number) => {
+  const renderTimelineItem = (item: TimelineItem) => {
     if (item.type === 'event' && item.event) {
       return renderEvent(item.event);
     } else if (item.type === 'process' && item.process) {
       return (
         <ProcessNode
-          key={item.process.pid}
+          key={item.process.id}
           process={item.process}
           depth={depth + 1}
           expandedProcesses={expandedProcesses}
@@ -121,11 +90,10 @@ export function ProcessNode({
 
   return (
     <div>
-      {/* Process Header */}
       <div
         className="select-none flex items-center py-3 px-4 hover:bg-gray-50 cursor-pointer border-l-2 border-indigo-200 rounded-r-lg transition-colors"
         style={{ marginLeft: `${indent}px` }}
-        onClick={() => onToggleProcess(process.pid)}
+        onClick={() => onToggleProcess(process.id)}
       >
         <div className="flex items-center flex-1">
           {hasChildren || hasEvents ? (
@@ -155,7 +123,6 @@ export function ProcessNode({
               )}
             </div>
             
-            {/* Event badges */}
             <div className="flex items-center space-x-2 flex-wrap">
               {getEventBadges()}
             </div>
@@ -163,12 +130,11 @@ export function ProcessNode({
         </div>
       </div>
 
-      {/* Expanded Content - Timeline View */}
       {isExpanded && (
         <div style={{ marginLeft: `${indent + 32}px` }} className="mt-1 mb-2">
           {process.timeline.length > 0 && (
             <div className="space-y-1">
-              {process.timeline.map((item, index) => renderTimelineItem(item, index))}
+              {process.timeline.map(item => renderTimelineItem(item))}
             </div>
           )}
         </div>

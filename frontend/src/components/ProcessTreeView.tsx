@@ -22,7 +22,7 @@ interface ProcessTreeViewProps {
 
 export function ProcessTreeView({ events }: ProcessTreeViewProps) {
   const { t } = useTranslation();
-  const [expandedProcesses, setExpandedProcesses] = useState<Set<number>>(new Set());
+  const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(new Set());
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<ProcessTreeFilters>(createDefaultFilters());
 
@@ -41,12 +41,12 @@ export function ProcessTreeView({ events }: ProcessTreeViewProps) {
   const totalEvents = useMemo(() => getTotalEventCount(processTree), [processTree]);
   const filteredEvents = useMemo(() => getTotalEventCount(filteredProcessTree), [filteredProcessTree]);
 
-  const toggleProcessExpansion = (pid: number) => {
+  const toggleProcessExpansion = (id: string) => {
     const newExpanded = new Set(expandedProcesses);
-    if (newExpanded.has(pid)) {
-      newExpanded.delete(pid);
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id);
     } else {
-      newExpanded.add(pid);
+      newExpanded.add(id);
     }
     setExpandedProcesses(newExpanded);
   };
@@ -93,7 +93,7 @@ export function ProcessTreeView({ events }: ProcessTreeViewProps) {
           <div className="space-y-2">
             {filteredProcessTree.map(process => (
               <ProcessNode
-                key={process.pid}
+                key={process.id}
                 process={process}
                 depth={0}
                 expandedProcesses={expandedProcesses}

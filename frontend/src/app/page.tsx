@@ -136,13 +136,14 @@ function materializedProcessNodeEvents(rows?: SnapshotProcessNode[]): Event[] {
   return rows
     .filter(row => typeof row.pid === 'number')
     .map(row => ({
-      id: `process-node-${row.id}`,
+      id: `process-node-${row.id}-${row.start_timestamp_ms ?? row.end_timestamp_ms ?? 0}`,
       timestamp: row.start_timestamp_ms ?? row.end_timestamp_ms ?? 0,
       source: 'process',
       pid: row.pid,
       comm: row.comm ?? '',
       data: {
         event: 'PROCESS_NODE',
+        process_id: row.id,
         ppid: row.ppid,
         root_pid: row.root_pid,
         filename: row.command,

@@ -175,8 +175,7 @@ impl ViewState {
         };
 
         existing.start_timestamp_ms = existing.start_timestamp_ms.min(row.start_timestamp_ms);
-        existing.end_timestamp_ms =
-            max_optional_timestamp(existing.end_timestamp_ms, row.end_timestamp_ms);
+        existing.end_timestamp_ms = max_optional(existing.end_timestamp_ms, row.end_timestamp_ms);
         if row.model.as_deref().is_some_and(|model| model != "unknown") || existing.model.is_none()
         {
             existing.model = row.model.clone();
@@ -184,7 +183,7 @@ impl ViewState {
         existing.input_tokens += row.input_tokens;
         existing.output_tokens += row.output_tokens;
         existing.total_tokens += row.total_tokens;
-        existing.confidence = max_optional_f64(existing.confidence, row.confidence);
+        existing.confidence = max_optional(existing.confidence, row.confidence);
     }
 
     fn upsert_network_target(&mut self, row: &NetworkTargetRow) {
@@ -197,9 +196,9 @@ impl ViewState {
         existing.count += row.count;
         existing.error_count += row.error_count;
         existing.first_timestamp_ms =
-            min_optional_timestamp(existing.first_timestamp_ms, row.first_timestamp_ms);
+            min_optional(existing.first_timestamp_ms, row.first_timestamp_ms);
         existing.last_timestamp_ms =
-            max_optional_timestamp(existing.last_timestamp_ms, row.last_timestamp_ms);
+            max_optional(existing.last_timestamp_ms, row.last_timestamp_ms);
     }
 
     fn upsert_process_node(&mut self, row: &ProcessNodeRow) {
@@ -209,9 +208,8 @@ impl ViewState {
         };
 
         existing.start_timestamp_ms =
-            min_optional_timestamp(existing.start_timestamp_ms, row.start_timestamp_ms);
-        existing.end_timestamp_ms =
-            max_optional_timestamp(existing.end_timestamp_ms, row.end_timestamp_ms);
+            min_optional(existing.start_timestamp_ms, row.start_timestamp_ms);
+        existing.end_timestamp_ms = max_optional(existing.end_timestamp_ms, row.end_timestamp_ms);
         if row.ppid.is_some() {
             existing.ppid = row.ppid;
         }
@@ -236,7 +234,7 @@ impl ViewState {
         if row.status.is_some() {
             existing.status = row.status.clone();
         }
-        existing.confidence = max_optional_f32(existing.confidence, row.confidence);
+        existing.confidence = max_optional(existing.confidence, row.confidence);
     }
 
     fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {
@@ -346,11 +344,7 @@ impl ViewState {
             entry.calls += 1;
         }
         let mut rows = groups.into_values().collect::<Vec<_>>();
-        rows.sort_by(|a, b| {
-            b.total_tokens
-                .cmp(&a.total_tokens)
-                .then_with(|| a.group.cmp(&b.group))
-        });
+        sort_token_summary(&mut rows);
         rows
     }
 
@@ -392,11 +386,7 @@ impl ViewState {
             entry.calls += 1;
         }
         let mut rows = groups.into_values().collect::<Vec<_>>();
-        rows.sort_by(|a, b| {
-            b.total_tokens
-                .cmp(&a.total_tokens)
-                .then_with(|| a.group.cmp(&b.group))
-        });
+        sort_token_summary(&mut rows);
         rows
     }
 
@@ -487,21 +477,7 @@ impl ViewState {
     }
 
     fn process_nodes(&self) -> Vec<ProcessNodeRow> {
-        let parent_by_pid = self
-            .process_nodes
-            .values()
-            .map(|row| (row.pid, row.ppid))
-            .collect::<BTreeMap<_, _>>();
-        let mut rows = self
-            .process_nodes
-            .values()
-            .cloned()
-            .map(|mut row| {
-                row.root_pid
-                    .get_or_insert_with(|| root_pid(row.pid, &parent_by_pid));
-                row
-            })
-            .collect::<Vec<_>>();
+        let mut rows = self.process_nodes.values().cloned().collect::<Vec<_>>();
         rows.sort_by(|a, b| {
             a.start_timestamp_ms
                 .cmp(&b.start_timestamp_ms)
@@ -542,7 +518,7 @@ impl ViewState {
             entry.input_tokens += session.input_tokens;
             entry.output_tokens += session.output_tokens;
             entry.total_tokens += session.total_tokens;
-            entry.last_seen_ms = max_optional_timestamp(
+            entry.last_seen_ms = max_optional(
                 entry.last_seen_ms,
                 session
                     .end_timestamp_ms
@@ -638,21 +614,6 @@ fn network_target_key(row: &NetworkTargetRow) -> String {
     )
 }
 
-fn root_pid(pid: u32, parent_by_pid: &BTreeMap<u32, Option<u32>>) -> u32 {
-    let mut current = pid;
-    let mut seen = std::collections::BTreeSet::new();
-    while seen.insert(current) {
-        let Some(Some(parent)) = parent_by_pid.get(&current) else {
-            break;
-        };
-        if !parent_by_pid.contains_key(parent) {
-            break;
-        }
-        current = *parent;
-    }
-    current
-}
-
 fn observe_timestamp(start: &mut Option<u64>, end: &mut Option<u64>, timestamp: Option<u64>) {
     let Some(timestamp) = timestamp else {
         return;
@@ -661,33 +622,25 @@ fn observe_timestamp(start: &mut Option<u64>, end: &mut Option<u64>, timestamp: 
     *end = Some(end.map_or(timestamp, |current| current.max(timestamp)));
 }
 
-fn min_optional_timestamp(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+fn sort_token_summary(rows: &mut [TokenSummary]) {
+    rows.sort_by(|a, b| {
+        b.total_tokens
+            .cmp(&a.total_tokens)
+            .then_with(|| a.group.cmp(&b.group))
+    });
+}
+
+fn min_optional<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Option<T> {
     match (left, right) {
-        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), Some(right)) => Some(if left <= right { left } else { right }),
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
 }
 
-fn max_optional_timestamp(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+fn max_optional<T: PartialOrd>(left: Option<T>, right: Option<T>) -> Option<T> {
     match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
-fn max_optional_f64(left: Option<f64>, right: Option<f64>) -> Option<f64> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
-fn max_optional_f32(left: Option<f32>, right: Option<f32>) -> Option<f32> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), Some(right)) => Some(if left >= right { left } else { right }),
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }

@@ -4,7 +4,6 @@
 import { ParsedEvent, ProcessNode } from './eventParsers';
 import { ProcessTreeFilters } from '@/components/process-tree/ProcessTreeFilters';
 
-// Extract unique filter options from events
 export function extractFilterOptions(processTree: ProcessNode[]) {
   const eventTypes = new Set<string>();
   const models = new Set<string>();
@@ -45,22 +44,18 @@ function parsedEventMatchesFilters(
   data: unknown,
   filters: ProcessTreeFilters,
 ): boolean {
-  // Event type filter
   if (filters.eventTypes.length > 0 && !filters.eventTypes.includes(event.type)) {
     return false;
   }
   
-  // Source filter
   if (filters.sources.length > 0 && !filters.sources.includes(source)) {
     return false;
   }
   
-  // Command filter
   if (filters.commands.length > 0 && (!comm || !filters.commands.includes(comm))) {
     return false;
   }
   
-  // Model filter
   if (filters.models.length > 0) {
     const model = event.metadata?.model;
     if (!model || !filters.models.includes(model)) {
@@ -68,7 +63,6 @@ function parsedEventMatchesFilters(
     }
   }
   
-  // Time range filter
   if (filters.timeRange.start && event.timestamp < filters.timeRange.start) {
     return false;
   }
@@ -77,7 +71,6 @@ function parsedEventMatchesFilters(
     return false;
   }
   
-  // Search text filter
   if (filters.searchText) {
     const searchLower = filters.searchText.toLowerCase();
     const searchableText = [
@@ -97,19 +90,15 @@ function parsedEventMatchesFilters(
   return true;
 }
 
-// Filter process tree by applying filters to events within each process
 export function filterProcessTree(processTree: ProcessNode[], filters: ProcessTreeFilters): ProcessNode[] {
   return processTree.map(process => {
-    // Filter events within this process
     const filteredEvents = process.events.filter(event => {
       const source = event.metadata?.original_source || sourceForEventType(event.type);
       return parsedEventMatchesFilters(event, source, process.comm, event.metadata, filters);
     });
     
-    // Recursively filter children
     const filteredChildren = filterProcessTree(process.children, filters);
     
-    // Return process if it has filtered events or filtered children
     if (filteredEvents.length > 0 || filteredChildren.length > 0) {
       return {
         ...process,
@@ -129,14 +118,12 @@ function sourceForEventType(type: ParsedEvent['type']): string {
   return 'ssl';
 }
 
-// Get total event count from process tree
 export function getTotalEventCount(processTree: ProcessNode[]): number {
   return processTree.reduce((total, process) => {
     return total + process.events.length + getTotalEventCount(process.children);
   }, 0);
 }
 
-// Create default filters
 export function createDefaultFilters(): ProcessTreeFilters {
   return {
     eventTypes: [],

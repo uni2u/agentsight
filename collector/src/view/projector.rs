@@ -35,6 +35,7 @@ struct PendingRequest {
 #[derive(Default)]
 pub(crate) struct ViewProjector {
     pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
+    active_processes: HashMap<u32, String>,
     next_seq: u64,
 }
 
@@ -578,8 +579,30 @@ impl ViewProjector {
             summary: event.summary.clone(),
             details: event.attributes.clone(),
         }));
-        if let Some(row) = process_node_from_event(event, action) {
+        if let Some(row) = self
+            .process_node_id(event, action)
+            .and_then(|id| process_node_from_event(event, action, id))
+        {
             updates.push(ViewUpdate::ProcessNode(row));
+        }
+    }
+
+    fn process_node_id(&mut self, event: &CanonicalEvent, action: &str) -> Option<String> {
+        let pid = event.pid?;
+        match action {
+            "exec" => {
+                let id = self
+                    .active_processes
+                    .entry(pid)
+                    .or_insert_with(|| format!("process-{pid}-{}", event.timestamp_ms));
+                Some(id.clone())
+            }
+            "exit" => Some(
+                self.active_processes
+                    .remove(&pid)
+                    .unwrap_or_else(|| format!("process-{pid}-{}", event.timestamp_ms)),
+            ),
+            _ => None,
         }
     }
 
@@ -714,12 +737,16 @@ fn process_audit_status(action: &str, attributes: &Value) -> &'static str {
     }
 }
 
-fn process_node_from_event(event: &CanonicalEvent, action: &str) -> Option<ProcessNodeRow> {
+fn process_node_from_event(
+    event: &CanonicalEvent,
+    action: &str,
+    id: String,
+) -> Option<ProcessNodeRow> {
     let pid = event.pid?;
     let status = process_audit_status(action, &event.attributes).to_string();
     let argv = process_argv(&event.attributes);
     Some(ProcessNodeRow {
-        id: format!("process-{pid}"),
+        id,
         pid,
         ppid: event.ppid,
         root_pid: None,
@@ -898,4 +925,52 @@ fn parse_json_value(text: &str) -> Value {
 
 fn parse_optional_json(text: Option<&str>) -> Value {
     text.map(parse_json_value).unwrap_or(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn process_node_id(
+        projector: &mut ViewProjector,
+        timestamp: u64,
+        event: &str,
+        exit_code: Option<i32>,
+    ) -> String {
+        let mut data = json!({"event": event, "filename": format!("cmd-{timestamp}")});
+        if let Some(code) = exit_code {
+            data["exit_code"] = json!(code);
+        }
+        let event = Event::new_with_timestamp(
+            timestamp,
+            "process".to_string(),
+            42,
+            "cmd".to_string(),
+            data,
+        );
+        projector
+            .ingest_event(&event)
+            .into_iter()
+            .find_map(|update| match update {
+                ViewUpdate::ProcessNode(row) => Some(row.id),
+                _ => None,
+            })
+            .expect("process node update")
+    }
+
+    #[test]
+    fn process_node_id_survives_pid_reuse() {
+        let mut projector = ViewProjector::new();
+        let first_exec = process_node_id(&mut projector, 1_000, "EXEC", None);
+        let second_execve = process_node_id(&mut projector, 1_500, "EXEC", None);
+        let first_exit = process_node_id(&mut projector, 2_000, "EXIT", Some(0));
+        let second_exec = process_node_id(&mut projector, 3_000, "EXEC", None);
+        let second_exit = process_node_id(&mut projector, 4_000, "EXIT", Some(1));
+
+        assert_eq!(first_exec, second_execve);
+        assert_eq!(first_exec, first_exit);
+        assert_eq!(second_exec, second_exit);
+        assert_ne!(first_exec, second_exec);
+    }
 }
