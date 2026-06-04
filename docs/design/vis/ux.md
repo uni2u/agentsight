@@ -232,8 +232,8 @@ runners
   -> runner analyzers
     -> AgentRunner merged stream
       -> global analyzers
-        -> FileLogger / StorageAnalyzer / raw OutputAnalyzer
-          -> SQLite + adapters
+        -> MaterializingAnalyzer
+          -> ViewUpdate sinks (FileLogger / SQLite / OTEL)
             -> query model
               -> stat/top/report/script renderers
 ```

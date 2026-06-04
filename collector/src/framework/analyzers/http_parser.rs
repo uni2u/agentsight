@@ -813,11 +813,11 @@ mod tests {
         );
 
         let mut view = ViewProjector::new();
+        let mut updates = Vec::new();
         for event in output {
-            view.ingest_event(&event);
+            updates.extend(view.ingest_event(&event));
         }
-        let total: i64 = view
-            .drain_updates()
+        let total: i64 = updates
             .into_iter()
             .filter_map(|update| match update {
                 ViewUpdate::TokenUsage(row) if row.source == "response_usage" => {

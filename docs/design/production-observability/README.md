@@ -58,16 +58,13 @@ runner Event stream
   +--> existing analyzers
   |      TimestampNormalizer, SSEProcessor, HTTPParser, AuthHeaderRemover
   |
-  +--> FileLogger (compat JSONL)
-  |
-  +--> StorageAnalyzer
+  +--> MaterializingAnalyzer
           |
-          +--> raw_events
-          +--> canonical_events
-          +--> generic projections
-                 llm_calls, token_usage, audit_events, agent_processes
+          +--> MaterializedView
+                 llm_calls, token_usage, audit_events, sessions, network_targets
           |
-          +--> AdapterRunner
+          +--> ViewUpdate sinks
+                 FileLogger, SqliteSink, OtelExporter
                  provider adapters: openai, anthropic, gemini
                  agent adapters: claude-code, openclaw, cosh, gemini-cli
                  |

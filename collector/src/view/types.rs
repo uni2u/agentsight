@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub type StorageResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type ViewResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenSummary {
@@ -291,5 +291,5 @@ pub enum ViewUpdate {
 }
 
 pub trait ViewUpdateSink: Send {
-    fn update(&mut self, _update: &ViewUpdate) {}
+    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()>;
 }

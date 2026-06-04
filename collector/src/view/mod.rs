@@ -9,7 +9,7 @@ pub(crate) use projector::ViewProjector;
 use crate::framework::core::Event;
 use crate::view::types::{
     AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, Snapshot,
-    SnapshotOptions, SnapshotSummary, StorageResult, TokenSummary, TokenUsageRow, ToolCallRow,
+    SnapshotOptions, SnapshotSummary, TokenSummary, TokenUsageRow, ToolCallRow, ViewResult,
     ViewUpdate, ViewUpdateSink,
 };
 use chrono::{SecondsFormat, Utc};
@@ -19,6 +19,7 @@ use std::path::Path;
 pub(crate) struct MaterializedView {
     projector: ViewProjector,
     state: ViewState,
+    sinks: Vec<Box<dyn ViewUpdateSink>>,
 }
 
 impl MaterializedView {
@@ -26,11 +27,12 @@ impl MaterializedView {
         Self {
             projector: ViewProjector::new(),
             state: ViewState::default(),
+            sinks: Vec::new(),
         }
     }
 
     pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewUpdateSink>) {
-        self.projector.add_sink(sink);
+        self.sinks.push(sink);
     }
 
     pub(crate) fn set_source(&mut self, source: impl Into<String>) {
@@ -41,20 +43,19 @@ impl MaterializedView {
         self.state.apply_update(&update);
     }
 
-    pub(crate) fn ingest_event(&mut self, event: &Event) {
-        self.projector.ingest_event(event);
-        let updates = self.projector.drain_updates();
+    pub(crate) fn ingest_event(&mut self, event: &Event) -> ViewResult<()> {
+        let updates = self.projector.ingest_event(event);
         for update in updates {
-            self.state.apply_update(&update);
+            self.apply_and_publish_update(&update)?;
         }
+        Ok(())
     }
 
-    pub(crate) fn ingest_update(&mut self, update: &ViewUpdate) {
-        self.projector.notify_update(update);
-        self.state.apply_update(update);
+    pub(crate) fn ingest_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
+        self.apply_and_publish_update(update)
     }
 
-    pub(crate) fn ingest_jsonl_file(&mut self, path: impl AsRef<Path>) -> StorageResult<usize> {
+    pub(crate) fn ingest_jsonl_file(&mut self, path: impl AsRef<Path>) -> ViewResult<usize> {
         let content = std::fs::read_to_string(path)?;
         let mut inserted = 0usize;
         for (idx, line) in content.lines().enumerate() {
@@ -63,15 +64,34 @@ impl MaterializedView {
                 continue;
             }
             if let Ok(update) = serde_json::from_str::<ViewUpdate>(trimmed) {
-                self.ingest_update(&update);
+                self.ingest_update(&update)?;
             } else {
                 let event: Event = serde_json::from_str(trimmed)
                     .map_err(|e| format!("failed to parse JSONL line {}: {}", idx + 1, e))?;
-                self.ingest_event(&event);
+                self.ingest_event(&event)?;
             }
             inserted += 1;
         }
         Ok(inserted)
+    }
+
+    fn apply_and_publish_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
+        self.state.apply_update(update);
+        self.publish_update(update)
+    }
+
+    fn publish_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
+        let mut first_error = None;
+        for sink in &mut self.sinks {
+            if let Err(error) = sink.update(update) {
+                log::warn!("MaterializedView: failed to publish view update: {}", error);
+                first_error.get_or_insert_with(|| error.to_string());
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(std::io::Error::other(error).into());
+        }
+        Ok(())
     }
 
     pub(crate) fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {

@@ -107,9 +107,9 @@ Acceptance:
 
 Deliverables:
 
-- `storage::SqliteStore`.
+- `stores::SqliteStore`.
 - Initial schema and migration runner.
-- `StorageAnalyzer` that writes `raw_events` and `canonical_events`.
+- `MaterializingAnalyzer` that drives `MaterializedView` and emits `ViewUpdate` rows.
 - CLI flags:
 
 ```text
@@ -134,7 +134,7 @@ Scope:
 Acceptance:
 
 - A trace run can write both JSONL and SQLite.
-- `sqlite3 <db> 'select count(*) from raw_events'` shows rows.
+- `sqlite3 <db> 'select count(*) from audit_events'` or another materialized table shows rows.
 - Retention policy has tests but does not need to be default yet.
 
 ## Phase 3: Generic LLM, Token, and Audit Projections
@@ -362,7 +362,7 @@ Long term:
 
 1. `semantic` module and unit tests.
 2. SQLite schema/store and migrations.
-3. StorageAnalyzer with opt-in `--db`.
+3. MaterializingAnalyzer and ViewUpdate sinks with opt-in `--db`.
 4. Generic LLM/token/audit projections.
 5. `token` and `audit` CLI.
 6. `/api/v1` query endpoints.

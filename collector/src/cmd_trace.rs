@@ -8,14 +8,14 @@ use crate::binary_resolver::{
 };
 use crate::framework::{
     analyzers::{
-        AuthHeaderRemover, HTTPFilter, HTTPParser, SSEProcessor, SSLFilter, TimestampNormalizer,
+        AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
+        TimestampNormalizer,
     },
     binary_extractor::BinaryExtractor,
     runners::{
         AgentRunner, EventStream, ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner,
         SystemRunner,
     },
-    storage::StorageAnalyzer,
 };
 use crate::output::{
     print_event_json, print_trace_container_binary_resolved, print_trace_header,
@@ -342,24 +342,25 @@ pub(crate) fn build_trace_agent(
 
     // Add global materialized view. The file log and optional exporters consume
     // view updates, not raw runner events.
-    let mut storage = StorageAnalyzer::new();
+    let mut materializer = MaterializingAnalyzer::new();
     if let Some(path) = db_path {
-        storage = storage.add_view_sink(Box::new(SqliteSink::new(path).map_err(|e| {
-            RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
-        })?));
+        materializer =
+            materializer.add_view_sink(Box::new(SqliteSink::new(path).map_err(|e| {
+                RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
+            })?));
     }
-    storage = storage.add_view_sink(Box::new(make_file_logger(
+    materializer = materializer.add_view_sink(Box::new(make_file_logger(
         log_file,
         rotate_logs,
         max_log_size,
     )?));
     if let Some(otel_config) = otel {
-        storage = storage.add_view_sink(Box::new(OtelExporter::new(
+        materializer = materializer.add_view_sink(Box::new(OtelExporter::new(
             otel_config.endpoint.clone(),
             otel_config.capture_content,
         )));
     }
-    agent = agent.add_global_analyzer(Box::new(storage));
+    agent = agent.add_global_analyzer(Box::new(materializer));
 
     Ok(agent)
 }

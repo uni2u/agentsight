@@ -188,13 +188,19 @@ impl Runner for FakeRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{Analyzer, SSEProcessor};
+    use crate::framework::analyzers::{Analyzer, HTTPParser, MaterializingAnalyzer, SSEProcessor};
     use crate::sinks::FileLogger;
     use futures::stream::StreamExt;
     use std::fs;
 
     use serde_json::json;
     use std::time::Instant;
+
+    fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
+        MaterializingAnalyzer::new().add_view_sink(Box::new(
+            FileLogger::new(path).expect("create test file logger"),
+        ))
+    }
 
     #[tokio::test]
     async fn test_fake_runner_basic() {
@@ -261,16 +267,15 @@ mod tests {
         let mut runner = FakeRunner::new()
             .event_count(2)
             .delay_ms(10)
-            .add_analyzer(Box::new(FileLogger::new(test_log_file).unwrap()));
+            .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
+            .add_analyzer(Box::new(file_materializer(test_log_file)));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        // Should have exactly 4 events (2 pairs = 4 events)
-        assert_eq!(
-            events.len(),
-            4,
-            "Should have exactly 4 events (2 request/response pairs)"
+        assert!(
+            events.len() >= 4,
+            "Should preserve the original request/response events"
         );
 
         // Check if log file was created
@@ -285,10 +290,9 @@ mod tests {
         // Read and check log contents
         let log_contents = fs::read_to_string(test_log_file).unwrap();
         let log_lines: Vec<&str> = log_contents.lines().collect();
-        assert_eq!(
-            log_lines.len(),
-            4,
-            "Log file should have exactly 4 lines (one per event)"
+        assert!(
+            !log_lines.is_empty(),
+            "Log file should contain materialized view updates"
         );
 
         // Clean up
@@ -334,8 +338,9 @@ mod tests {
             .event_count(2)
             .delay_ms(10)
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
-            .add_analyzer(Box::new(FileLogger::new(test_log_file1).unwrap()))
-            .add_analyzer(Box::new(FileLogger::new(test_log_file2).unwrap()));
+            .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
+            .add_analyzer(Box::new(file_materializer(test_log_file1)))
+            .add_analyzer(Box::new(file_materializer(test_log_file2)));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -346,11 +351,13 @@ mod tests {
             "Should have at least 4 SSL events (2 request/response pairs)"
         );
 
-        // Count SSL events specifically
-        let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
-        assert_eq!(
-            ssl_events, 4,
-            "Should have exactly 4 SSL events (2 request/response pairs)"
+        let http_events = events
+            .iter()
+            .filter(|event| event.source == "http_parser")
+            .count();
+        assert!(
+            http_events >= 4,
+            "Should produce parsed HTTP request/response events"
         );
 
         // Both log files should exist
@@ -363,16 +370,11 @@ mod tests {
             "Log file 2 should exist"
         );
 
-        // Verify file contents (file1 should have more content due to pretty printing and all events)
         let size1 = fs::metadata(test_log_file1).unwrap().len();
         let size2 = fs::metadata(test_log_file2).unwrap().len();
 
         assert!(size1 > 0, "Log file 1 should have content");
         assert!(size2 > 0, "Log file 2 should have content");
-        assert!(
-            size1 >= size2,
-            "Pretty printed log should be larger or equal"
-        );
 
         // Clean up
         let _ = fs::remove_file(test_log_file1);
@@ -544,7 +546,8 @@ mod tests {
             .event_count(10) // 20 events total
             .delay_ms(25) // Realistic timing
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(10000))) // 10 second timeout
-            .add_analyzer(Box::new(FileLogger::new(test_log_file).unwrap()));
+            .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
+            .add_analyzer(Box::new(file_materializer(test_log_file)));
 
         let start_time = Instant::now();
         let stream = runner.run().await.unwrap();
@@ -552,19 +555,25 @@ mod tests {
         let elapsed = start_time.elapsed();
 
         // Analyze event distribution
-        let ssl_events = events.iter().filter(|e| e.source == "ssl").count();
+        let http_events = events
+            .iter()
+            .filter(|event| event.source == "http_parser")
+            .count();
         let chunk_events = events.iter().filter(|e| e.source == "chunk_merger").count();
 
         // Verify expected behavior
-        assert_eq!(
-            ssl_events, 20,
-            "Should have 20 SSL events (10 request/response pairs)"
+        assert!(
+            http_events >= 20,
+            "Should have parsed HTTP request/response events"
         );
         assert_eq!(
             chunk_events, 0,
             "Should have no chunk_merger events since fake data isn't chunked"
         );
-        assert_eq!(events.len(), 20, "All original events should be preserved");
+        assert!(
+            events.len() >= 20,
+            "All original events should be preserved"
+        );
 
         // Verify file logging worked
         assert!(
@@ -582,25 +591,13 @@ mod tests {
             "Should process at least 10 events per second"
         );
 
-        // Verify ChunkMerger functionality - since fake events don't contain chunked data,
-        // ChunkMerger should pass all events through unchanged
-        for event in &events {
-            assert_eq!(
-                event.source, "ssl",
-                "All events should remain as SSL events"
-            );
+        // Verify parsed HTTP events retain process metadata.
+        for event in events.iter().filter(|event| event.source == "http_parser") {
             assert!(
-                event.data.get("data").is_some(),
-                "Events should have data field"
+                event.data.get("method").is_some() || event.data.get("status_code").is_some(),
+                "HTTP events should have request or response fields"
             );
-            assert!(
-                event.data.get("pid").is_some(),
-                "Events should have pid field"
-            );
-            assert!(
-                event.data.get("function").is_some(),
-                "Events should have function field"
-            );
+            assert!(event.pid > 0, "HTTP events should retain top-level pid");
         }
 
         // Clean up

@@ -18,7 +18,7 @@
 //! stable view data to OTLP.
 //!
 use crate::framework::analyzers::AnalyzerError;
-use crate::view::types::{LlmCallRow, ViewUpdate, ViewUpdateSink};
+use crate::view::types::{LlmCallRow, ViewResult, ViewUpdate, ViewUpdateSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
@@ -294,12 +294,12 @@ impl SpanInput {
 }
 
 impl ViewUpdateSink for OtelExporter {
-    fn update(&mut self, update: &ViewUpdate) {
+    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
         let ViewUpdate::LlmCall(call) = update else {
-            return;
+            return Ok(());
         };
         let Some(end_ms) = call.end_timestamp_ms else {
-            return;
+            return Ok(());
         };
         let span_input = SpanInput::from_call(call, self.capture_content);
         let (trace_id, span_id) = new_ids();
@@ -320,6 +320,7 @@ impl ViewUpdateSink for OtelExporter {
                 log::warn!("OtelExporter: failed to export span: {}", e);
             }
         });
+        Ok(())
     }
 }
 

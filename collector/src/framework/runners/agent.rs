@@ -83,13 +83,19 @@ impl Runner for AgentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::analyzers::{HTTPParser, SSEProcessor};
+    use crate::framework::analyzers::{HTTPParser, MaterializingAnalyzer, SSEProcessor};
     use crate::framework::runners::FakeRunner;
     use crate::sinks::FileLogger;
     use futures::stream::StreamExt;
     use std::time::Duration;
     use tempfile::NamedTempFile;
     use tokio::time::timeout;
+
+    fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
+        MaterializingAnalyzer::new().add_view_sink(Box::new(
+            FileLogger::new(path).expect("create test file logger"),
+        ))
+    }
 
     #[tokio::test]
     async fn test_agent_runner_basic_composition() {
@@ -120,11 +126,14 @@ mod tests {
     async fn test_agent_runner_with_global_analyzers() {
         let temp_file = NamedTempFile::new().unwrap();
 
-        let fake_runner = FakeRunner::new().event_count(2).delay_ms(10);
+        let fake_runner = FakeRunner::new()
+            .event_count(2)
+            .delay_ms(10)
+            .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()));
 
         let mut agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner))
-            .add_global_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()));
+            .add_global_analyzer(Box::new(file_materializer(temp_file.path())));
 
         assert_eq!(agent.runner_count(), 1);
         assert_eq!(agent.analyzer_count(), 1);
@@ -132,8 +141,8 @@ mod tests {
         let stream = agent.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
 
-        // Should have events from runner (2 events per event_count)
-        assert_eq!(events.len(), 4);
+        // Should have at least the original runner events.
+        assert!(events.len() >= 4);
 
         // Verify file was written by FileLogger
         let file_size = std::fs::metadata(temp_file.path()).unwrap().len();
@@ -358,8 +367,8 @@ mod tests {
         let agent = AgentRunner::new()
             .add_runner(Box::new(fake_runner1))
             .add_runner(Box::new(fake_runner2))
-            .add_global_analyzer(Box::new(FileLogger::new(temp_file1.path()).unwrap()))
-            .add_analyzer(Box::new(FileLogger::new(temp_file2.path()).unwrap()));
+            .add_global_analyzer(Box::new(file_materializer(temp_file1.path())))
+            .add_analyzer(Box::new(file_materializer(temp_file2.path())));
 
         assert_eq!(agent.runner_count(), 2);
         assert_eq!(agent.analyzer_count(), 2); // Both global analyzers should be present

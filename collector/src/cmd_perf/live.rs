@@ -2,6 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use super::sort_agent_rows;
+use crate::framework::analyzers::TimestampNormalizer;
 use crate::framework::binary_extractor::BinaryExtractor;
 use crate::framework::core::Event;
 use crate::framework::runners::{ProcessRunner, Runner};
@@ -227,8 +228,13 @@ impl LiveView {
         let children = sample.children_by_ppid();
         let mut live_rows = live_process_rows(sample, self.previous.as_ref(), options, &children);
         sort_agent_rows(&mut live_rows, "cpu");
-        let path_evidence =
-            collect_live_session_path_evidence(&live_rows, sample, capture, &children, &mut self.fd_cache);
+        let path_evidence = collect_live_session_path_evidence(
+            &live_rows,
+            sample,
+            capture,
+            &children,
+            &mut self.fd_cache,
+        );
         self.bindings.retain_live(&live_rows, sample);
         let mut used_live_pids = HashSet::new();
         let mut rows = Vec::new();
@@ -434,6 +440,7 @@ async fn start_live_ebpf_capture(
     let mut runner = ProcessRunner::from_binary_extractor(binary_extractor.get_process_path())
         .with_args(args.iter().map(String::as_str))
         .with_seed_pids(&seeds);
+    runner = runner.add_analyzer(Box::new(TimestampNormalizer::new()));
     let state = Arc::new(Mutex::new(LiveCaptureState::default()));
     let state_for_task = Arc::clone(&state);
 
@@ -508,7 +515,9 @@ fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
     let Ok(mut state) = state.lock() else {
         return;
     };
-    state.view.ingest_event(event);
+    if let Err(error) = state.view.ingest_event(event) {
+        log::warn!("live eBPF capture failed to ingest view event: {}", error);
+    }
 
     if event.source == "diagnostic" {
         if event.data.get("type").and_then(|value| value.as_str()) == Some("runner_parse_error") {
@@ -1021,7 +1030,6 @@ fn live_matching_ancestor(proc_info: &ProcInfo, sample: &LiveSample, options: &T
     }
     false
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -11,6 +11,12 @@ use std::time::Instant;
 use tempfile::NamedTempFile;
 use tokio::time::Duration;
 
+fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
+    MaterializingAnalyzer::new().add_view_sink(Box::new(
+        FileLogger::new(path).expect("create test file logger"),
+    ))
+}
+
 /// Custom test analyzer that simulates errors
 struct ErrorSimulatorAnalyzer {
     error_on_event_number: usize,
@@ -114,16 +120,17 @@ impl Analyzer for MetadataEnricherAnalyzer {
 async fn test_complex_analyzer_chain_composition() {
     let temp_file = NamedTempFile::new().unwrap();
 
-    // Create a complex chain: Filter -> ChunkMerger -> Enrich -> FileLogger
+    // Create a complex chain: Filter -> ChunkMerger -> Enrich -> materialized file sink.
     let mut runner = FakeRunner::new()
         .event_count(5) // 10 events total
         .delay_ms(10)
         .add_analyzer(Box::new(FilterAnalyzer::new("ssl_only".to_string())))
         .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
+        .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
         .add_analyzer(Box::new(MetadataEnricherAnalyzer::new(
             json!({"test_run": "complex_chain", "version": "1.0"}),
         )))
-        .add_analyzer(Box::new(FileLogger::new(temp_file.path()).unwrap()));
+        .add_analyzer(Box::new(file_materializer(temp_file.path())));
 
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
@@ -134,7 +141,7 @@ async fn test_complex_analyzer_chain_composition() {
     // All remaining events should be SSL (due to filter)
     let non_ssl_events = events
         .iter()
-        .filter(|e| e.source != "ssl" && e.source != "sse_processor")
+        .filter(|e| e.source != "ssl" && e.source != "sse_processor" && e.source != "http_parser")
         .count();
     assert_eq!(non_ssl_events, 0, "Filter should remove non-SSL events");
 

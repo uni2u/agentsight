@@ -2,19 +2,19 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::view::types::{
-    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, StorageResult,
-    TokenUsageRow, ToolCallRow, ViewUpdate,
+    AuditEventRow, LlmCallRow, NetworkTargetRow, ResourceSampleRow, SessionRow, TokenUsageRow,
+    ToolCallRow, ViewResult, ViewUpdate,
 };
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::Value;
 use std::path::Path;
 
-pub struct SqliteStore {
+pub(crate) struct SqliteStore {
     conn: Connection,
 }
 
 impl SqliteStore {
-    pub fn open(path: impl AsRef<Path>) -> StorageResult<Self> {
+    pub(crate) fn open(path: impl AsRef<Path>) -> ViewResult<Self> {
         let conn = Connection::open(path)?;
         reject_legacy_raw_schema(&conn)?;
         let mut store = Self { conn };
@@ -22,29 +22,29 @@ impl SqliteStore {
         Ok(store)
     }
 
-    pub fn open_readonly(path: impl AsRef<Path>) -> StorageResult<Self> {
+    pub(crate) fn open_readonly(path: impl AsRef<Path>) -> ViewResult<Self> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         reject_legacy_raw_schema(&conn)?;
         Ok(Self { conn })
     }
 
     #[cfg(test)]
-    pub fn connection(&self) -> &Connection {
+    pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
 
-    fn init(&mut self) -> StorageResult<()> {
+    fn init(&mut self) -> ViewResult<()> {
         self.conn.pragma_update(None, "journal_mode", "WAL").ok();
         self.conn.pragma_update(None, "foreign_keys", "ON")?;
         self.conn.execute_batch(SCHEMA)?;
         Ok(())
     }
 
-    pub fn apply_view_update(&mut self, update: &ViewUpdate) -> StorageResult<()> {
+    pub(crate) fn apply_view_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
         self.store_view_update(update)
     }
 
-    fn store_view_update(&self, update: &ViewUpdate) -> StorageResult<()> {
+    fn store_view_update(&self, update: &ViewUpdate) -> ViewResult<()> {
         match update {
             ViewUpdate::LlmCall(row) => self.insert_llm_call(row),
             ViewUpdate::TokenUsage(row) => self.insert_token_usage(row),
@@ -56,13 +56,8 @@ impl SqliteStore {
         }
     }
 
-    fn upsert_network_target(&self, target: &NetworkTargetRow) -> StorageResult<()> {
-        let id = format!(
-            "net-{}-{}-{}",
-            target.pid.unwrap_or(0),
-            sanitize_id(&target.host),
-            sanitize_id(target.path.as_deref().unwrap_or(""))
-        );
+    fn upsert_network_target(&self, target: &NetworkTargetRow) -> ViewResult<()> {
+        let id = network_target_id(target);
         self.conn.execute(
             "INSERT INTO network_targets (
                 id, pid, comm, host, path, count, error_count, first_timestamp_ms, last_timestamp_ms
@@ -87,7 +82,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn insert_resource_sample(&self, sample: &ResourceSampleRow) -> StorageResult<()> {
+    fn insert_resource_sample(&self, sample: &ResourceSampleRow) -> ViewResult<()> {
         self.conn.execute(
             "INSERT INTO resource_samples (timestamp_ms, pid, comm, cpu_percent, rss_mb)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -102,7 +97,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn insert_llm_call(&self, call: &LlmCallRow) -> StorageResult<()> {
+    fn insert_llm_call(&self, call: &LlmCallRow) -> ViewResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO llm_calls (
                 id, start_timestamp_ms, end_timestamp_ms, pid, comm, provider, model,
@@ -129,7 +124,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn insert_token_usage(&self, token: &TokenUsageRow) -> StorageResult<()> {
+    fn insert_token_usage(&self, token: &TokenUsageRow) -> ViewResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO token_usage (
                 id, llm_call_id, timestamp_ms, pid, comm, provider, model,
@@ -157,7 +152,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn insert_audit_event(&self, audit: &AuditEventRow) -> StorageResult<()> {
+    fn insert_audit_event(&self, audit: &AuditEventRow) -> ViewResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO audit_events (
                 id, timestamp_ms, audit_type, pid, comm, subject,
@@ -180,7 +175,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn insert_tool_call(&self, tool: &ToolCallRow) -> StorageResult<()> {
+    fn insert_tool_call(&self, tool: &ToolCallRow) -> ViewResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO tool_calls (
                 id, session_id, conversation_id, timestamp_ms, tool_name, tool_call_id,
@@ -209,7 +204,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn upsert_session(&self, session: &SessionRow) -> StorageResult<()> {
+    fn upsert_session(&self, session: &SessionRow) -> ViewResult<()> {
         self.conn.execute(
             "INSERT INTO agent_sessions (
                 id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
@@ -246,40 +241,19 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn llm_call_rows(&self, limit: usize) -> StorageResult<Vec<LlmCallRow>> {
+    pub(crate) fn all_llm_call_rows(&self) -> ViewResult<Vec<LlmCallRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, start_timestamp_ms, end_timestamp_ms, pid, comm,
                     provider, model, host, path, status_code,
                     COALESCE(request_body_json, '{}'), COALESCE(response_body_json, '{}')
              FROM llm_calls
-             ORDER BY start_timestamp_ms DESC
-             LIMIT ?1",
+             ORDER BY start_timestamp_ms DESC",
         )?;
-        let rows = stmt.query_map(params![bounded_limit(limit)], |row| {
-            let request_json: String = row.get(10)?;
-            let response_json: String = row.get(11)?;
-            Ok(LlmCallRow {
-                id: row.get(0)?,
-                start_timestamp_ms: row.get::<_, i64>(1)? as u64,
-                end_timestamp_ms: row.get::<_, Option<i64>>(2)?.map(|v| v as u64),
-                pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
-                comm: row.get(4)?,
-                provider: row.get(5)?,
-                model: row.get(6)?,
-                host: row.get(7)?,
-                path: row.get(8)?,
-                status_code: row.get::<_, Option<i64>>(9)?.map(|v| v as u16),
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                request: parse_json_value(&request_json),
-                response: parse_json_value(&response_json),
-            })
-        })?;
+        let rows = stmt.query_map([], read_llm_call_row)?;
         collect_rows(rows)
     }
 
-    pub fn token_usage_rows(&self) -> StorageResult<Vec<TokenUsageRow>> {
+    pub(crate) fn token_usage_rows(&self) -> ViewResult<Vec<TokenUsageRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, llm_call_id, timestamp_ms, pid, comm, provider, model,
                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -313,7 +287,7 @@ impl SqliteStore {
         collect_rows(rows)
     }
 
-    pub fn tool_call_rows(&self) -> StorageResult<Vec<ToolCallRow>> {
+    pub(crate) fn tool_call_rows(&self) -> ViewResult<Vec<ToolCallRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, conversation_id, timestamp_ms, tool_name, tool_call_id,
                     start_timestamp_ms, end_timestamp_ms, duration_ms, status, input_json,
@@ -346,7 +320,7 @@ impl SqliteStore {
         collect_rows(rows)
     }
 
-    pub fn resource_sample_rows(&self) -> StorageResult<Vec<ResourceSampleRow>> {
+    pub(crate) fn resource_sample_rows(&self) -> ViewResult<Vec<ResourceSampleRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT timestamp_ms, pid, comm, cpu_percent, rss_mb
              FROM resource_samples
@@ -364,7 +338,7 @@ impl SqliteStore {
         collect_rows(rows)
     }
 
-    pub fn network_target_rows(&self) -> StorageResult<Vec<NetworkTargetRow>> {
+    pub(crate) fn network_target_rows(&self) -> ViewResult<Vec<NetworkTargetRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT pid, comm, host, path, count, error_count, first_timestamp_ms, last_timestamp_ms
              FROM network_targets
@@ -385,34 +359,18 @@ impl SqliteStore {
         collect_rows(rows)
     }
 
-    pub fn audit_event_rows(&self, limit: usize) -> StorageResult<Vec<AuditEventRow>> {
+    pub(crate) fn all_audit_event_rows(&self) -> ViewResult<Vec<AuditEventRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, timestamp_ms, audit_type, pid, comm, subject, action,
                     target, status, summary, details_json
              FROM audit_events
-             ORDER BY timestamp_ms, id
-             LIMIT ?1",
+             ORDER BY timestamp_ms, id",
         )?;
-        let rows = stmt.query_map(params![bounded_limit(limit)], |row| {
-            let details_json: String = row.get(10)?;
-            Ok(AuditEventRow {
-                id: row.get(0)?,
-                timestamp_ms: row.get::<_, i64>(1)? as u64,
-                audit_type: row.get(2)?,
-                pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
-                comm: row.get(4)?,
-                subject: row.get(5)?,
-                action: row.get(6)?,
-                target: row.get(7)?,
-                status: row.get(8)?,
-                summary: row.get(9)?,
-                details: parse_json_value(&details_json),
-            })
-        })?;
+        let rows = stmt.query_map([], read_audit_event_row)?;
         collect_rows(rows)
     }
 
-    pub fn session_rows(&self) -> StorageResult<Vec<SessionRow>> {
+    pub(crate) fn session_rows(&self) -> ViewResult<Vec<SessionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, agent_type, agent_name, pid, comm, start_timestamp_ms,
                     NULLIF(end_timestamp_ms, 0), status, model, input_tokens, output_tokens,
@@ -444,8 +402,43 @@ impl SqliteStore {
     }
 }
 
-fn bounded_limit(limit: usize) -> i64 {
-    limit.min(100_000) as i64
+fn read_llm_call_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmCallRow> {
+    let request_json: String = row.get(10)?;
+    let response_json: String = row.get(11)?;
+    Ok(LlmCallRow {
+        id: row.get(0)?,
+        start_timestamp_ms: row.get::<_, i64>(1)? as u64,
+        end_timestamp_ms: row.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+        pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+        comm: row.get(4)?,
+        provider: row.get(5)?,
+        model: row.get(6)?,
+        host: row.get(7)?,
+        path: row.get(8)?,
+        status_code: row.get::<_, Option<i64>>(9)?.map(|v| v as u16),
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        request: parse_json_value(&request_json),
+        response: parse_json_value(&response_json),
+    })
+}
+
+fn read_audit_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEventRow> {
+    let details_json: String = row.get(10)?;
+    Ok(AuditEventRow {
+        id: row.get(0)?,
+        timestamp_ms: row.get::<_, i64>(1)? as u64,
+        audit_type: row.get(2)?,
+        pid: row.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+        comm: row.get(4)?,
+        subject: row.get(5)?,
+        action: row.get(6)?,
+        target: row.get(7)?,
+        status: row.get(8)?,
+        summary: row.get(9)?,
+        details: parse_json_value(&details_json),
+    })
 }
 
 fn parse_json_value(text: &str) -> Value {
@@ -456,7 +449,7 @@ fn parse_optional_json(text: Option<&str>) -> Value {
     text.map(parse_json_value).unwrap_or(Value::Null)
 }
 
-fn collect_rows<T, F>(rows: rusqlite::MappedRows<'_, F>) -> StorageResult<Vec<T>>
+fn collect_rows<T, F>(rows: rusqlite::MappedRows<'_, F>) -> ViewResult<Vec<T>>
 where
     F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 {
@@ -467,7 +460,7 @@ where
     Ok(out)
 }
 
-fn reject_legacy_raw_schema(conn: &Connection) -> StorageResult<()> {
+fn reject_legacy_raw_schema(conn: &Connection) -> ViewResult<()> {
     let has_raw = sqlite_table_exists(conn, "raw_events")?;
     let has_canonical = sqlite_table_exists(conn, "canonical_events")?;
     let has_materialized = sqlite_table_exists(conn, "llm_calls")?
@@ -482,7 +475,7 @@ fn reject_legacy_raw_schema(conn: &Connection) -> StorageResult<()> {
     Ok(())
 }
 
-fn sqlite_table_exists(conn: &Connection, table: &str) -> StorageResult<bool> {
+fn sqlite_table_exists(conn: &Connection, table: &str) -> ViewResult<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(
             SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
@@ -492,10 +485,16 @@ fn sqlite_table_exists(conn: &Connection, table: &str) -> StorageResult<bool> {
     )? != 0)
 }
 
-fn sanitize_id(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+fn network_target_id(target: &NetworkTargetRow) -> String {
+    let path = target.path.as_deref().unwrap_or_default();
+    format!(
+        "net:{}:{}:{}:{}:{}",
+        target.pid.unwrap_or_default(),
+        target.host.len(),
+        target.host,
+        path.len(),
+        path
+    )
 }
 
 const SCHEMA: &str = r#"

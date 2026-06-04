@@ -80,11 +80,10 @@ mod sse_processor_tests {
                 "body": "{\"model\":\"gemini-2.5-pro\"}"
             }),
         );
-        view.ingest_event(&req);
-        view.ingest_event(&collected[0]);
+        let mut updates = view.ingest_event(&req);
+        updates.extend(view.ingest_event(&collected[0]));
 
-        let total: i64 = view
-            .drain_updates()
+        let total: i64 = updates
             .into_iter()
             .filter_map(|update| match update {
                 ViewUpdate::TokenUsage(row) if row.source == "response_usage" => {

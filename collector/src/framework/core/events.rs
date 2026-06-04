@@ -52,11 +52,6 @@ impl Event {
         DateTime::from_timestamp_millis(self.timestamp as i64).unwrap_or_else(Utc::now)
     }
 
-    /// Convert to JSON string
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
-    }
-
     /// Deserialize an event from JSON string
     #[cfg(test)]
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
@@ -131,7 +126,7 @@ mod tests {
             data,
         );
 
-        let json_str = event.to_json().unwrap();
+        let json_str = serde_json::to_string(&event).unwrap();
         let deserialized = Event::from_json(&json_str).unwrap();
 
         assert_eq!(event, deserialized);

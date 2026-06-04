@@ -1,16 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::framework::analyzers::{Analyzer, AnalyzerError};
-use crate::framework::runners::EventStream;
-use crate::view::types::{ViewUpdate, ViewUpdateSink};
-use async_trait::async_trait;
-use futures::stream::StreamExt;
-use log::debug;
+use crate::view::types::{ViewResult, ViewUpdate, ViewUpdateSink};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 /// Configuration for log rotation
 #[derive(Debug, Clone)]
@@ -35,14 +29,12 @@ impl Default for LogRotationConfig {
     }
 }
 
-/// File-backed logger for view updates, with raw-event analyzer support for debug commands.
+/// File-backed logger for materialized view updates.
 pub struct FileLogger {
     file_path: String,
-    file_handle: Arc<Mutex<File>>,
-
-    // New fields for rotation
+    file: File,
     rotation_config: Option<LogRotationConfig>,
-    event_count: Arc<Mutex<u64>>,
+    event_count: u64,
 }
 
 impl FileLogger {
@@ -56,9 +48,9 @@ impl FileLogger {
 
         Ok(Self {
             file_path: path_str,
-            file_handle: Arc::new(Mutex::new(file)),
+            file,
             rotation_config: None,
-            event_count: Arc::new(Mutex::new(0)),
+            event_count: 0,
         })
     }
 
@@ -75,9 +67,9 @@ impl FileLogger {
 
         Ok(Self {
             file_path: path_str,
-            file_handle: Arc::new(Mutex::new(file)),
+            file,
             rotation_config: Some(config),
-            event_count: Arc::new(Mutex::new(0)),
+            event_count: 0,
         })
     }
 
@@ -93,279 +85,124 @@ impl FileLogger {
         Self::with_rotation(file_path, config)
     }
 
-    /// Convert binary data to hex string
-    fn data_to_string(data: &serde_json::Value) -> String {
-        match data {
-            serde_json::Value::String(s) => {
-                // Check if string contains valid UTF-8
-                if s.chars()
-                    .all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t')
-                {
-                    s.clone()
-                } else {
-                    // Convert to hex if it contains control characters (likely binary)
-                    format!("HEX:{}", hex::encode(s.as_bytes()))
-                }
-            }
-            serde_json::Value::Null => "null".to_string(),
-            _ => data.to_string(),
-        }
-    }
+    fn rotate(&mut self, config: &LogRotationConfig) -> ViewResult<()> {
+        self.file.flush()?;
 
-    /// Perform log rotation (static method for use in closures)
-    fn perform_rotation(
-        file_handle: &Arc<Mutex<File>>,
-        file_path: &str,
-        config: &LogRotationConfig,
-    ) {
-        // Try to acquire the file lock for rotation
-        if let Ok(mut file) = file_handle.lock() {
-            // Flush and drop the current file handle
-            let _ = file.flush();
-            drop(file);
-
-            // Rotate files in reverse order (app.log.2 -> app.log.3, etc.)
+        if config.max_files > 0 {
             for i in (1..config.max_files).rev() {
-                let old_path = format!("{}.{}", file_path, i);
-                let new_path = format!("{}.{}", file_path, i + 1);
-
-                if std::path::Path::new(&old_path).exists()
-                    && let Err(e) = std::fs::rename(&old_path, &new_path)
-                {
-                    eprintln!(
-                        "FileLogger: Failed to rotate {} to {}: {}",
-                        old_path, new_path, e
-                    );
+                let old_path = format!("{}.{}", self.file_path, i);
+                let new_path = format!("{}.{}", self.file_path, i + 1);
+                if std::path::Path::new(&old_path).exists() {
+                    std::fs::rename(&old_path, &new_path)?;
                 }
             }
 
-            // Move current file to .1
-            let rotated_path = format!("{}.1", file_path);
-            if let Err(e) = std::fs::rename(file_path, &rotated_path) {
-                eprintln!(
-                    "FileLogger: Failed to rotate current file to {}: {}",
-                    rotated_path, e
-                );
+            let rotated_path = format!("{}.1", self.file_path);
+            if std::path::Path::new(&self.file_path).exists() {
+                std::fs::rename(&self.file_path, rotated_path)?;
             }
-
-            // Create new current file
-            match OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(file_path)
-            {
-                Ok(new_file) => {
-                    *file_handle.lock().unwrap() = new_file;
-                }
-                Err(e) => {
-                    eprintln!(
-                        "FileLogger: Failed to create new log file after rotation: {}",
-                        e
-                    );
-                }
-            }
-
-            // Cleanup old files beyond max_files limit
-            let cleanup_path = format!("{}.{}", file_path, config.max_files + 1);
-            if std::path::Path::new(&cleanup_path).exists()
-                && let Err(e) = std::fs::remove_file(&cleanup_path)
-            {
-                eprintln!(
-                    "FileLogger: Failed to cleanup old log file {}: {}",
-                    cleanup_path, e
-                );
-            }
+        } else if std::path::Path::new(&self.file_path).exists() {
+            std::fs::remove_file(&self.file_path)?;
         }
+
+        self.file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.file_path)?;
+
+        let cleanup_path = format!("{}.{}", self.file_path, config.max_files + 1);
+        if std::path::Path::new(&cleanup_path).exists() {
+            std::fs::remove_file(cleanup_path)?;
+        }
+        Ok(())
     }
 
-    fn check_rotation(&self) {
-        let Some(config) = &self.rotation_config else {
-            return;
+    fn check_rotation(&mut self) -> ViewResult<()> {
+        let Some(config) = self.rotation_config.clone() else {
+            return Ok(());
         };
-        let mut count = self.event_count.lock().unwrap();
-        *count += 1;
-        if (*count).is_multiple_of(config.size_check_interval)
+        self.event_count += 1;
+        if config.size_check_interval > 0
+            && self.event_count.is_multiple_of(config.size_check_interval)
             && let Ok(metadata) = std::fs::metadata(&self.file_path)
             && metadata.len() > config.max_file_size
         {
-            Self::perform_rotation(&self.file_handle, &self.file_path, config);
+            self.rotate(&config)?;
         }
+        Ok(())
     }
 
-    fn write_line(&self, line: &str) {
-        self.check_rotation();
-        if let Ok(mut file) = self.file_handle.lock() {
-            if let Err(e) = file.write_all(line.as_bytes()) {
-                eprintln!("FileLogger: Failed to write to {}: {}", self.file_path, e);
-            } else if let Err(e) = file.flush() {
-                eprintln!("FileLogger: Failed to flush {}: {}", self.file_path, e);
-            }
-        }
+    fn write_line(&mut self, line: &str) -> ViewResult<()> {
+        self.check_rotation()?;
+        self.file.write_all(line.as_bytes())?;
+        self.file.flush()?;
+        Ok(())
     }
 
-    fn write_view_update(&self, update: &ViewUpdate) {
-        match serde_json::to_string(update) {
-            Ok(json) => self.write_line(&format!("{json}\n")),
-            Err(e) => self.write_line(&format!(
-                "{{\"kind\":\"error\",\"row\":{{\"message\":\"Failed to serialize view update: {e}\"}}}}\n"
-            )),
-        }
+    fn write_view_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
+        let json = serde_json::to_string(update)?;
+        self.write_line(&format!("{json}\n"))
     }
 }
 
 impl ViewUpdateSink for FileLogger {
-    fn update(&mut self, update: &ViewUpdate) {
-        self.write_view_update(update);
-    }
-}
-
-#[async_trait]
-impl Analyzer for FileLogger {
-    async fn process(&mut self, stream: EventStream) -> Result<EventStream, AnalyzerError> {
-        let file_handle = Arc::clone(&self.file_handle);
-        let file_path = self.file_path.clone();
-        let rotation_config = self.rotation_config.clone();
-        let event_count = Arc::clone(&self.event_count);
-
-        // Process events using map instead of consuming the stream
-        let processed_stream = stream.map(move |event| {
-            debug!("FileLogger: Processing event: {:?}", event);
-
-            // Check if we need to rotate logs before processing this event
-            if let Some(config) = &rotation_config {
-                let mut count = event_count.lock().unwrap();
-                *count += 1;
-
-                // Check rotation at intervals
-                if (*count).is_multiple_of(config.size_check_interval)
-                    && let Ok(metadata) = std::fs::metadata(&file_path)
-                    && metadata.len() > config.max_file_size
-                {
-                    // Perform rotation
-                    Self::perform_rotation(&file_handle, &file_path, config);
-                }
-            }
-
-            // Log the event to file
-            if let Ok(mut file) = file_handle.lock() {
-                // Convert event to JSON, handling binary data in the "data" field
-                let event_json = match event.to_json() {
-                    Ok(json_str) => {
-                        // Parse and fix data field if it contains binary
-                        if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&json_str)
-                        {
-                            if let Some(data_obj) = parsed.get_mut("data")
-                                && let Some(data_field) = data_obj.get_mut("data")
-                            {
-                                let data_str = Self::data_to_string(data_field);
-                                *data_field = serde_json::Value::String(data_str);
-                            }
-                            serde_json::to_string(&parsed).unwrap_or(json_str)
-                        } else {
-                            json_str
-                        }
-                    }
-                    Err(e) => {
-                        format!("{{\"error\":\"Failed to serialize event: {}\"}}", e)
-                    }
-                };
-
-                // Write just the JSON without timestamp
-                let log_entry = format!("{}\n", event_json);
-
-                if let Err(e) = file.write_all(log_entry.as_bytes()) {
-                    eprintln!("FileLogger: Failed to write to {}: {}", file_path, e);
-                } else if let Err(e) = file.flush() {
-                    eprintln!("FileLogger: Failed to flush {}: {}", file_path, e);
-                }
-            }
-
-            // Pass the event through unchanged
-            event
-        });
-
-        Ok(Box::pin(processed_stream))
+    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
+        self.write_view_update(update)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::core::Event;
-    use futures::stream;
+    use crate::view::types::AuditEventRow;
     use serde_json::json;
     use tempfile::NamedTempFile;
 
-    #[tokio::test]
-    async fn test_file_logger_processes_events() {
+    fn audit_update(id: usize, message: &str) -> ViewUpdate {
+        ViewUpdate::AuditEvent(AuditEventRow {
+            id: format!("audit-{id}"),
+            timestamp_ms: 1_000 + id as u64,
+            audit_type: "test".to_string(),
+            pid: Some(42),
+            comm: Some("test".to_string()),
+            subject: None,
+            action: Some("write".to_string()),
+            target: Some("file".to_string()),
+            status: Some("ok".to_string()),
+            summary: Some(message.to_string()),
+            details: json!({ "message": message }),
+        })
+    }
+
+    fn write_updates(logger: &mut FileLogger, count: usize, message: &str) {
+        for id in 0..count {
+            logger.update(&audit_update(id, message)).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_file_logger_writes_audit_updates() {
         let temp_file = NamedTempFile::new().unwrap();
         let mut logger = FileLogger::new(temp_file.path()).unwrap();
 
-        let test_event = Event::new(
-            "test".to_string(),
-            1234,
-            "test".to_string(),
-            json!({
-                "message": "test event",
-                "value": 42
-            }),
-        );
+        logger.update(&audit_update(1, "test event")).unwrap();
 
-        let events = vec![test_event];
-        let input_stream: EventStream = Box::pin(stream::iter(events));
-        let output_stream = logger.process(input_stream).await.unwrap();
-
-        let collected: Vec<_> = output_stream.collect().await;
-
-        // Should have one event passed through
-        assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].source, "test");
-
-        // Check that file was written to
         let file_contents = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(file_contents.contains("test event"));
+        assert!(file_contents.contains(r#""kind":"audit_event""#));
     }
 
-    #[tokio::test]
-    async fn test_file_logger_with_binary_data() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let mut logger = FileLogger::new(temp_file.path()).unwrap();
-
-        // Create an event with binary data
-        let binary_data = String::from_utf8_lossy(&[0x00, 0x01, 0x02, 0xFF, 0xFE]).to_string();
-        let test_event = Event::new(
-            "ssl".to_string(),
-            1234,
-            "ssl".to_string(),
-            json!({
-                "data": binary_data,
-                "len": 5
-            }),
-        );
-
-        let events = vec![test_event];
-        let input_stream: EventStream = Box::pin(stream::iter(events));
-        let output_stream = logger.process(input_stream).await.unwrap();
-
-        let collected: Vec<_> = output_stream.collect().await;
-        assert_eq!(collected.len(), 1);
-
-        // Check that file was written with hex encoding
-        let file_contents = std::fs::read_to_string(temp_file.path()).unwrap();
-        assert!(file_contents.contains("HEX:"));
-    }
-
-    #[tokio::test]
-    async fn test_rotation_config_default() {
+    #[test]
+    fn test_rotation_config_default() {
         let config = LogRotationConfig::default();
         assert_eq!(config.max_file_size, 10_000_000);
         assert_eq!(config.max_files, 5);
         assert_eq!(config.size_check_interval, 100);
     }
 
-    #[tokio::test]
-    async fn test_file_logger_with_rotation() {
+    #[test]
+    fn test_file_logger_with_rotation() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("test.log");
 
@@ -379,8 +216,8 @@ mod tests {
         assert!(logger.rotation_config.is_some());
     }
 
-    #[tokio::test]
-    async fn test_file_logger_with_max_size() {
+    #[test]
+    fn test_file_logger_with_max_size() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("test.log");
 
@@ -392,8 +229,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_rotation_on_size_limit() {
+    #[test]
+    fn test_rotation_on_size_limit() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("test.log");
 
@@ -404,32 +241,19 @@ mod tests {
         };
 
         let mut logger = FileLogger::with_rotation(&log_path, config).unwrap();
-
-        // Create events that will exceed the size limit
-        let large_event = Event::new(
-            "test".to_string(),
-            1234,
-            "test".to_string(),
-            json!({
-                "message": "This is a large message that should trigger rotation when written multiple times",
-                "value": 42
-            }),
+        write_updates(
+            &mut logger,
+            3,
+            "This is a large message that should trigger rotation when written multiple times",
         );
-
-        let events = vec![large_event.clone(), large_event.clone(), large_event];
-        let input_stream: EventStream = Box::pin(stream::iter(events));
-        let output_stream = logger.process(input_stream).await.unwrap();
-
-        let collected: Vec<_> = output_stream.collect().await;
-        assert_eq!(collected.len(), 3);
 
         // Check that rotation occurred - rotated file should exist
         let rotated_path = format!("{}.1", log_path.to_string_lossy());
         assert!(std::path::Path::new(&rotated_path).exists() || log_path.exists());
     }
 
-    #[tokio::test]
-    async fn test_max_files_cleanup() {
+    #[test]
+    fn test_max_files_cleanup() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("test.log");
 
@@ -440,23 +264,12 @@ mod tests {
         };
 
         let mut logger = FileLogger::with_rotation(&log_path, config).unwrap();
-
-        // Create many events to trigger multiple rotations
-        let large_event = Event::new(
-            "test".to_string(),
-            1234,
-            "test".to_string(),
-            json!({
-                "data": "Large event data that will cause rotation",
-            }),
-        );
-
-        // Process enough events to trigger multiple rotations
-        for _ in 0..5 {
-            let events = vec![large_event.clone(); 10];
-            let input_stream: EventStream = Box::pin(stream::iter(events));
-            let output_stream = logger.process(input_stream).await.unwrap();
-            let _: Vec<_> = output_stream.collect().await;
+        for batch in 0..5 {
+            write_updates(
+                &mut logger,
+                10,
+                &format!("Large event data that will cause rotation {batch}"),
+            );
         }
 
         // Check that we don't have too many rotated files
@@ -470,8 +283,8 @@ mod tests {
         assert!(log_path.exists() || std::path::Path::new(&log_1).exists());
     }
 
-    #[tokio::test]
-    async fn test_rotation_failure_graceful_degradation() {
+    #[test]
+    fn test_rotation_keeps_writing_current_update() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("test.log");
 
@@ -482,59 +295,29 @@ mod tests {
         };
 
         let mut logger = FileLogger::with_rotation(&log_path, config).unwrap();
+        write_updates(&mut logger, 2, &"x".repeat(100));
 
-        // Create a large event
-        let large_event = Event::new(
-            "test".to_string(),
-            1234,
-            "test".to_string(),
-            json!({
-                "message": "Large message that should trigger rotation",
-                "data": "x".repeat(100),
-            }),
+        let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            content.contains(r#""kind":"audit_event""#)
+                || log_path.with_extension("log.1").exists()
         );
-
-        let events = vec![large_event];
-        let input_stream: EventStream = Box::pin(stream::iter(events));
-        let output_stream = logger.process(input_stream).await.unwrap();
-
-        let collected: Vec<_> = output_stream.collect().await;
-
-        // Even if rotation fails, events should still be processed
-        assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].source, "test");
     }
 
-    #[tokio::test]
-    async fn test_no_rotation_when_disabled() {
+    #[test]
+    fn test_no_rotation_when_disabled() {
         let temp_file = NamedTempFile::new().unwrap();
         let mut logger = FileLogger::new(temp_file.path()).unwrap();
 
-        // Create many large events - should not trigger rotation
-        let large_event = Event::new(
-            "test".to_string(),
-            1234,
-            "test".to_string(),
-            json!({
-                "message": "Large message",
-                "data": "x".repeat(1000),
-            }),
-        );
-
-        let events = vec![large_event; 100];
-        let input_stream: EventStream = Box::pin(stream::iter(events));
-        let output_stream = logger.process(input_stream).await.unwrap();
-
-        let collected: Vec<_> = output_stream.collect().await;
-        assert_eq!(collected.len(), 100);
+        write_updates(&mut logger, 100, &"x".repeat(1000));
 
         // No rotated files should exist
         let rotated_path = format!("{}.1", temp_file.path().to_string_lossy());
         assert!(!std::path::Path::new(&rotated_path).exists());
     }
 
-    #[tokio::test]
-    async fn test_size_check_interval_optimization() {
+    #[test]
+    fn test_size_check_interval_optimization() {
         let temp_dir = tempfile::tempdir().unwrap();
         let log_path = temp_dir.path().join("test.log");
 
@@ -545,20 +328,7 @@ mod tests {
         };
 
         let mut logger = FileLogger::with_rotation(&log_path, config).unwrap();
-
-        // Process fewer events than the check interval
-        let event = Event::new(
-            "test".to_string(),
-            1234,
-            "test".to_string(),
-            json!({"msg": "test"}),
-        );
-        let events = vec![event; 5];
-        let input_stream: EventStream = Box::pin(stream::iter(events));
-        let output_stream = logger.process(input_stream).await.unwrap();
-
-        let collected: Vec<_> = output_stream.collect().await;
-        assert_eq!(collected.len(), 5);
+        write_updates(&mut logger, 5, "test");
 
         // Should not have rotated yet due to interval optimization
         let rotated_path = format!("{}.1", log_path.to_string_lossy());
@@ -570,40 +340,44 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let mut logger = FileLogger::new(temp_file.path()).unwrap();
 
-        logger.update(&ViewUpdate::LlmCall(crate::view::types::LlmCallRow {
-            id: "llm-1".to_string(),
-            start_timestamp_ms: 1_000,
-            end_timestamp_ms: Some(1_200),
-            pid: Some(42),
-            comm: Some("claude".to_string()),
-            provider: Some("anthropic".to_string()),
-            model: Some("claude-sonnet-4".to_string()),
-            host: Some("api.anthropic.com".to_string()),
-            path: Some("/v1/messages".to_string()),
-            status_code: Some(200),
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            request: json!({"model": "claude-sonnet-4"}),
-            response: json!({"usage": {"input_tokens": 10, "output_tokens": 5}}),
-        }));
-        logger.update(&ViewUpdate::TokenUsage(crate::view::types::TokenUsageRow {
-            id: "token-1".to_string(),
-            llm_call_id: "llm-1".to_string(),
-            timestamp_ms: 1_200,
-            pid: Some(42),
-            comm: Some("claude".to_string()),
-            provider: Some("anthropic".to_string()),
-            model: Some("claude-sonnet-4".to_string()),
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_creation_tokens: 0,
-            cache_read_tokens: 0,
-            total_tokens: 15,
-            source: "response_usage".to_string(),
-            view_source: "view".to_string(),
-            confidence: Some(0.95),
-        }));
+        logger
+            .update(&ViewUpdate::LlmCall(crate::view::types::LlmCallRow {
+                id: "llm-1".to_string(),
+                start_timestamp_ms: 1_000,
+                end_timestamp_ms: Some(1_200),
+                pid: Some(42),
+                comm: Some("claude".to_string()),
+                provider: Some("anthropic".to_string()),
+                model: Some("claude-sonnet-4".to_string()),
+                host: Some("api.anthropic.com".to_string()),
+                path: Some("/v1/messages".to_string()),
+                status_code: Some(200),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                request: json!({"model": "claude-sonnet-4"}),
+                response: json!({"usage": {"input_tokens": 10, "output_tokens": 5}}),
+            }))
+            .unwrap();
+        logger
+            .update(&ViewUpdate::TokenUsage(crate::view::types::TokenUsageRow {
+                id: "token-1".to_string(),
+                llm_call_id: "llm-1".to_string(),
+                timestamp_ms: 1_200,
+                pid: Some(42),
+                comm: Some("claude".to_string()),
+                provider: Some("anthropic".to_string()),
+                model: Some("claude-sonnet-4".to_string()),
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 15,
+                source: "response_usage".to_string(),
+                view_source: "view".to_string(),
+                confidence: Some(0.95),
+            }))
+            .unwrap();
 
         let content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(content.contains(r#""kind":"llm_call""#));

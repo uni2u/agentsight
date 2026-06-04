@@ -7,11 +7,26 @@ use crate::cmd_trace::{
 };
 use crate::framework::{
     analyzers::{
-        AuthHeaderRemover, HTTPFilter, HTTPParser, SSEProcessor, SSLFilter, TimestampNormalizer,
+        AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
+        TimestampNormalizer,
     },
     binary_extractor::BinaryExtractor,
     runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner},
 };
+
+fn make_file_materializer(
+    log_file: &str,
+    rotate_logs: bool,
+    max_log_size: u64,
+) -> Result<MaterializingAnalyzer, RunnerError> {
+    Ok(
+        MaterializingAnalyzer::new().add_view_sink(Box::new(make_file_logger(
+            log_file,
+            rotate_logs,
+            max_log_size,
+        )?)),
+    )
+}
 
 /// Show raw SSL events as JSON with optional chunk merging and HTTP parsing
 pub(crate) async fn run_raw_ssl(
@@ -97,7 +112,7 @@ pub(crate) async fn run_raw_ssl(
         println!("Starting SSL event stream with raw JSON output (press Ctrl+C to stop):");
     }
 
-    ssl_runner = ssl_runner.add_analyzer(Box::new(make_file_logger(
+    ssl_runner = ssl_runner.add_analyzer(Box::new(make_file_materializer(
         log_file,
         rotate_logs,
         max_log_size,
@@ -141,7 +156,7 @@ pub(crate) async fn run_raw_process(
     // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    process_runner = process_runner.add_analyzer(Box::new(make_file_logger(
+    process_runner = process_runner.add_analyzer(Box::new(make_file_materializer(
         log_file,
         rotate_logs,
         max_log_size,
@@ -188,7 +203,7 @@ pub(crate) async fn run_raw_stdio(
     // Add TimestampNormalizer first to convert nanoseconds since boot to milliseconds since epoch
     stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    stdio_runner = stdio_runner.add_analyzer(Box::new(make_file_logger(
+    stdio_runner = stdio_runner.add_analyzer(Box::new(make_file_materializer(
         log_file,
         rotate_logs,
         max_log_size,
@@ -263,8 +278,8 @@ pub(crate) async fn run_system(
     // Add TimestampNormalizer first
     system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    // Add file logger
-    system_runner = system_runner.add_analyzer(Box::new(make_file_logger(
+    // Add materialized view logger
+    system_runner = system_runner.add_analyzer(Box::new(make_file_materializer(
         log_file,
         rotate_logs,
         max_log_size,

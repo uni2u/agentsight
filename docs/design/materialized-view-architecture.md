@@ -8,7 +8,7 @@ consumption.
 ```
 Sources / analyzers                 View boundary                 Consumers
 -------------------                 -------------                 ---------
-SSL / process / stdio / system  ->  StorageAnalyzer             ->  FileLogger
+SSL / process / stdio / system  ->  MaterializingAnalyzer             ->  FileLogger
 HTTPParser / SSEProcessor       ->  MaterializedView            ->  SqliteSink
 Proc + session sources              ViewUpdate stream               OTel
 TimestampNormalizer / filters       in-memory query state           CLI/API
@@ -16,9 +16,9 @@ TimestampNormalizer / filters       in-memory query state           CLI/API
 
 The important rule is that persistent outputs are derived from the view, not
 from raw event storage. SQLite stores selected materialized tables. JSONL logs
-store `ViewUpdate` records. Raw event logging remains available only in low-level
-`debug` commands where the user explicitly asks to inspect runner/analyzer
-output.
+store `ViewUpdate` records. Low-level `debug` commands can still print
+runner/analyzer events to stdout, but file/API output stays on the ViewUpdate
+path.
 
 ## Why
 
@@ -37,13 +37,13 @@ makes the view the handoff point for everything downstream.
 
 ## Live Path
 
-`build_trace_agent()` now always installs a `StorageAnalyzer` for `record` and
+`build_trace_agent()` now always installs a `MaterializingAnalyzer` for `record` and
 `trace`.
 
 ```
 Runner event stream
   -> analyzer chain
-  -> StorageAnalyzer
+  -> MaterializingAnalyzer
        -> normalize Event into CanonicalEvent
        -> ViewProjector produces ViewUpdate rows
        -> MaterializedView updates in-memory state
@@ -75,18 +75,15 @@ Consumers implement `ViewUpdateSink`.
 
 ```rust
 pub trait ViewUpdateSink: Send {
-    fn update(&mut self, _update: &ViewUpdate) {}
+    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()>;
 }
 ```
 
 Current consumers:
 
-- `FileLogger`: writes view-update JSONL for `record`/`trace`.
+- `FileLogger`: writes view-update JSONL for `record`/`trace`/`debug`.
 - `SqliteSink`: persists selected materialized view tables when `--db` is provided.
 - `OtelExporter`: exports completed `llm_call` rows as GenAI spans.
-
-The same `FileLogger` type still implements `Analyzer` for debug subcommands,
-but that is a raw diagnostic path, not the default recording path.
 
 ## SQLite Role
 
@@ -120,14 +117,15 @@ back to the legacy `Event` parser and rebuilds view rows through
 `MaterializedView`/`ViewProjector`.
 
 `stat --db`, `report --db`, `top --db --once`, `prompts --db`, and
-`db export` load SQLite through `SqliteSource`, then query the in-memory
+`db export` rebuild the in-memory view from SQLite with `sources::sqlite::load_view`,
+then query the
 `MaterializedView`. Command code does not reach through to `SqliteStore`
 internals.
 
 ## API Role
 
-- `/api/events` serves the configured JSONL log file. For normal `record` and
-  `trace`, this is now view-update JSONL.
+- `/api/events` serves the configured JSONL log file. For `record`, `trace`, and
+  `debug`, this is now view-update JSONL.
 - `/api/v1/*` endpoints read SQLite materialized tables when a DB is configured.
 
 ## Command Flow
@@ -135,13 +133,13 @@ internals.
 ### record / trace
 
 ```
-runners -> analyzers -> StorageAnalyzer/MaterializedView
+runners -> analyzers -> MaterializingAnalyzer/MaterializedView
                                 |-> FileLogger(view JSONL)
                                 |-> SqliteSink(--db)
                                 |-> OtelExporter (--otel)
 ```
 
-If `--db` is not provided, `StorageAnalyzer` still builds the same in-memory
+If `--db` is not provided, `MaterializingAnalyzer` still builds the same in-memory
 view and emits the same view rows; no SQLite database is opened.
 
 ### top
@@ -152,8 +150,8 @@ current materialized output instead of each maintaining their own live state.
 
 ### stat / report
 
-When a DB is provided, commands load it through `SqliteSource` and then read
-through `MaterializedView`. Without a DB, local agent session JSONL remains
+When a DB is provided, commands rebuild a `MaterializedView` from SQLite and then
+read through it. Without a DB, local agent session JSONL remains
 available as a source for local-only summaries.
 
 ## Current Code Layout
@@ -170,7 +168,7 @@ collector/src/view/
   types.rs         owned query-facing rows, snapshots, and ViewUpdate contracts
 
 collector/src/sinks/
-  file_logger.rs   ViewUpdateSink for record/trace JSONL; raw Analyzer for debug
+  file_logger.rs   ViewUpdateSink for record/trace JSONL
   otel.rs          ViewUpdateSink for completed LLM calls
   sqlite.rs        ViewUpdateSink for SQLite persistence
 
@@ -178,8 +176,10 @@ collector/src/output/
   format.rs        CLI formatting and output structs
   tui.rs           live top TUI rendering
 
-collector/src/framework/storage/
-  analyzer.rs      StorageAnalyzer: event-stream analyzer that drives the view
+collector/src/framework/analyzers/
+  materializing.rs MaterializingAnalyzer: event-stream analyzer that drives the view
+
+collector/src/stores/
   sqlite.rs        SQLite row store
 
 collector/src/cmd_trace.rs

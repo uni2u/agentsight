@@ -30,6 +30,7 @@ mod server;
 mod session;
 mod sinks;
 mod sources;
+mod stores;
 mod text;
 mod view;
 
@@ -199,7 +200,7 @@ enum Commands {
         /// Override the auto-discovered SSL binary path when tracing a command
         #[arg(long)]
         binary_path: Option<String>,
-        /// Log file for output and server when tracing a command
+        /// ViewUpdate JSONL log file for output and server when tracing a command
         #[arg(short = 'o', long, default_value = "record.log")]
         log_file: String,
         /// Enable log rotation
@@ -263,7 +264,7 @@ enum Commands {
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
         #[arg(long)]
         binary_path: Option<String>,
-        /// Log file for output and server
+        /// ViewUpdate JSONL log file for output and server
         #[arg(short = 'o', long, default_value = "record.log")]
         log_file: String,
         /// SQLite database path for view snapshots
@@ -317,7 +318,7 @@ enum Commands {
     /// Database operations: query tokens, audit events, import/export
     #[command(subcommand)]
     Db(DbCommands),
-    /// Low-level debugging tools: raw SSL/process/stdio/system/trace monitors
+    /// Low-level debugging tools: print raw streams; log files store ViewUpdate JSONL
     #[command(subcommand)]
     Debug(DebugCommands),
 }
@@ -399,7 +400,7 @@ enum DbCommands {
 
 #[derive(Subcommand)]
 enum DebugCommands {
-    /// Analyze SSL traffic with raw JSON output
+    /// Print SSL traffic as raw/analyzed JSON; write ViewUpdate JSONL to --log-file
     Ssl {
         /// Enable SSE processing for SSL traffic
         #[arg(long)]
@@ -434,7 +435,7 @@ enum DebugCommands {
         /// Server port (used with --server)
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// Log file to serve via API (used with --server)
+        /// ViewUpdate JSONL log file to serve via API (used with --server)
         #[arg(long, default_value = "ssl.log")]
         log_file: String,
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
@@ -444,7 +445,7 @@ enum DebugCommands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Test process runner with embedded binary
+    /// Print process runner events; write ViewUpdate JSONL to --log-file
     Process {
         /// Suppress console output
         #[arg(short, long)]
@@ -461,14 +462,14 @@ enum DebugCommands {
         /// Server port (used with --server)
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// Log file to serve via API (used with --server)
+        /// ViewUpdate JSONL log file to serve via API (used with --server)
         #[arg(long, default_value = "process.log")]
         log_file: String,
         /// Additional arguments to pass to the process binary
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Capture local stdio payloads from a target process
+    /// Print local stdio payloads from a target process; write ViewUpdate JSONL to --log-file
     Stdio {
         /// Target PID (required)
         #[arg(short = 'p', long)]
@@ -500,7 +501,7 @@ enum DebugCommands {
         /// Server port (used with --server)
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// Log file to serve via API (used with --server)
+        /// ViewUpdate JSONL log file to serve via API (used with --server)
         #[arg(long, default_value = "stdio.log")]
         log_file: String,
     },
@@ -578,7 +579,7 @@ enum DebugCommands {
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
         #[arg(long)]
         binary_path: Option<String>,
-        /// Log file for output and server
+        /// ViewUpdate JSONL log file for output and server
         #[arg(short = 'o', long, default_value = "trace.log")]
         log_file: String,
         /// SQLite database path for view snapshots
@@ -620,7 +621,7 @@ enum DebugCommands {
         /// Memory usage threshold for alerts (MB)
         #[arg(long)]
         memory_threshold: Option<u64>,
-        /// Log file for output and server
+        /// ViewUpdate JSONL log file for output and server
         #[arg(short = 'o', long, default_value = "system.log")]
         log_file: String,
         /// Suppress console output

@@ -8,12 +8,12 @@ use crate::output::{
 };
 use crate::sinks::SqliteSink;
 use crate::sources::session::{self as local_sessions, LocalSession};
-use crate::sources::sqlite::SqliteSource;
+use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::view::MaterializedView;
 use crate::view::types::SnapshotOptions;
 
 #[cfg(test)]
-use crate::framework::storage::sqlite::SqliteStore;
+use crate::stores::sqlite::SqliteStore;
 #[cfg(test)]
 use crate::view::types::{TokenUsageRow, ViewUpdate};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,7 +42,7 @@ pub(crate) fn run_token_query(
     group_by: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = SqliteSource::open(db)?.into_view();
+    let view = load_sqlite_view(db)?;
     let rows = view.token_summary(group_by);
     if json {
         print_json(&rows)?;
@@ -58,7 +58,7 @@ pub(crate) fn run_audit_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = SqliteSource::open(db)?.into_view();
+    let view = load_sqlite_view(db)?;
     let rows = view.audit_rows(audit_type, limit);
     if json {
         print_json(&rows)?;
@@ -73,7 +73,7 @@ pub(crate) fn run_prompts_query(
     limit: usize,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = SqliteSource::open(db)?.into_view();
+    let view = load_sqlite_view(db)?;
     let rows = view.llm_call_rows(limit);
     if json {
         print_json(&rows)?;
@@ -88,7 +88,7 @@ pub(crate) fn run_export(
     output: &str,
     audit_limit: usize,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let view = SqliteSource::open(db)?.into_view();
+    let view = load_sqlite_view(db)?;
     let snapshot = view.export_snapshot(SnapshotOptions { audit_limit });
     let json = serde_json::to_vec_pretty(&snapshot)?;
     if output == "-" {
@@ -104,7 +104,7 @@ pub(crate) fn run_export(
 
 impl SessionSummary {
     pub fn from_sqlite(db: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let view = SqliteSource::open(db)?.into_view();
+        let view = load_sqlite_view(db)?;
         let snap = view.export_snapshot(SnapshotOptions {
             audit_limit: 50_000,
         });
@@ -341,18 +341,18 @@ mod tests {
 
         run_replay(input.to_str().unwrap(), db.to_str().unwrap()).unwrap();
 
-        let view = SqliteSource::open(&db).unwrap().into_view();
+        let view = load_sqlite_view(&db).unwrap();
         let rows = view.token_summary("model");
         assert_eq!(rows[0].group, "claude-sonnet-4");
         assert_eq!(rows[0].total_tokens, 15);
     }
 
     #[test]
-    fn sqlite_source_does_not_create_missing_db() {
+    fn sqlite_load_view_does_not_create_missing_db() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("missing.db");
 
-        assert!(SqliteSource::open(&db).is_err());
+        assert!(load_sqlite_view(&db).is_err());
         assert!(!db.exists());
     }
 
@@ -385,7 +385,7 @@ mod tests {
             )
             .unwrap();
 
-        let view = SqliteSource::open(&db).unwrap().into_view();
+        let view = load_sqlite_view(&db).unwrap();
         let tokens = view.token_summary("model");
         assert_eq!(tokens[0].group, "claude-sonnet-4");
         assert_eq!(tokens[0].total_tokens, 15);
@@ -453,7 +453,7 @@ mod tests {
                 json!({"event": "FILE_WRITE", "path": "/tmp/agentsight-summary/sub/b.txt"}),
             ),
         ] {
-            view.ingest_event(&event);
+            view.ingest_event(&event).unwrap();
         }
 
         view.ingest_update(&ViewUpdate::ToolCall(crate::view::types::ToolCallRow {
@@ -473,7 +473,8 @@ mod tests {
             related_event_id: None,
             view_source: "claude-code".to_string(),
             confidence: None,
-        }));
+        }))
+        .unwrap();
 
         let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
         assert_eq!(summary.duration_s, 0.9);

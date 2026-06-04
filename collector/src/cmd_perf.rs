@@ -6,9 +6,9 @@ use crate::output::{
     print_agent_top, print_json, print_stat,
 };
 use crate::sources::proc as procfs;
-use crate::sources::sqlite::SqliteSource;
+use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::text::short_session_id;
-use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, StorageResult};
+use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, ViewResult};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{self, Write};
@@ -66,8 +66,8 @@ pub(crate) fn run_top_query(
     Ok(())
 }
 
-fn load_stat(db: &str) -> StorageResult<StatOutput> {
-    let view = SqliteSource::open(db)?.into_view();
+fn load_stat(db: &str) -> ViewResult<StatOutput> {
+    let view = load_sqlite_view(db)?;
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
     });
@@ -547,8 +547,8 @@ fn sort_agent_rows(rows: &mut [AgentTopRow], sort: &str) {
     });
 }
 
-fn load_snapshot_and_resources(db: &str) -> StorageResult<(Snapshot, ResourcePeaks)> {
-    let view = SqliteSource::open(db)?.into_view();
+fn load_snapshot_and_resources(db: &str) -> ViewResult<(Snapshot, ResourcePeaks)> {
+    let view = load_sqlite_view(db)?;
     let snapshot = view.export_snapshot(SnapshotOptions {
         audit_limit: 50_000,
     });
