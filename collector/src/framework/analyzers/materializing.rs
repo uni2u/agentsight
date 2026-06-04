@@ -4,7 +4,7 @@
 use crate::framework::analyzers::{Analyzer, AnalyzerError};
 use crate::framework::runners::EventStream;
 use crate::view::SharedMaterializedView;
-use crate::view::types::ViewUpdateSink;
+use crate::view::types::ViewSink;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 
@@ -17,7 +17,7 @@ impl MaterializingAnalyzer {
         Self { view }
     }
 
-    pub fn add_view_sink(self, sink: Box<dyn ViewUpdateSink>) -> Self {
+    pub fn add_view_sink(self, sink: Box<dyn ViewSink>) -> Self {
         if let Ok(mut view) = self.view.lock() {
             view.add_sink(sink);
         } else {

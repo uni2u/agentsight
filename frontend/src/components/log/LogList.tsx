@@ -3,13 +3,13 @@
 
 'use client';
 
-import { ProcessedEvent } from '@/types/event';
-import { formatEventSummary } from '@/utils/eventProcessing';
+import { ProcessedViewEvent } from '@/types/event';
+import { formatViewEventSummary } from '@/utils/eventProcessing';
 import { useTranslation } from '@/i18n';
 
 interface LogListProps {
-  events: ProcessedEvent[];
-  onEventClick: (event: ProcessedEvent) => void;
+  events: ProcessedViewEvent[];
+  onEventClick: (event: ProcessedViewEvent) => void;
 }
 
 export function LogList({ events, onEventClick }: LogListProps) {
@@ -41,7 +41,7 @@ export function LogList({ events, onEventClick }: LogListProps) {
                 </span>
               </div>
               <div className="text-sm text-gray-900 mb-1">
-                {formatEventSummary(event)}
+                {formatViewEventSummary(event)}
               </div>
               <div className="text-xs text-gray-500 font-mono">
                 ID: {event.id}

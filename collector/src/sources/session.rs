@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::text::{short_session_id, truncate_text};
 use crate::view::MaterializedView;
-use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ViewUpdate};
+use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, TokenUsageRow};
 
 pub(crate) struct SessionCache {
     entries: HashMap<PathBuf, CacheEntry>,
@@ -193,22 +193,14 @@ pub(crate) fn view_id(session: &LocalSession) -> String {
     format!("local:{}:{}", session.agent, session.display_id)
 }
 
-pub(crate) fn view_updates(sessions: &[LocalSession]) -> Vec<ViewUpdate> {
-    sessions
-        .iter()
-        .flat_map(|session| {
-            let mut updates = vec![ViewUpdate::Session(session_row(session))];
-            updates.extend(token_rows(session).into_iter().map(ViewUpdate::TokenUsage));
-            updates
-        })
-        .collect()
-}
-
 pub(crate) fn materialized_view(sessions: &[LocalSession]) -> MaterializedView {
     let mut view = MaterializedView::new();
     view.set_source("local_session");
-    for update in view_updates(sessions) {
-        view.load_update(update);
+    for session in sessions {
+        view.load_session(session_row(session));
+        for row in token_rows(session) {
+            view.load_token_usage(row);
+        }
     }
     view
 }

@@ -79,8 +79,8 @@ This captures:
 # Monitor aider, open-interpreter, or any Python-based AI tool
 sudo ./agentsight record -c "python"
 
-# Custom port and log file
-sudo ./agentsight record -c "python" --server-port 8080 --log-file /tmp/agent.log
+# Custom web UI port
+sudo ./agentsight record -c "python" --server-port 8080
 ```
 
 ## Node.js AI Tools (Gemini CLI, etc.)
@@ -168,8 +168,8 @@ it into the Rust collector.
 # Combined SSL and process monitoring with web interface
 sudo ./agentsight debug trace --ssl true --process true --server true
 
-# Custom port and log file
-sudo ./agentsight record -c "python" --server-port 8080 --log-file /tmp/agent.log
+# Custom web UI port
+sudo ./agentsight record -c "python" --server-port 8080
 ```
 
 ## Direct eBPF Program Usage

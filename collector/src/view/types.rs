@@ -70,6 +70,7 @@ pub struct Snapshot {
     pub network_targets: Vec<NetworkTargetRow>,
     pub process_nodes: Vec<ProcessNodeRow>,
     pub audit_events: Vec<AuditEventRow>,
+    pub resource_samples: Vec<ResourceSampleRow>,
     pub sessions: Vec<SessionRow>,
     pub agents: Vec<AgentRow>,
 }
@@ -84,6 +85,7 @@ impl Snapshot {
             network_targets: Vec::new(),
             process_nodes: Vec::new(),
             audit_events: Vec::new(),
+            resource_samples: Vec::new(),
             sessions: Vec::new(),
             agents: Vec::new(),
         }
@@ -295,19 +297,32 @@ pub struct AgentRow {
     pub last_seen_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "row", rename_all = "snake_case")]
-pub enum ViewUpdate {
-    LlmCall(LlmCallRow),
-    TokenUsage(TokenUsageRow),
-    AuditEvent(AuditEventRow),
-    ProcessNode(ProcessNodeRow),
-    ToolCall(ToolCallRow),
-    Session(SessionRow),
-    NetworkTarget(NetworkTargetRow),
-    ResourceSample(ResourceSampleRow),
-}
+pub trait ViewSink: Send {
+    fn llm_call(&mut self, _row: &LlmCallRow) -> ViewResult<()> {
+        Ok(())
+    }
 
-pub trait ViewUpdateSink: Send {
-    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()>;
+    fn token_usage(&mut self, _row: &TokenUsageRow) -> ViewResult<()> {
+        Ok(())
+    }
+
+    fn audit_event(&mut self, _row: &AuditEventRow) -> ViewResult<()> {
+        Ok(())
+    }
+
+    fn process_node(&mut self, _row: &ProcessNodeRow) -> ViewResult<()> {
+        Ok(())
+    }
+
+    fn tool_call(&mut self, _row: &ToolCallRow) -> ViewResult<()> {
+        Ok(())
+    }
+
+    fn network_target(&mut self, _row: &NetworkTargetRow) -> ViewResult<()> {
+        Ok(())
+    }
+
+    fn resource_sample(&mut self, _row: &ResourceSampleRow) -> ViewResult<()> {
+        Ok(())
+    }
 }

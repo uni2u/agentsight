@@ -3,7 +3,7 @@
 
 use crate::binary_resolver::{parse_container_ref, resolve_container_binary_path};
 use crate::cmd_trace::{
-    build_stdio_args, drive_stream_until_shutdown, make_file_logger, start_web_server_if_enabled,
+    build_stdio_args, drive_stream_until_shutdown, start_web_server_if_enabled,
 };
 use crate::framework::{
     analyzers::{
@@ -13,22 +13,7 @@ use crate::framework::{
     binary_extractor::BinaryExtractor,
     runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner},
 };
-use crate::view::{MaterializedView, SharedMaterializedView};
-
-fn make_file_materializer(
-    view: SharedMaterializedView,
-    log_file: &str,
-    rotate_logs: bool,
-    max_log_size: u64,
-) -> Result<MaterializingAnalyzer, RunnerError> {
-    Ok(
-        MaterializingAnalyzer::with_view(view).add_view_sink(Box::new(make_file_logger(
-            log_file,
-            rotate_logs,
-            max_log_size,
-        )?)),
-    )
-}
+use crate::view::MaterializedView;
 
 /// Show raw SSL events as JSON with optional chunk merging and HTTP parsing
 pub(crate) async fn run_raw_ssl(
@@ -40,12 +25,9 @@ pub(crate) async fn run_raw_ssl(
     disable_auth_removal: bool,
     ssl_filter_patterns: &[String],
     quiet: bool,
-    rotate_logs: bool,
-    max_log_size: u64,
     enable_server: bool,
     server_listen: &str,
     server_port: u16,
-    log_file: &str,
     binary_path: Option<&str>,
     args: &[String],
 ) -> Result<(), RunnerError> {
@@ -115,12 +97,9 @@ pub(crate) async fn run_raw_ssl(
     }
 
     let live_view = MaterializedView::shared();
-    ssl_runner = ssl_runner.add_analyzer(Box::new(make_file_materializer(
+    ssl_runner = ssl_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
         live_view.clone(),
-        log_file,
-        rotate_logs,
-        max_log_size,
-    )?));
+    )));
 
     // Start web server if enabled
     let _server_handle =
@@ -138,12 +117,9 @@ pub(crate) async fn run_raw_ssl(
 pub(crate) async fn run_raw_process(
     binary_extractor: &BinaryExtractor,
     quiet: bool,
-    rotate_logs: bool,
-    max_log_size: u64,
     enable_server: bool,
     server_listen: &str,
     server_port: u16,
-    log_file: &str,
     args: &Vec<String>,
 ) -> Result<(), RunnerError> {
     println!("Raw Process Events");
@@ -161,12 +137,9 @@ pub(crate) async fn run_raw_process(
     process_runner = process_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
     let live_view = MaterializedView::shared();
-    process_runner = process_runner.add_analyzer(Box::new(make_file_materializer(
+    process_runner = process_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
         live_view.clone(),
-        log_file,
-        rotate_logs,
-        max_log_size,
-    )?));
+    )));
 
     // Start web server if enabled
     let _server_handle =
@@ -190,12 +163,9 @@ pub(crate) async fn run_raw_stdio(
     all_fds: bool,
     max_bytes: u32,
     quiet: bool,
-    rotate_logs: bool,
-    max_log_size: u64,
     enable_server: bool,
     server_listen: &str,
     server_port: u16,
-    log_file: &str,
 ) -> Result<(), RunnerError> {
     println!("Raw Stdio Events");
     println!("{}", "=".repeat(60));
@@ -210,12 +180,9 @@ pub(crate) async fn run_raw_stdio(
     stdio_runner = stdio_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
     let live_view = MaterializedView::shared();
-    stdio_runner = stdio_runner.add_analyzer(Box::new(make_file_materializer(
+    stdio_runner = stdio_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
         live_view.clone(),
-        log_file,
-        rotate_logs,
-        max_log_size,
-    )?));
+    )));
 
     // Start web server if enabled
     let _server_handle =
@@ -241,10 +208,7 @@ pub(crate) async fn run_system(
     include_children: bool,
     cpu_threshold: Option<f64>,
     memory_threshold: Option<u64>,
-    log_file: &str,
     quiet: bool,
-    rotate_logs: bool,
-    max_log_size: u64,
     enable_server: bool,
     server_listen: &str,
     server_port: u16,
@@ -286,14 +250,10 @@ pub(crate) async fn run_system(
     // Add TimestampNormalizer first
     system_runner = system_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
 
-    // Add materialized view logger
     let live_view = MaterializedView::shared();
-    system_runner = system_runner.add_analyzer(Box::new(make_file_materializer(
+    system_runner = system_runner.add_analyzer(Box::new(MaterializingAnalyzer::with_view(
         live_view.clone(),
-        log_file,
-        rotate_logs,
-        max_log_size,
-    )?));
+    )));
 
     // Start web server if enabled
     let _server_handle =

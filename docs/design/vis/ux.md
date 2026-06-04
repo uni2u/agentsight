@@ -233,7 +233,7 @@ runners
     -> AgentRunner merged stream
       -> global analyzers
         -> MaterializingAnalyzer
-          -> ViewUpdate sinks (FileLogger / SQLite / OTEL)
+          -> row sinks (SQLite / OTEL)
             -> query model
               -> stat/top/report/script renderers
 ```

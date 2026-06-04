@@ -3,11 +3,11 @@
 
 'use client';
 
-import { ProcessedEvent } from '@/types/event';
+import { ProcessedViewEvent } from '@/types/event';
 import { useTranslation } from '@/i18n';
 
 interface TimelineMinimapProps {
-  events: ProcessedEvent[];
+  events: ProcessedViewEvent[];
   fullTimeRange: { start: number; end: number };
   visibleTimeRange: { start: number; end: number };
   baseTimeSpan: number;
@@ -18,7 +18,7 @@ interface TimelineMinimapProps {
 
 interface TimelineGroup {
   source: string;
-  events: ProcessedEvent[];
+  events: ProcessedViewEvent[];
   color: string;
 }
 
@@ -34,7 +34,7 @@ export function TimelineMinimap({
   const { t } = useTranslation();
   // Group events by source for minimap
   const timelineGroups: TimelineGroup[] = [];
-  const grouped: { [source: string]: ProcessedEvent[] } = {};
+  const grouped: { [source: string]: ProcessedViewEvent[] } = {};
   
   events.forEach(event => {
     if (!grouped[event.source]) {

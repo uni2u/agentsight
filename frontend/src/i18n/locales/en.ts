@@ -4,31 +4,18 @@
 export const en = {
   // App (page.tsx)
   'app.title': 'AgentSight Analyzer',
-  'app.subtitle': 'Upload and analyze eBPF agent trace logs',
+  'app.subtitle': 'Inspect the live materialized view of agent activity',
   'app.eventsLoaded': '{count} events loaded',
-  'app.file': 'File:',
   'app.syncing': 'Syncing...',
   'app.logView': 'Log View',
   'app.timelineView': 'Timeline View',
   'app.processTree': 'Process Tree',
   'app.metrics': 'Metrics',
-  'app.hideLog': 'Hide Log',
-  'app.uploadLog': 'Upload Log',
   'app.syncData': 'Sync Data',
   'app.clearData': 'Clear Data',
   'app.loadingEvents': 'Loading events from server...',
   'app.noEventsLoaded': 'No events loaded',
   'app.syncFromServer': 'Sync Data from Server',
-  'app.uploadLogFile': 'Upload Log File',
-
-  // Upload (UploadPanel.tsx)
-  'upload.title': 'Upload Log File',
-  'upload.chooseFile': 'Choose log file',
-  'upload.or': 'or',
-  'upload.pasteContent': 'Paste log content',
-  'upload.pastePlaceholder': 'Paste log content here (e.g., from {path})',
-  'upload.parseLog': 'Parse Log',
-  'upload.parsing': 'Parsing log content...',
 
   // Modal (EventModal.tsx)
   'modal.eventDetails': 'Event Details',
@@ -108,7 +95,6 @@ export const en = {
   'metrics.peakCpu': 'Peak CPU',
   'metrics.avgMemory': 'Avg Memory',
   'metrics.peakMemory': 'Peak Memory',
-  'metrics.alerts': 'Alerts',
   'metrics.cpuOverTime': 'CPU Usage Over Time',
   'metrics.memoryOverTime': 'Memory Usage Over Time',
   'metrics.dataPoints': '{count} data points',
@@ -118,8 +104,6 @@ export const en = {
   'metrics.table.pid': 'PID',
   'metrics.table.cpuPercent': 'CPU %',
   'metrics.table.memoryRss': 'Memory (RSS)',
-  'metrics.table.threads': 'Threads',
-  'metrics.table.children': 'Children',
 
   // Timeline (Timeline.tsx)
   'timeline.title': 'Timeline View',

@@ -23,8 +23,9 @@ use crate::output::{
     print_web_server_error, print_web_server_start,
 };
 use crate::server::WebServer;
-use crate::sinks::{FileLogger, OtelExporter, SqliteSink};
+use crate::sinks::OtelExporter;
 use crate::sources::proc::{PidSeed, ProcSnapshot};
+use crate::stores::sqlite::SqliteStore;
 use crate::view::{MaterializedView, SharedMaterializedView};
 
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
@@ -77,29 +78,11 @@ pub(crate) struct TraceConfig {
     pub(crate) otel: Option<OtelConfig>,
     /// SSL binary path; may be a `docker://` ref that `run_trace` resolves in place.
     pub(crate) binary_path: Option<String>,
-    pub(crate) log_file: String,
     pub(crate) db_path: Option<String>,
     pub(crate) quiet: bool,
-    pub(crate) rotate_logs: bool,
-    pub(crate) max_log_size: u64,
     pub(crate) server: bool,
     pub(crate) server_listen: Option<String>,
     pub(crate) server_port: u16,
-}
-
-/// Build a FileLogger, turning an open failure (missing dir, no permission, ...)
-/// into a clean RunnerError instead of an `.unwrap()` panic.
-pub(crate) fn make_file_logger(
-    log_file: &str,
-    rotate_logs: bool,
-    max_log_size: u64,
-) -> Result<FileLogger, RunnerError> {
-    let result = if rotate_logs {
-        FileLogger::with_max_size(log_file, max_log_size)
-    } else {
-        FileLogger::new(log_file)
-    };
-    result.map_err(|e| RunnerError::from(format!("failed to open log file '{}': {}", log_file, e)))
 }
 
 pub(crate) fn build_stdio_args(
@@ -176,10 +159,7 @@ pub(crate) fn build_trace_agent_with_view(
     let disable_auth_removal = cfg.disable_auth_removal;
     let otel = &cfg.otel;
     let binary_path = cfg.binary_path.as_deref();
-    let log_file = cfg.log_file.as_str();
     let db_path = cfg.db_path.as_deref();
-    let rotate_logs = cfg.rotate_logs;
-    let max_log_size = cfg.max_log_size;
 
     let mut agent = AgentRunner::new();
 
@@ -340,20 +320,15 @@ pub(crate) fn build_trace_agent_with_view(
         );
     }
 
-    // Add global materialized view. The file log and optional exporters consume
-    // view updates, not raw runner events.
+    // Add global materialized view. Optional exporters consume projected rows,
+    // not raw runner events.
     let mut materializer = MaterializingAnalyzer::with_view(view);
     if let Some(path) = db_path {
         materializer =
-            materializer.add_view_sink(Box::new(SqliteSink::new(path).map_err(|e| {
+            materializer.add_view_sink(Box::new(SqliteStore::open(path).map_err(|e| {
                 RunnerError::from(format!("failed to open SQLite database '{}': {}", path, e))
             })?));
     }
-    materializer = materializer.add_view_sink(Box::new(make_file_logger(
-        log_file,
-        rotate_logs,
-        max_log_size,
-    )?));
     if let Some(otel_config) = otel {
         materializer = materializer.add_view_sink(Box::new(OtelExporter::new(
             otel_config.endpoint.clone(),

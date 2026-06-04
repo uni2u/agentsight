@@ -86,7 +86,7 @@ EOF
 cd /root/yunwei37/agentsight/collector
 cargo run trace --ssl --process \
     --comm python --comm crewai \
-    --server --log-file crewai_loop_detection.log \
+    --server \
     --process-filter "exec.contains('python')" \
     --ssl-filter "data.contains('openai') OR data.contains('serper')" \
     --http-filter "request.path.contains('/chat/completions') OR request.path.contains('/search')"

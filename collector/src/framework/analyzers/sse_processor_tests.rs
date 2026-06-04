@@ -8,8 +8,7 @@ mod sse_processor_tests {
     use super::super::sse_processor::SSEProcessor;
     use crate::framework::core::Event;
     use crate::framework::runners::EventStream;
-    use crate::view::ViewProjector;
-    use crate::view::types::ViewUpdate;
+    use crate::view::MaterializedView;
     use futures::stream;
     use futures::stream::StreamExt;
     use serde_json::json;
@@ -65,7 +64,7 @@ mod sse_processor_tests {
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].source, "sse_processor");
 
-        let mut view = ViewProjector::new();
+        let mut view = MaterializedView::new();
         let req = Event::new_with_timestamp(
             1,
             "http_parser".to_string(),
@@ -80,18 +79,15 @@ mod sse_processor_tests {
                 "body": "{\"model\":\"gemini-2.5-pro\"}"
             }),
         );
-        let mut updates = view.ingest_event(&req);
-        updates.extend(view.ingest_event(&collected[0]));
+        view.ingest_event(&req).unwrap();
+        view.ingest_event(&collected[0]).unwrap();
 
-        let total: i64 = updates
+        let total = view
+            .export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 0 })
+            .token_summary
             .into_iter()
-            .filter_map(|update| match update {
-                ViewUpdate::TokenUsage(row) if row.source == "response_usage" => {
-                    Some(row.total_tokens)
-                }
-                _ => None,
-            })
-            .sum();
+            .map(|row| row.total_tokens)
+            .sum::<i64>();
         assert_eq!(total, 15);
     }
 

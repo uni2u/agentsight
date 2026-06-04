@@ -497,7 +497,7 @@ EOF
 cd /root/yunwei37/agentsight/collector
 cargo run trace --ssl --process \
     --comm python --comm Agent_A --comm Agent_B --comm Agent_C \
-    --server --log-file multi_agent_test.log \
+    --server \
     --process-filter "path.contains('/tmp/multi_agent_project')"
 ```
 

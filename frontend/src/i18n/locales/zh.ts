@@ -8,31 +8,18 @@ type TranslationKey = keyof typeof en;
 export const zh: Record<TranslationKey, string> = {
   // App
   'app.title': 'AgentSight 分析器',
-  'app.subtitle': '上传并分析 eBPF Agent 追踪日志',
+  'app.subtitle': '查看 Agent 活动的实时物化视图',
   'app.eventsLoaded': '{count} 个事件已加载',
-  'app.file': '文件：',
   'app.syncing': '同步中...',
   'app.logView': '日志视图',
   'app.timelineView': '时间线视图',
   'app.processTree': '进程树',
   'app.metrics': '性能指标',
-  'app.hideLog': '隐藏上传',
-  'app.uploadLog': '上传日志',
   'app.syncData': '同步数据',
   'app.clearData': '清除数据',
   'app.loadingEvents': '正在从服务器加载事件...',
   'app.noEventsLoaded': '暂无事件数据',
   'app.syncFromServer': '从服务器同步数据',
-  'app.uploadLogFile': '上传日志文件',
-
-  // Upload
-  'upload.title': '上传日志文件',
-  'upload.chooseFile': '选择日志文件',
-  'upload.or': '或',
-  'upload.pasteContent': '粘贴日志内容',
-  'upload.pastePlaceholder': '在此粘贴日志内容（例如来自 {path}）',
-  'upload.parseLog': '解析日志',
-  'upload.parsing': '正在解析日志内容...',
 
   // Modal
   'modal.eventDetails': '事件详情',
@@ -112,7 +99,6 @@ export const zh: Record<TranslationKey, string> = {
   'metrics.peakCpu': '峰值 CPU',
   'metrics.avgMemory': '平均内存',
   'metrics.peakMemory': '峰值内存',
-  'metrics.alerts': '告警',
   'metrics.cpuOverTime': 'CPU 使用率变化',
   'metrics.memoryOverTime': '内存使用变化',
   'metrics.dataPoints': '{count} 个数据点',
@@ -122,8 +108,6 @@ export const zh: Record<TranslationKey, string> = {
   'metrics.table.pid': 'PID',
   'metrics.table.cpuPercent': 'CPU %',
   'metrics.table.memoryRss': '内存 (RSS)',
-  'metrics.table.threads': '线程',
-  'metrics.table.children': '子进程',
 
   // Timeline
   'timeline.title': '时间线视图',

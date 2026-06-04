@@ -19,10 +19,8 @@ The current view is a materialized read model for API, CLI, and UI consumers.
 ```text
 raw Event
   -> normalize_event()
-  -> ViewProjector
-  -> ViewUpdate
-  -> ViewState
-  -> Snapshot / SQLite / JSONL / API
+  -> MaterializedView
+  -> Snapshot / SQLite / API
 ```
 
 Current in-memory state is roughly:
@@ -46,7 +44,9 @@ Snapshot
   summary
   token_summary
   network_targets
+  process_nodes
   audit_events
+  resource_samples
   sessions
   agents
 ```
@@ -236,9 +236,10 @@ Identity and attribution are currently spread across:
 
 - `sources/proc.rs`: process discovery and process-tree heuristics
 - `sources/session.rs`: local transcript discovery and parsing
-- `view/projector.rs`: LLM correlation and agent classification
+- `view/projection.rs`: LLM correlation and row projection on MaterializedView
 - `cmd_perf/live.rs`: proc fd scans, eBPF file evidence, sticky live bindings
-- frontend parsing: multiple backend shapes converted into UI event-like data
+- frontend rendering: process trees are built from snapshot `process_nodes` and
+  timestamp-matched `audit_events`
 
 The repeated concepts are agent classification, session identity, process-tree
 ownership, match confidence, and source provenance.
@@ -291,7 +292,7 @@ unattributed
 
 Deletion-first checklist:
 
-- [x] Remove `ViewProjector` agent-session inference from LLM/token telemetry.
+- [x] Remove agent-session inference from LLM/token telemetry projection.
 - [x] Remove the saved-DB top path that reconstructed process families from
   audit events.
 - [x] Add view-native `ProcessNodeRow` so snapshots can expose process structure

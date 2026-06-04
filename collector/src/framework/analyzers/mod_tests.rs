@@ -1,6 +1,5 @@
 use super::*;
 use crate::framework::runners::{EventStream, FakeRunner, Runner};
-use crate::sinks::FileLogger;
 use crate::view::MaterializedView;
 use futures::stream::StreamExt;
 use serde_json::json;
@@ -9,13 +8,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Instant;
-use tempfile::NamedTempFile;
 use tokio::time::Duration;
 
-fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
-    MaterializingAnalyzer::with_view(MaterializedView::shared()).add_view_sink(Box::new(
-        FileLogger::new(path).expect("create test file logger"),
-    ))
+fn materializer() -> MaterializingAnalyzer {
+    MaterializingAnalyzer::with_view(MaterializedView::shared())
 }
 
 /// Custom test analyzer that simulates errors
@@ -119,9 +115,7 @@ impl Analyzer for MetadataEnricherAnalyzer {
 
 #[tokio::test]
 async fn test_complex_analyzer_chain_composition() {
-    let temp_file = NamedTempFile::new().unwrap();
-
-    // Create a complex chain: Filter -> ChunkMerger -> Enrich -> materialized file sink.
+    // Create a complex chain: Filter -> ChunkMerger -> Enrich -> materialized view.
     let mut runner = FakeRunner::new()
         .event_count(5) // 10 events total
         .delay_ms(10)
@@ -131,7 +125,7 @@ async fn test_complex_analyzer_chain_composition() {
         .add_analyzer(Box::new(MetadataEnricherAnalyzer::new(
             json!({"test_run": "complex_chain", "version": "1.0"}),
         )))
-        .add_analyzer(Box::new(file_materializer(temp_file.path())));
+        .add_analyzer(Box::new(materializer()));
 
     let stream = runner.run().await.unwrap();
     let events: Vec<_> = stream.collect().await;
@@ -159,10 +153,6 @@ async fn test_complex_analyzer_chain_composition() {
         .filter(|e| e.source == "sse_processor")
         .count();
     // Note: sse_events might be 0 if no SSE data was processed
-
-    // Verify file was written
-    let file_size = std::fs::metadata(temp_file.path()).unwrap().len();
-    assert!(file_size > 0, "Log file should have content");
 }
 
 #[tokio::test]

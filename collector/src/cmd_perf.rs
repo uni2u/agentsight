@@ -423,37 +423,7 @@ fn dominant_model(snapshot: &Snapshot) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::MaterializedView;
-    use crate::view::types::{AuditEventRow, ViewUpdate};
-
-    #[test]
-    fn stat_tokens_fall_back_to_agent_sessions() {
-        let session = SessionRow {
-            id: "session-1".to_string(),
-            agent_type: "claude-code".to_string(),
-            agent_name: Some("claude".to_string()),
-            pid: None,
-            comm: None,
-            start_timestamp_ms: 1_000,
-            end_timestamp_ms: Some(2_000),
-            status: "completed".to_string(),
-            model: Some("claude-opus-4-6".to_string()),
-            input_tokens: 3,
-            output_tokens: 10,
-            total_tokens: 27667,
-            view_source: "claude-code".to_string(),
-            confidence: Some(0.9),
-            attributes: serde_json::json!({}),
-        };
-        let mut view = MaterializedView::new();
-        view.load_update(ViewUpdate::Session(session));
-        let snapshot = view.export_snapshot(SnapshotOptions { audit_limit: 0 });
-
-        assert_eq!(snapshot.summary.input_tokens, 3);
-        assert_eq!(snapshot.summary.output_tokens, 10);
-        assert_eq!(snapshot.summary.total_tokens, 27667);
-        assert_eq!(snapshot.token_summary[0].group, "claude-opus-4-6");
-    }
+    use crate::view::types::AuditEventRow;
 
     #[test]
     fn stat_tokens_ignore_touched_local_log_without_usage() {

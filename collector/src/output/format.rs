@@ -397,10 +397,6 @@ pub(crate) fn print_record_session_summary(summary: &SessionSummary) {
     print_session_summary(summary);
 }
 
-pub(crate) fn print_record_data_url(url: &str, log_file: &str) {
-    println!("Recorded data remains viewable at {url} (log: {log_file})");
-}
-
 pub(crate) fn print_record_target_status_error(error: impl std::fmt::Display) {
     println!("⚠ Error checking target status: {error}");
 }
@@ -411,10 +407,6 @@ pub(crate) fn print_record_target_shutdown_error(error: impl std::fmt::Display) 
 
 pub(crate) fn print_record_kill_error(error: impl std::fmt::Display) {
     println!("⚠ Failed to kill target process: {error}");
-}
-
-pub(crate) fn print_replay(db: &str, inserted: usize) {
-    println!("Replayed {inserted} events into {db} view tables");
 }
 
 pub(crate) fn print_exported_snapshot(output: &str) {

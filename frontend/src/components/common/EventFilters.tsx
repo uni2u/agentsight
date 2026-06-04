@@ -3,13 +3,13 @@
 
 'use client';
 
-import { ProcessedEvent } from '@/types/event';
+import { ProcessedViewEvent } from '@/types/event';
 import { getUniqueValues } from '@/utils/eventProcessing';
 import { useMemo } from 'react';
 import { useTranslation } from '@/i18n';
 
 interface EventFiltersProps {
-  events: ProcessedEvent[];
+  events: ProcessedViewEvent[];
   selectedSource: string;
   selectedComm: string;
   selectedPid: string;

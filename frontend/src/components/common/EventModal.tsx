@@ -3,12 +3,12 @@
 
 'use client';
 
-import { ProcessedEvent } from '@/types/event';
+import { ProcessedViewEvent } from '@/types/event';
 import { decodeStdioMessage, formatStdioExpandedContent, isStdioSource } from '@/utils/stdioParser';
 import { useTranslation } from '@/i18n';
 
 interface EventModalProps {
-  event: ProcessedEvent | null;
+  event: ProcessedViewEvent | null;
   onClose: () => void;
   title?: string;
 }

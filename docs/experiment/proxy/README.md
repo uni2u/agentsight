@@ -134,7 +134,7 @@ let proxy_runner = ProxyRunner::builder()
     .add_analyzer(HttpParser::new())
     .add_analyzer(ChunkMerger::new())
     .add_analyzer(AuthHeaderRemover::new())
-    .add_analyzer(FileLogger::new("proxy.log"))
+    .add_analyzer(MaterializingAnalyzer::with_view(MaterializedView::shared()))
     .add_analyzer(MetricsCollector::new())
     .build();
 

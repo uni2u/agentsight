@@ -19,7 +19,7 @@
 //!
 use crate::framework::analyzers::AnalyzerError;
 use crate::framework::semantic::llm::provider_from_host;
-use crate::view::types::{LlmCallRow, ViewResult, ViewUpdate, ViewUpdateSink};
+use crate::view::types::{LlmCallRow, ViewResult, ViewSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
@@ -274,11 +274,8 @@ impl SpanInput {
     }
 }
 
-impl ViewUpdateSink for OtelExporter {
-    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
-        let ViewUpdate::LlmCall(call) = update else {
-            return Ok(());
-        };
+impl ViewSink for OtelExporter {
+    fn llm_call(&mut self, call: &LlmCallRow) -> ViewResult<()> {
         let Some(end_ms) = call.end_timestamp_ms else {
             return Ok(());
         };

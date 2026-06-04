@@ -35,7 +35,7 @@ mod text;
 mod view;
 
 use cli_db::{
-    configured_db_path, run_audit_query, run_db_summary, run_export, run_prompts_query, run_replay,
+    configured_db_path, run_audit_query, run_db_summary, run_export, run_prompts_query,
     run_token_query,
 };
 use cli_discover::run_discover;
@@ -200,15 +200,6 @@ enum Commands {
         /// Override the auto-discovered SSL binary path when tracing a command
         #[arg(long)]
         binary_path: Option<String>,
-        /// ViewUpdate JSONL log file for output and server when tracing a command
-        #[arg(short = 'o', long, default_value = "record.log")]
-        log_file: String,
-        /// Enable log rotation
-        #[arg(long, default_value = "true")]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Disable the web server while tracing a command
         #[arg(long)]
         no_server: bool,
@@ -264,18 +255,9 @@ enum Commands {
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
         #[arg(long)]
         binary_path: Option<String>,
-        /// ViewUpdate JSONL log file for output and server
-        #[arg(short = 'o', long, default_value = "record.log")]
-        log_file: String,
         /// SQLite database path for view snapshots
         #[arg(long)]
         db: Option<String>,
-        /// Enable log rotation
-        #[arg(long, default_value = "true")]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Disable the web server
         #[arg(long)]
         no_server: bool,
@@ -318,7 +300,7 @@ enum Commands {
     /// Database operations: query tokens, audit events, import/export
     #[command(subcommand)]
     Db(DbCommands),
-    /// Low-level debugging tools: print raw streams; log files store ViewUpdate JSONL
+    /// Low-level debugging tools: print raw streams and optionally serve a live view
     #[command(subcommand)]
     Debug(DebugCommands),
 }
@@ -385,22 +367,13 @@ enum DbCommands {
         #[arg(long, default_value = "10000")]
         audit_limit: usize,
     },
-    /// Import a JSONL capture into SQLite view tables
-    Import {
-        /// Input JSONL log file
-        #[arg(short, long)]
-        input: String,
-        /// SQLite database path
-        #[arg(long)]
-        db: String,
-    },
     /// List session databases
     List,
 }
 
 #[derive(Subcommand)]
 enum DebugCommands {
-    /// Print SSL traffic as raw/analyzed JSON; write ViewUpdate JSONL to --log-file
+    /// Print SSL traffic as raw/analyzed JSON
     Ssl {
         /// Enable SSE processing for SSL traffic
         #[arg(long)]
@@ -423,21 +396,12 @@ enum DebugCommands {
         /// Suppress console output
         #[arg(short, long)]
         quiet: bool,
-        /// Enable log rotation
-        #[arg(long)]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Start web server on port 7395
         #[arg(long)]
         server: bool,
         /// Server port (used with --server)
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// ViewUpdate JSONL log file to serve via API (used with --server)
-        #[arg(long, default_value = "ssl.log")]
-        log_file: String,
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
         #[arg(long)]
         binary_path: Option<String>,
@@ -445,31 +409,22 @@ enum DebugCommands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Print process runner events; write ViewUpdate JSONL to --log-file
+    /// Print process runner events
     Process {
         /// Suppress console output
         #[arg(short, long)]
         quiet: bool,
-        /// Enable log rotation
-        #[arg(long)]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Start web server on port 7395
         #[arg(long)]
         server: bool,
         /// Server port (used with --server)
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// ViewUpdate JSONL log file to serve via API (used with --server)
-        #[arg(long, default_value = "process.log")]
-        log_file: String,
         /// Additional arguments to pass to the process binary
         #[arg(last = true)]
         args: Vec<String>,
     },
-    /// Print local stdio payloads from a target process; write ViewUpdate JSONL to --log-file
+    /// Print local stdio payloads from a target process
     Stdio {
         /// Target PID (required)
         #[arg(short = 'p', long)]
@@ -489,21 +444,12 @@ enum DebugCommands {
         /// Suppress console output
         #[arg(short, long)]
         quiet: bool,
-        /// Enable log rotation
-        #[arg(long)]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Start web server on port 7395
         #[arg(long)]
         server: bool,
         /// Server port (used with --server)
         #[arg(long, default_value = "7395")]
         server_port: u16,
-        /// ViewUpdate JSONL log file to serve via API (used with --server)
-        #[arg(long, default_value = "stdio.log")]
-        log_file: String,
     },
     /// Combined SSL and Process monitoring with configurable options
     Trace {
@@ -579,21 +525,12 @@ enum DebugCommands {
         /// Path to the binary executable to monitor (e.g., ~/.nvm/versions/node/v20.0.0/bin/node)
         #[arg(long)]
         binary_path: Option<String>,
-        /// ViewUpdate JSONL log file for output and server
-        #[arg(short = 'o', long, default_value = "trace.log")]
-        log_file: String,
         /// SQLite database path for view snapshots
         #[arg(long)]
         db: Option<String>,
         /// Suppress console output
         #[arg(short, long)]
         quiet: bool,
-        /// Enable log rotation
-        #[arg(long)]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Start web server on port 7395
         #[arg(long)]
         server: bool,
@@ -621,18 +558,9 @@ enum DebugCommands {
         /// Memory usage threshold for alerts (MB)
         #[arg(long)]
         memory_threshold: Option<u64>,
-        /// ViewUpdate JSONL log file for output and server
-        #[arg(short = 'o', long, default_value = "system.log")]
-        log_file: String,
         /// Suppress console output
         #[arg(short, long)]
         quiet: bool,
-        /// Enable log rotation
-        #[arg(long)]
-        rotate_logs: bool,
-        /// Maximum log file size in MB (used with --rotate-logs)
-        #[arg(long, default_value = "10")]
-        max_log_size: u64,
         /// Start web server on port 7395
         #[arg(long)]
         server: bool,
@@ -672,7 +600,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     };
                     run_db_summary(resolved.as_deref())?;
                 }
-                DbCommands::Import { input, db } => run_replay(input, db)?,
                 DbCommands::Token { db, group_by, json } => {
                     let db = resolve_db_or_latest(db)?;
                     run_token_query(&db, group_by, *json)?;
@@ -765,11 +692,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match &cli.command {
         Commands::Stat {
             binary_path,
-            log_file,
             db,
             json,
-            rotate_logs,
-            max_log_size,
             no_server,
             server_port,
             command,
@@ -784,10 +708,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &binary_extractor,
                 command,
                 binary_path.as_deref(),
-                log_file,
                 configured_db_path(db),
-                *rotate_logs,
-                *max_log_size,
                 !*no_server,
                 &cli.listen,
                 *server_port,
@@ -804,10 +725,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             comm,
             pid,
             binary_path,
-            log_file,
             db,
-            rotate_logs,
-            max_log_size,
             no_server,
             server_port,
             command,
@@ -822,10 +740,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     &binary_extractor,
                     command,
                     binary_path.as_deref(),
-                    log_file,
                     configured_db_path(db),
-                    *rotate_logs,
-                    *max_log_size,
                     !*no_server,
                     &cli.listen,
                     *server_port,
@@ -870,11 +785,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 system_interval: 2,
                 http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
                 binary_path: binary_path.clone(),
-                log_file: log_file.clone(),
                 db_path,
                 quiet: true,
-                rotate_logs: *rotate_logs,
-                max_log_size: *max_log_size,
                 server: !*no_server,
                 server_listen: Some(cli.listen.clone()),
                 server_port: *server_port,
@@ -924,11 +836,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 disable_auth_removal,
                 ssl_filter,
                 quiet,
-                rotate_logs,
-                max_log_size,
                 server,
                 server_port,
-                log_file,
                 binary_path,
                 args,
             } => run_raw_ssl(
@@ -940,12 +849,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *disable_auth_removal,
                 ssl_filter,
                 *quiet,
-                *rotate_logs,
-                *max_log_size,
                 *server,
                 &cli.listen,
                 *server_port,
-                log_file,
                 binary_path.as_deref(),
                 args,
             )
@@ -953,21 +859,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map_err(convert_runner_error)?,
             DebugCommands::Process {
                 quiet,
-                rotate_logs,
-                max_log_size,
                 server,
                 server_port,
-                log_file,
                 args,
             } => run_raw_process(
                 &binary_extractor,
                 *quiet,
-                *rotate_logs,
-                *max_log_size,
                 *server,
                 &cli.listen,
                 *server_port,
-                log_file,
                 args,
             )
             .await
@@ -979,11 +879,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 all_fds,
                 max_bytes,
                 quiet,
-                rotate_logs,
-                max_log_size,
                 server,
                 server_port,
-                log_file,
             } => run_raw_stdio(
                 &binary_extractor,
                 *pid,
@@ -992,12 +889,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 *all_fds,
                 *max_bytes,
                 *quiet,
-                *rotate_logs,
-                *max_log_size,
                 *server,
                 &cli.listen,
                 *server_port,
-                log_file,
             )
             .await
             .map_err(convert_runner_error)?,
@@ -1026,11 +920,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 otel_endpoint,
                 otel_capture_content,
                 binary_path,
-                log_file,
                 db,
                 quiet,
-                rotate_logs,
-                max_log_size,
                 server,
                 server_port,
             } => {
@@ -1062,11 +953,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         capture_content: *otel_capture_content,
                     }),
                     binary_path: binary_path.clone(),
-                    log_file: log_file.clone(),
                     db_path: configured_db_path(db),
                     quiet: *quiet,
-                    rotate_logs: *rotate_logs,
-                    max_log_size: *max_log_size,
                     server: *server,
                     server_listen: Some(cli.listen.clone()),
                     server_port: *server_port,
@@ -1082,10 +970,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 no_children,
                 cpu_threshold,
                 memory_threshold,
-                log_file,
                 quiet,
-                rotate_logs,
-                max_log_size,
                 server,
                 server_port,
             } => run_system(
@@ -1095,10 +980,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 !*no_children,
                 *cpu_threshold,
                 *memory_threshold,
-                log_file,
                 *quiet,
-                *rotate_logs,
-                *max_log_size,
                 *server,
                 &cli.listen,
                 *server_port,

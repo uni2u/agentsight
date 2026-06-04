@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-import { Event, ProcessedEvent } from '@/types/event';
+import { ViewEvent, ProcessedViewEvent } from '@/types/event';
 import { decodeStdioMessage, isStdioSource } from './stdioParser';
 
 export const SOURCE_COLORS = [
@@ -26,7 +26,7 @@ export const SOURCE_COLOR_CLASSES = [
   'bg-gray-100 text-gray-800'
 ];
 
-export function processEvents(events: Event[]): ProcessedEvent[] {
+export function processViewEvents(events: ViewEvent[]): ProcessedViewEvent[] {
   const sourceColorMap = new Map<string, string>();
   const sourceColorClassMap = new Map<string, string>();
   let colorIndex = 0;
@@ -68,7 +68,7 @@ export function formatDuration(ms: number): string {
   return `${(ms / 60000).toFixed(1)}m`;
 }
 
-export function formatEventSummary(event: ProcessedEvent): string {
+export function formatViewEventSummary(event: ProcessedViewEvent): string {
   if (isStdioSource(event.source)) {
     const decoded = decodeStdioMessage(event.data);
     return `${event.comm} (${event.pid}) · ${decoded.summary}`;
@@ -77,15 +77,15 @@ export function formatEventSummary(event: ProcessedEvent): string {
   return `${event.comm} (${event.pid})`;
 }
 
-export function filterEvents(
-  events: ProcessedEvent[],
+export function filterViewEvents(
+  events: ProcessedViewEvent[],
   filters: {
     source?: string;
     comm?: string;
     pid?: string;
     searchTerm?: string;
   }
-): ProcessedEvent[] {
+): ProcessedViewEvent[] {
   let filtered = events;
 
   if (filters.source) {

@@ -3,19 +3,17 @@
 
 use crate::output::{
     FileAccessSummary, SessionSummary, SummaryStats, print_audit_rows, print_exported_snapshot,
-    print_json, print_llm_prompts, print_local_audit, print_replay, print_session_summary,
-    print_token_summary, prompt_text_chars, sorted_top_counts,
+    print_json, print_llm_prompts, print_local_audit, print_session_summary, print_token_summary,
+    prompt_text_chars, sorted_top_counts,
 };
-use crate::sinks::SqliteSink;
 use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::sources::sqlite::load_view as load_sqlite_view;
-use crate::view::MaterializedView;
 use crate::view::types::{SnapshotOptions, TokenSummary};
 
 #[cfg(test)]
 use crate::stores::sqlite::SqliteStore;
 #[cfg(test)]
-use crate::view::types::{TokenUsageRow, ViewUpdate};
+use crate::view::MaterializedView;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -23,18 +21,6 @@ pub(crate) fn configured_db_path(cli_value: &Option<String>) -> Option<String> {
     cli_value
         .clone()
         .or_else(|| std::env::var("AGENTSIGHT_DB_PATH").ok())
-}
-
-pub(crate) fn run_replay(
-    input: &str,
-    db: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut view = MaterializedView::new();
-    view.add_sink(Box::new(SqliteSink::new(db)?));
-    let inserted = view.ingest_jsonl_file(input)?;
-
-    print_replay(db, inserted);
-    Ok(())
 }
 
 pub(crate) fn run_token_query(
@@ -325,39 +311,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn replay_accepts_view_update_jsonl() {
-        let temp = tempfile::tempdir().unwrap();
-        let db = temp.path().join("view-log.db");
-        let input = temp.path().join("view.log");
-        let line = serde_json::to_string(&ViewUpdate::TokenUsage(TokenUsageRow {
-            id: "token-1".to_string(),
-            llm_call_id: "llm-1".to_string(),
-            timestamp_ms: 1_000,
-            pid: Some(42),
-            comm: Some("claude".to_string()),
-            provider: Some("anthropic".to_string()),
-            model: Some("claude-sonnet-4".to_string()),
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_creation_tokens: 0,
-            cache_read_tokens: 0,
-            total_tokens: 15,
-            source: "response_usage".to_string(),
-            view_source: "view".to_string(),
-            confidence: Some(0.95),
-        }))
-        .unwrap();
-        std::fs::write(&input, format!("{line}\n")).unwrap();
-
-        run_replay(input.to_str().unwrap(), db.to_str().unwrap()).unwrap();
-
-        let view = load_sqlite_view(&db).unwrap();
-        let rows = view.token_summary("model");
-        assert_eq!(rows[0].group, "claude-sonnet-4");
-        assert_eq!(rows[0].total_tokens, 15);
-    }
-
-    #[test]
     fn sqlite_load_view_does_not_create_missing_db() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("missing.db");
@@ -410,7 +363,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("summary.db");
         let mut view = MaterializedView::new();
-        view.add_sink(Box::new(SqliteSink::new(&db).unwrap()));
+        view.add_sink(Box::new(SqliteStore::open(&db).unwrap()));
 
         for event in [
             Event::new_with_timestamp(
@@ -466,7 +419,7 @@ mod tests {
             view.ingest_event(&event).unwrap();
         }
 
-        view.ingest_update(&ViewUpdate::ToolCall(crate::view::types::ToolCallRow {
+        view.emit_tool_call(crate::view::types::ToolCallRow {
             id: "tool-1".to_string(),
             session_id: None,
             conversation_id: None,
@@ -483,7 +436,7 @@ mod tests {
             related_event_id: None,
             view_source: "claude-code".to_string(),
             confidence: None,
-        }))
+        })
         .unwrap();
 
         let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
@@ -505,35 +458,6 @@ mod tests {
             summary
                 .endpoints
                 .contains(&"api.anthropic.com/v1/messages(2)".to_string())
-        );
-    }
-
-    #[test]
-    fn sqlite_summary_uses_agent_session_tokens_when_token_usage_is_empty() {
-        let temp = tempfile::tempdir().unwrap();
-        let db = temp.path().join("session-tokens.db");
-        let store = SqliteStore::open(&db).unwrap();
-
-        store
-            .connection()
-            .execute(
-                "INSERT INTO agent_sessions (
-                    id, agent_type, agent_name, start_timestamp_ms, end_timestamp_ms,
-                    status, model, input_tokens, output_tokens, total_tokens,
-                    view_source, confidence, attributes_json
-                 ) VALUES (
-                    'session-1', 'claude-code', 'claude', 1000, 2000,
-                    'completed', 'claude-opus-4-6', 3, 10, 27667,
-                    'claude-code', 0.9, '{}'
-                 )",
-                [],
-            )
-            .unwrap();
-
-        let summary = SessionSummary::from_sqlite(db.to_str().unwrap()).unwrap();
-        assert_eq!(
-            summary.models,
-            vec![("claude-opus-4-6".to_string(), 3, 10, 27667, 1)]
         );
     }
 

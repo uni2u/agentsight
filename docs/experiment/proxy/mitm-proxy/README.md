@@ -128,7 +128,7 @@ let mitm_runner = MitmProxyRunner::builder()
     .ca_cert_path("mitm-ca.crt")
     .add_analyzer(HttpParser::new())
     .add_analyzer(ChunkMerger::new())
-    .add_analyzer(FileLogger::new("mitm-traffic.log"))
+    .add_analyzer(MaterializingAnalyzer::with_view(MaterializedView::shared()))
     .build();
 
 mitm_runner.run().await?;

@@ -716,8 +716,7 @@ impl Analyzer for HTTPParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::ViewProjector;
-    use crate::view::types::ViewUpdate;
+    use crate::view::MaterializedView;
     use futures::StreamExt;
     use hpack::Encoder as HpackEncoder;
     use serde_json::json;
@@ -812,20 +811,16 @@ mod tests {
                 .contains("usageMetadata")
         );
 
-        let mut view = ViewProjector::new();
-        let mut updates = Vec::new();
+        let mut view = MaterializedView::new();
         for event in output {
-            updates.extend(view.ingest_event(&event));
+            view.ingest_event(&event).unwrap();
         }
-        let total: i64 = updates
+        let total = view
+            .export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 0 })
+            .token_summary
             .into_iter()
-            .filter_map(|update| match update {
-                ViewUpdate::TokenUsage(row) if row.source == "response_usage" => {
-                    Some(row.total_tokens)
-                }
-                _ => None,
-            })
-            .sum();
+            .map(|row| row.total_tokens)
+            .sum::<i64>();
         assert_eq!(total, 15);
     }
 

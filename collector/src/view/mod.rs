@@ -1,145 +1,22 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-mod projector;
+mod projection;
 pub mod types;
 
-pub(crate) use projector::ViewProjector;
-
-use crate::framework::core::Event;
 use crate::view::types::{
     AgentRow, AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow,
     SessionRow, Snapshot, SnapshotOptions, SnapshotSummary, TokenSummary, TokenUsageRow,
-    ToolCallRow, ViewResult, ViewUpdate, ViewUpdateSink,
+    ToolCallRow, ViewResult, ViewSink,
 };
 use chrono::{SecondsFormat, Utc};
-use std::collections::BTreeMap;
-use std::path::Path;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 pub(crate) type SharedMaterializedView = Arc<Mutex<MaterializedView>>;
 
 pub(crate) struct MaterializedView {
-    projector: ViewProjector,
-    state: ViewState,
-    sinks: Vec<Box<dyn ViewUpdateSink>>,
-}
-
-impl MaterializedView {
-    pub(crate) fn new() -> Self {
-        Self {
-            projector: ViewProjector::new(),
-            state: ViewState::default(),
-            sinks: Vec::new(),
-        }
-    }
-
-    pub(crate) fn shared() -> SharedMaterializedView {
-        Arc::new(Mutex::new(Self::new()))
-    }
-
-    pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewUpdateSink>) {
-        self.sinks.push(sink);
-    }
-
-    pub(crate) fn set_source(&mut self, source: impl Into<String>) {
-        self.state.source = source.into();
-    }
-
-    pub(crate) fn load_update(&mut self, update: ViewUpdate) {
-        self.state.apply_update(&update);
-    }
-
-    pub(crate) fn ingest_event(&mut self, event: &Event) -> ViewResult<()> {
-        let updates = self.projector.ingest_event(event);
-        for update in updates {
-            self.apply_and_publish_update(&update)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn ingest_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
-        self.apply_and_publish_update(update)
-    }
-
-    pub(crate) fn ingest_jsonl_file(&mut self, path: impl AsRef<Path>) -> ViewResult<usize> {
-        let content = std::fs::read_to_string(path)?;
-        let mut inserted = 0usize;
-        for (idx, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(update) = serde_json::from_str::<ViewUpdate>(trimmed) {
-                self.ingest_update(&update)?;
-            } else {
-                let event: Event = serde_json::from_str(trimmed)
-                    .map_err(|e| format!("failed to parse JSONL line {}: {}", idx + 1, e))?;
-                self.ingest_event(&event)?;
-            }
-            inserted += 1;
-        }
-        Ok(inserted)
-    }
-
-    fn apply_and_publish_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
-        self.state.apply_update(update);
-        self.publish_update(update)
-    }
-
-    fn publish_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
-        let mut first_error = None;
-        for sink in &mut self.sinks {
-            if let Err(error) = sink.update(update) {
-                log::warn!("MaterializedView: failed to publish view update: {}", error);
-                first_error.get_or_insert_with(|| error.to_string());
-            }
-        }
-        if let Some(error) = first_error {
-            return Err(std::io::Error::other(error).into());
-        }
-        Ok(())
-    }
-
-    pub(crate) fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {
-        self.state.export_snapshot(options)
-    }
-
-    pub(crate) fn token_summary(&self, group_by: &str) -> Vec<TokenSummary> {
-        self.state.token_summary(group_by)
-    }
-
-    pub(crate) fn audit_rows(&self, audit_type: Option<&str>, limit: usize) -> Vec<AuditEventRow> {
-        self.state.audit_rows(audit_type, limit)
-    }
-
-    pub(crate) fn llm_call_rows(&self, limit: usize) -> Vec<LlmCallRow> {
-        self.state.llm_call_rows(limit)
-    }
-
-    pub(crate) fn first_tool_timestamp_ms(&self) -> Option<u64> {
-        self.state.first_tool_timestamp_ms()
-    }
-
-    pub(crate) fn tool_call_count(&self) -> i64 {
-        self.state.tool_call_count()
-    }
-
-    pub(crate) fn tool_counts(&self) -> BTreeMap<String, usize> {
-        self.state.tool_counts()
-    }
-
-    pub(crate) fn tool_durations_ms(&self) -> Vec<u64> {
-        self.state.tool_durations_ms()
-    }
-
-    pub(crate) fn resource_samples(&self) -> Vec<(Option<f64>, Option<i64>)> {
-        self.state.resource_samples()
-    }
-}
-
-#[derive(Default)]
-struct ViewState {
     source: String,
     llm_calls: BTreeMap<String, LlmCallRow>,
     token_usage: BTreeMap<String, TokenUsageRow>,
@@ -149,30 +26,161 @@ struct ViewState {
     sessions: BTreeMap<String, SessionRow>,
     network_targets: BTreeMap<String, NetworkTargetRow>,
     resource_samples: Vec<ResourceSampleRow>,
+    sinks: Vec<Box<dyn ViewSink>>,
+    pending: HashMap<(u32, u64), VecDeque<PendingRequest>>,
+    active_processes: HashMap<u32, String>,
+    next_seq: u64,
 }
 
-impl ViewState {
-    fn apply_update(&mut self, update: &ViewUpdate) {
-        match update {
-            ViewUpdate::LlmCall(row) => {
-                self.llm_calls.insert(row.id.clone(), row.clone());
-            }
-            ViewUpdate::TokenUsage(row) => {
-                self.token_usage.insert(row.id.clone(), row.clone());
-            }
-            ViewUpdate::AuditEvent(row) => {
-                self.audit_events.insert(row.id.clone(), row.clone());
-            }
-            ViewUpdate::ProcessNode(row) => self.upsert_process_node(row),
-            ViewUpdate::ToolCall(row) => {
-                self.tool_calls.insert(row.id.clone(), row.clone());
-            }
-            ViewUpdate::Session(row) => self.upsert_session(row),
-            ViewUpdate::NetworkTarget(row) => self.upsert_network_target(row),
-            ViewUpdate::ResourceSample(row) => {
-                self.resource_samples.push(row.clone());
+#[derive(Debug, Clone)]
+struct PendingRequest {
+    event_id: String,
+    timestamp_ms: u64,
+    pid: u32,
+    comm: String,
+    provider: Option<String>,
+    model: Option<String>,
+    host: Option<String>,
+    path: Option<String>,
+    request_id: Option<String>,
+    body_json: Option<Value>,
+}
+
+impl MaterializedView {
+    pub(crate) fn new() -> Self {
+        Self {
+            source: String::new(),
+            llm_calls: BTreeMap::new(),
+            token_usage: BTreeMap::new(),
+            audit_events: BTreeMap::new(),
+            process_nodes: BTreeMap::new(),
+            tool_calls: BTreeMap::new(),
+            sessions: BTreeMap::new(),
+            network_targets: BTreeMap::new(),
+            resource_samples: Vec::new(),
+            sinks: Vec::new(),
+            pending: HashMap::new(),
+            active_processes: HashMap::new(),
+            next_seq: 0,
+        }
+    }
+
+    pub(crate) fn shared() -> SharedMaterializedView {
+        Arc::new(Mutex::new(Self::new()))
+    }
+
+    pub(crate) fn add_sink(&mut self, sink: Box<dyn ViewSink>) {
+        self.sinks.push(sink);
+    }
+
+    pub(crate) fn set_source(&mut self, source: impl Into<String>) {
+        self.source = source.into();
+    }
+
+    pub(crate) fn load_llm_call(&mut self, row: LlmCallRow) {
+        self.apply_llm_call(&row);
+    }
+
+    pub(crate) fn load_token_usage(&mut self, row: TokenUsageRow) {
+        self.apply_token_usage(&row);
+    }
+
+    pub(crate) fn load_audit_event(&mut self, row: AuditEventRow) {
+        self.apply_audit_event(&row);
+    }
+
+    pub(crate) fn load_process_node(&mut self, row: ProcessNodeRow) {
+        self.upsert_process_node(&row);
+    }
+
+    pub(crate) fn load_tool_call(&mut self, row: ToolCallRow) {
+        self.apply_tool_call(&row);
+    }
+
+    pub(crate) fn load_session(&mut self, row: SessionRow) {
+        self.upsert_session(&row);
+    }
+
+    pub(crate) fn load_network_target(&mut self, row: NetworkTargetRow) {
+        self.upsert_network_target(&row);
+    }
+
+    pub(crate) fn load_resource_sample(&mut self, row: ResourceSampleRow) {
+        self.apply_resource_sample(&row);
+    }
+
+    pub(crate) fn emit_llm_call(&mut self, row: LlmCallRow) -> ViewResult<()> {
+        self.apply_llm_call(&row);
+        self.publish(|sink| sink.llm_call(&row))
+    }
+
+    pub(crate) fn emit_token_usage(&mut self, row: TokenUsageRow) -> ViewResult<()> {
+        self.apply_token_usage(&row);
+        self.publish(|sink| sink.token_usage(&row))
+    }
+
+    pub(crate) fn emit_audit_event(&mut self, row: AuditEventRow) -> ViewResult<()> {
+        self.apply_audit_event(&row);
+        self.publish(|sink| sink.audit_event(&row))
+    }
+
+    pub(crate) fn emit_process_node(&mut self, row: ProcessNodeRow) -> ViewResult<()> {
+        self.upsert_process_node(&row);
+        self.publish(|sink| sink.process_node(&row))
+    }
+
+    pub(crate) fn emit_tool_call(&mut self, row: ToolCallRow) -> ViewResult<()> {
+        self.apply_tool_call(&row);
+        self.publish(|sink| sink.tool_call(&row))
+    }
+
+    pub(crate) fn emit_network_target(&mut self, row: NetworkTargetRow) -> ViewResult<()> {
+        self.upsert_network_target(&row);
+        self.publish(|sink| sink.network_target(&row))
+    }
+
+    pub(crate) fn emit_resource_sample(&mut self, row: ResourceSampleRow) -> ViewResult<()> {
+        self.apply_resource_sample(&row);
+        self.publish(|sink| sink.resource_sample(&row))
+    }
+
+    fn publish<F>(&mut self, mut publish: F) -> ViewResult<()>
+    where
+        F: FnMut(&mut dyn ViewSink) -> ViewResult<()>,
+    {
+        let mut first_error = None;
+        for sink in &mut self.sinks {
+            if let Err(error) = publish(sink.as_mut()) {
+                log::warn!("MaterializedView: failed to publish view row: {}", error);
+                first_error.get_or_insert_with(|| error.to_string());
             }
         }
+        if let Some(error) = first_error {
+            return Err(std::io::Error::other(error).into());
+        }
+        Ok(())
+    }
+}
+
+impl MaterializedView {
+    fn apply_llm_call(&mut self, row: &LlmCallRow) {
+        self.llm_calls.insert(row.id.clone(), row.clone());
+    }
+
+    fn apply_token_usage(&mut self, row: &TokenUsageRow) {
+        self.token_usage.insert(row.id.clone(), row.clone());
+    }
+
+    fn apply_audit_event(&mut self, row: &AuditEventRow) {
+        self.audit_events.insert(row.id.clone(), row.clone());
+    }
+
+    fn apply_tool_call(&mut self, row: &ToolCallRow) {
+        self.tool_calls.insert(row.id.clone(), row.clone());
+    }
+
+    fn apply_resource_sample(&mut self, row: &ResourceSampleRow) {
+        self.resource_samples.push(row.clone());
     }
 
     fn upsert_session(&mut self, row: &SessionRow) {
@@ -244,7 +252,7 @@ impl ViewState {
         existing.confidence = max_optional(existing.confidence, row.confidence);
     }
 
-    fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {
+    pub(crate) fn export_snapshot(&self, options: SnapshotOptions) -> Snapshot {
         Snapshot {
             schema_version: 1,
             generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -253,6 +261,7 @@ impl ViewState {
             network_targets: self.network_targets(),
             process_nodes: self.process_nodes(),
             audit_events: self.audit_events(options.audit_limit),
+            resource_samples: self.resource_sample_rows(),
             sessions: self.sessions(),
             agents: self.agents(),
         }
@@ -293,18 +302,16 @@ impl ViewState {
         for row in &self.resource_samples {
             observe(Some(row.timestamp_ms));
         }
-        let effective_tokens = self.effective_tokens();
-        let (input_tokens, output_tokens, total_tokens) = if effective_tokens.is_empty() {
-            self.session_token_totals()
-        } else {
-            effective_tokens.into_iter().fold((0, 0, 0), |acc, token| {
-                (
-                    acc.0 + token.input_tokens,
-                    acc.1 + token.output_tokens,
-                    acc.2 + token.total_tokens,
-                )
-            })
-        };
+        let (input_tokens, output_tokens, total_tokens) =
+            self.effective_tokens()
+                .into_iter()
+                .fold((0, 0, 0), |acc, token| {
+                    (
+                        acc.0 + token.input_tokens,
+                        acc.1 + token.output_tokens,
+                        acc.2 + token.total_tokens,
+                    )
+                });
 
         SnapshotSummary {
             source: if self.source.is_empty() {
@@ -326,13 +333,9 @@ impl ViewState {
         }
     }
 
-    fn token_summary(&self, group_by: &str) -> Vec<TokenSummary> {
+    pub(crate) fn token_summary(&self, group_by: &str) -> Vec<TokenSummary> {
         let mut groups: BTreeMap<String, TokenSummary> = BTreeMap::new();
-        let effective_tokens = self.effective_tokens();
-        if effective_tokens.is_empty() {
-            return self.session_token_summary();
-        }
-        for token in effective_tokens {
+        for token in self.effective_tokens() {
             let group = token_group(token, group_by);
             let entry = groups.entry(group.clone()).or_insert(TokenSummary {
                 group,
@@ -355,49 +358,7 @@ impl ViewState {
         rows
     }
 
-    fn session_token_totals(&self) -> (i64, i64, i64) {
-        self.sessions.values().fold((0, 0, 0), |acc, session| {
-            (
-                acc.0 + session.input_tokens,
-                acc.1 + session.output_tokens,
-                acc.2 + session.total_tokens,
-            )
-        })
-    }
-
-    fn session_token_summary(&self) -> Vec<TokenSummary> {
-        let mut groups: BTreeMap<String, TokenSummary> = BTreeMap::new();
-        for session in self.sessions.values() {
-            if session.input_tokens == 0 && session.output_tokens == 0 && session.total_tokens == 0
-            {
-                continue;
-            }
-            let group = session
-                .model
-                .as_ref()
-                .filter(|model| !model.is_empty())
-                .cloned()
-                .unwrap_or_else(|| session.agent_type.clone());
-            let entry = groups.entry(group.clone()).or_insert(TokenSummary {
-                group,
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_tokens: 0,
-                cache_read_tokens: 0,
-                total_tokens: 0,
-                calls: 0,
-            });
-            entry.input_tokens += session.input_tokens;
-            entry.output_tokens += session.output_tokens;
-            entry.total_tokens += session.total_tokens;
-            entry.calls += 1;
-        }
-        let mut rows = groups.into_values().collect::<Vec<_>>();
-        sort_token_summary(&mut rows);
-        rows
-    }
-
-    fn audit_rows(&self, audit_type: Option<&str>, limit: usize) -> Vec<AuditEventRow> {
+    pub(crate) fn audit_rows(&self, audit_type: Option<&str>, limit: usize) -> Vec<AuditEventRow> {
         let mut rows = self
             .audit_events
             .values()
@@ -409,7 +370,7 @@ impl ViewState {
         rows
     }
 
-    fn llm_call_rows(&self, limit: usize) -> Vec<LlmCallRow> {
+    pub(crate) fn llm_call_rows(&self, limit: usize) -> Vec<LlmCallRow> {
         let token_totals = self.effective_token_totals_by_call();
         let mut rows = self
             .llm_calls
@@ -429,15 +390,15 @@ impl ViewState {
         rows
     }
 
-    fn first_tool_timestamp_ms(&self) -> Option<u64> {
+    pub(crate) fn first_tool_timestamp_ms(&self) -> Option<u64> {
         self.tool_calls.values().map(|row| row.timestamp_ms).min()
     }
 
-    fn tool_call_count(&self) -> i64 {
+    pub(crate) fn tool_call_count(&self) -> i64 {
         self.tool_calls.len() as i64
     }
 
-    fn tool_counts(&self) -> BTreeMap<String, usize> {
+    pub(crate) fn tool_counts(&self) -> BTreeMap<String, usize> {
         let mut counts = BTreeMap::new();
         for row in self.tool_calls.values() {
             *counts
@@ -447,18 +408,29 @@ impl ViewState {
         counts
     }
 
-    fn tool_durations_ms(&self) -> Vec<u64> {
+    pub(crate) fn tool_durations_ms(&self) -> Vec<u64> {
         self.tool_calls
             .values()
             .filter_map(|row| row.duration_ms)
             .collect()
     }
 
-    fn resource_samples(&self) -> Vec<(Option<f64>, Option<i64>)> {
+    pub(crate) fn resource_samples(&self) -> Vec<(Option<f64>, Option<i64>)> {
         self.resource_samples
             .iter()
             .map(|row| (row.cpu_percent, row.rss_mb))
             .collect()
+    }
+
+    fn resource_sample_rows(&self) -> Vec<ResourceSampleRow> {
+        let mut rows = self.resource_samples.clone();
+        rows.sort_by(|a, b| {
+            a.timestamp_ms
+                .cmp(&b.timestamp_ms)
+                .then_with(|| a.pid.cmp(&b.pid))
+                .then_with(|| a.comm.cmp(&b.comm))
+        });
+        rows
     }
 
     fn network_targets(&self) -> Vec<NetworkTargetRow> {

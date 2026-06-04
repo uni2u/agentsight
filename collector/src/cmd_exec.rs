@@ -15,8 +15,8 @@ use crate::framework::{
 };
 use crate::output::{
     SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
-    print_record_data_url, print_record_drop_user, print_record_header, print_record_kill_error,
-    print_record_launch, print_record_monitoring_stream_ended, print_record_provided_binary_path,
+    print_record_drop_user, print_record_header, print_record_kill_error, print_record_launch,
+    print_record_monitoring_stream_ended, print_record_provided_binary_path,
     print_record_session_db_error, print_record_session_summary, print_record_shutdown,
     print_record_sudo_prompt, print_record_target_exited, print_record_target_shutdown_error,
     print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
@@ -64,10 +64,7 @@ pub(crate) async fn run_exec(
     binary_extractor: &BinaryExtractor,
     command: &[String],
     binary_path_override: Option<&str>,
-    log_file: &str,
     db_path: Option<String>,
-    rotate_logs: bool,
-    max_log_size: u64,
     enable_server: bool,
     server_listen: &str,
     server_port: u16,
@@ -192,11 +189,8 @@ pub(crate) async fn run_exec(
         system_interval: 2,
         http_filter: vec!["request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=".to_string()],
         binary_path: ssl_binary_path,
-        log_file: log_file.to_string(),
         db_path,
         quiet: true,
-        rotate_logs,
-        max_log_size,
         server_listen: Some(server_listen.to_string()),
         ..Default::default()
     };
@@ -236,7 +230,7 @@ pub(crate) async fn run_exec(
         tokio::select! {
             maybe_event = stream.next() => {
                 match maybe_event {
-                    Some(_event) => {} // drive the stream; events are persisted via the file logger
+                    Some(_event) => {}
                     None => {
                         print_record_monitoring_stream_ended();
                         break;
@@ -270,10 +264,6 @@ pub(crate) async fn run_exec(
     print_global_ssl_filter_metrics();
     if print_summary && let Some(ref db) = db_path_for_summary {
         print_session_summary(db);
-    }
-
-    if let Some(server) = &server_handle {
-        print_record_data_url(&server.url, log_file);
     }
 
     Ok(db_path_for_summary)

@@ -94,16 +94,13 @@ async fn handle_request(
         (&Method::GET, "/api/v1/summary") => {
             serve_view_api(view, query.as_deref(), ApiResource::Summary).await
         }
-        (&Method::GET, "/api/v1/token-summary") | (&Method::GET, "/api/v1/token/summary") => {
+        (&Method::GET, "/api/v1/token-summary") => {
             serve_view_api(view, query.as_deref(), ApiResource::TokenSummary).await
         }
-        (&Method::GET, "/api/v1/events") => {
-            serve_view_api(view, query.as_deref(), ApiResource::Events).await
-        }
-        (&Method::GET, "/api/v1/audit-events") | (&Method::GET, "/api/v1/audit/events") => {
+        (&Method::GET, "/api/v1/audit-events") => {
             serve_view_api(view, query.as_deref(), ApiResource::AuditEvents).await
         }
-        (&Method::GET, "/api/v1/process-nodes") | (&Method::GET, "/api/v1/process/nodes") => {
+        (&Method::GET, "/api/v1/process-nodes") => {
             serve_view_api(view, query.as_deref(), ApiResource::ProcessNodes).await
         }
         (&Method::GET, "/api/v1/sessions") => {
@@ -156,7 +153,6 @@ enum ApiResource {
     Snapshot,
     Summary,
     TokenSummary,
-    Events,
     AuditEvents,
     ProcessNodes,
     Sessions,
@@ -183,9 +179,7 @@ async fn serve_view_api(
                     match resource {
                         ApiResource::Snapshot => serde_json::to_value(snapshot)?,
                         ApiResource::Summary => serde_json::to_value(snapshot.summary)?,
-                        ApiResource::Events | ApiResource::AuditEvents => {
-                            serde_json::to_value(snapshot.audit_events)?
-                        }
+                        ApiResource::AuditEvents => serde_json::to_value(snapshot.audit_events)?,
                         ApiResource::ProcessNodes => serde_json::to_value(snapshot.process_nodes)?,
                         ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
                         ApiResource::Agents => serde_json::to_value(snapshot.agents)?,

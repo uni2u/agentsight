@@ -4,7 +4,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Event } from '@/types/event';
+import { AgentSightSnapshot } from '@/types/event';
 import { buildProcessTree, ProcessNode as ProcessNodeType } from '@/utils/eventParsers';
 import { ProcessNode } from './process-tree/ProcessNode';
 import { ProcessTreeFiltersComponent, ProcessTreeFilters } from './process-tree/ProcessTreeFilters';
@@ -17,18 +17,18 @@ import {
 import { useTranslation } from '@/i18n';
 
 interface ProcessTreeViewProps {
-  events: Event[];
+  snapshot: AgentSightSnapshot | null;
 }
 
-export function ProcessTreeView({ events }: ProcessTreeViewProps) {
+export function ProcessTreeView({ snapshot }: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [expandedProcesses, setExpandedProcesses] = useState<Set<string>>(new Set());
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<ProcessTreeFilters>(createDefaultFilters());
 
   const processTree = useMemo(() => {
-    return buildProcessTree(events);
-  }, [events]);
+    return buildProcessTree(snapshot);
+  }, [snapshot]);
 
   const filterOptions = useMemo(() => {
     return extractFilterOptions(processTree);

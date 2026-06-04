@@ -3,7 +3,7 @@
 
 use crate::view::types::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, SessionRow,
-    TokenUsageRow, ToolCallRow, ViewResult, ViewUpdate,
+    TokenUsageRow, ToolCallRow, ViewResult, ViewSink,
 };
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::Value;
@@ -38,23 +38,6 @@ impl SqliteStore {
         self.conn.pragma_update(None, "foreign_keys", "ON")?;
         self.conn.execute_batch(SCHEMA)?;
         Ok(())
-    }
-
-    pub(crate) fn apply_view_update(&mut self, update: &ViewUpdate) -> ViewResult<()> {
-        self.store_view_update(update)
-    }
-
-    fn store_view_update(&self, update: &ViewUpdate) -> ViewResult<()> {
-        match update {
-            ViewUpdate::LlmCall(row) => self.insert_llm_call(row),
-            ViewUpdate::TokenUsage(row) => self.insert_token_usage(row),
-            ViewUpdate::AuditEvent(row) => self.insert_audit_event(row),
-            ViewUpdate::ProcessNode(row) => self.upsert_process_node(row),
-            ViewUpdate::ToolCall(row) => self.insert_tool_call(row),
-            ViewUpdate::Session(row) => self.upsert_session(row),
-            ViewUpdate::NetworkTarget(row) => self.upsert_network_target(row),
-            ViewUpdate::ResourceSample(row) => self.insert_resource_sample(row),
-        }
     }
 
     fn upsert_network_target(&self, target: &NetworkTargetRow) -> ViewResult<()> {
@@ -118,7 +101,7 @@ impl SqliteStore {
                 call.status_code.map(|v| v as i64),
                 call.request.to_string(),
                 call.response.to_string(),
-                "view_jsonl",
+                "live_view",
                 1.0f32,
             ],
         )?;
@@ -249,43 +232,6 @@ impl SqliteStore {
                 tool.related_event_id.as_deref(),
                 tool.view_source,
                 tool.confidence.unwrap_or(1.0),
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn upsert_session(&self, session: &SessionRow) -> ViewResult<()> {
-        self.conn.execute(
-            "INSERT INTO agent_sessions (
-                id, agent_type, agent_name, pid, comm, start_timestamp_ms, end_timestamp_ms,
-                status, model, input_tokens, output_tokens, total_tokens, view_source, confidence,
-                attributes_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-             ON CONFLICT(id) DO UPDATE SET
-                start_timestamp_ms = MIN(start_timestamp_ms, excluded.start_timestamp_ms),
-                end_timestamp_ms = MAX(COALESCE(end_timestamp_ms, 0), COALESCE(excluded.end_timestamp_ms, 0)),
-                status = excluded.status,
-                model = COALESCE(NULLIF(excluded.model, 'unknown'), model, excluded.model),
-                input_tokens = input_tokens + excluded.input_tokens,
-                output_tokens = output_tokens + excluded.output_tokens,
-                total_tokens = total_tokens + excluded.total_tokens,
-                confidence = MAX(COALESCE(confidence, 0), COALESCE(excluded.confidence, 0))",
-            params![
-                session.id,
-                session.agent_type,
-                session.agent_name.as_deref(),
-                session.pid.map(|v| v as i64),
-                session.comm.as_deref(),
-                session.start_timestamp_ms as i64,
-                session.end_timestamp_ms.map(|v| v as i64),
-                session.status,
-                session.model.as_deref(),
-                session.input_tokens,
-                session.output_tokens,
-                session.total_tokens,
-                session.view_source,
-                session.confidence.unwrap_or(1.0),
-                session.attributes.to_string(),
             ],
         )?;
         Ok(())
@@ -481,6 +427,36 @@ impl SqliteStore {
     }
 }
 
+impl ViewSink for SqliteStore {
+    fn llm_call(&mut self, row: &LlmCallRow) -> ViewResult<()> {
+        self.insert_llm_call(row)
+    }
+
+    fn token_usage(&mut self, row: &TokenUsageRow) -> ViewResult<()> {
+        self.insert_token_usage(row)
+    }
+
+    fn audit_event(&mut self, row: &AuditEventRow) -> ViewResult<()> {
+        self.insert_audit_event(row)
+    }
+
+    fn process_node(&mut self, row: &ProcessNodeRow) -> ViewResult<()> {
+        self.upsert_process_node(row)
+    }
+
+    fn tool_call(&mut self, row: &ToolCallRow) -> ViewResult<()> {
+        self.insert_tool_call(row)
+    }
+
+    fn network_target(&mut self, row: &NetworkTargetRow) -> ViewResult<()> {
+        self.upsert_network_target(row)
+    }
+
+    fn resource_sample(&mut self, row: &ResourceSampleRow) -> ViewResult<()> {
+        self.insert_resource_sample(row)
+    }
+}
+
 fn read_llm_call_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmCallRow> {
     let request_json: String = row.get(10)?;
     let response_json: String = row.get(11)?;
@@ -547,7 +523,7 @@ fn reject_legacy_raw_schema(conn: &Connection) -> ViewResult<()> {
         || sqlite_table_exists(conn, "audit_events")?;
     if (has_raw || has_canonical) && !has_materialized {
         return Err(
-            "legacy raw-event SQLite schema is no longer supported; re-import the JSONL capture to materialize view tables"
+            "legacy raw-event SQLite schema is no longer supported; capture into a fresh view database"
                 .into(),
         );
     }

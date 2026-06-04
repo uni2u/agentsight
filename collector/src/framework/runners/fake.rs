@@ -189,18 +189,14 @@ impl Runner for FakeRunner {
 mod tests {
     use super::*;
     use crate::framework::analyzers::{Analyzer, HTTPParser, MaterializingAnalyzer, SSEProcessor};
-    use crate::sinks::FileLogger;
     use crate::view::MaterializedView;
     use futures::stream::StreamExt;
-    use std::fs;
 
     use serde_json::json;
     use std::time::Instant;
 
-    fn file_materializer(path: impl AsRef<std::path::Path>) -> MaterializingAnalyzer {
-        MaterializingAnalyzer::with_view(MaterializedView::shared()).add_view_sink(Box::new(
-            FileLogger::new(path).expect("create test file logger"),
-        ))
+    fn materializer() -> MaterializingAnalyzer {
+        MaterializingAnalyzer::with_view(MaterializedView::shared())
     }
 
     #[tokio::test]
@@ -259,17 +255,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fake_runner_with_file_logger() {
-        let test_log_file = "test_fake_runner.log";
-
-        // Clean up any existing test file
-        let _ = fs::remove_file(test_log_file);
-
+    async fn test_fake_runner_with_materializer() {
         let mut runner = FakeRunner::new()
             .event_count(2)
             .delay_ms(10)
             .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
-            .add_analyzer(Box::new(file_materializer(test_log_file)));
+            .add_analyzer(Box::new(materializer()));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -278,26 +269,6 @@ mod tests {
             events.len() >= 4,
             "Should preserve the original request/response events"
         );
-
-        // Check if log file was created
-        assert!(
-            std::path::Path::new(test_log_file).exists(),
-            "Log file should be created"
-        );
-
-        let log_size = fs::metadata(test_log_file).unwrap().len();
-        assert!(log_size > 0, "Log file should not be empty");
-
-        // Read and check log contents
-        let log_contents = fs::read_to_string(test_log_file).unwrap();
-        let log_lines: Vec<&str> = log_contents.lines().collect();
-        assert!(
-            !log_lines.is_empty(),
-            "Log file should contain materialized view updates"
-        );
-
-        // Clean up
-        let _ = fs::remove_file(test_log_file);
     }
 
     #[tokio::test]
@@ -327,21 +298,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_analyzer_instances() {
-        let test_log_file1 = "test_multi1.log";
-        let test_log_file2 = "test_multi2.log";
-
-        // Clean up any existing test files
-        let _ = fs::remove_file(test_log_file1);
-        let _ = fs::remove_file(test_log_file2);
-
-        // Chain with multiple file loggers.
+        // Chain with multiple materializers.
         let mut runner = FakeRunner::new()
             .event_count(2)
             .delay_ms(10)
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(5000)))
             .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
-            .add_analyzer(Box::new(file_materializer(test_log_file1)))
-            .add_analyzer(Box::new(file_materializer(test_log_file2)));
+            .add_analyzer(Box::new(materializer()))
+            .add_analyzer(Box::new(materializer()));
 
         let stream = runner.run().await.unwrap();
         let events: Vec<_> = stream.collect().await;
@@ -360,26 +324,6 @@ mod tests {
             http_events >= 4,
             "Should produce parsed HTTP request/response events"
         );
-
-        // Both log files should exist
-        assert!(
-            std::path::Path::new(test_log_file1).exists(),
-            "Log file 1 should exist"
-        );
-        assert!(
-            std::path::Path::new(test_log_file2).exists(),
-            "Log file 2 should exist"
-        );
-
-        let size1 = fs::metadata(test_log_file1).unwrap().len();
-        let size2 = fs::metadata(test_log_file2).unwrap().len();
-
-        assert!(size1 > 0, "Log file 1 should have content");
-        assert!(size2 > 0, "Log file 2 should have content");
-
-        // Clean up
-        let _ = fs::remove_file(test_log_file1);
-        let _ = fs::remove_file(test_log_file2);
     }
 
     #[tokio::test]
@@ -534,21 +478,16 @@ mod tests {
     #[tokio::test]
     async fn test_analyzer_chain_integration_scenario() {
         // Comprehensive integration test that simulates real-world usage
-        let test_log_file = "test_integration.log";
-
-        // Clean up any existing test file
-        let _ = fs::remove_file(test_log_file);
-
         // Create a realistic analyzer chain that might be used in production:
         // 1. HTTP analyzer for pairing requests/responses
-        // 2. File logger for persistence
+        // 2. Materialized view projection
         // 3. Stream collection by the caller
         let mut runner = FakeRunner::new()
             .event_count(10) // 20 events total
             .delay_ms(25) // Realistic timing
             .add_analyzer(Box::new(SSEProcessor::new_with_timeout(10000))) // 10 second timeout
             .add_analyzer(Box::new(HTTPParser::new().disable_raw_data()))
-            .add_analyzer(Box::new(file_materializer(test_log_file)));
+            .add_analyzer(Box::new(materializer()));
 
         let start_time = Instant::now();
         let stream = runner.run().await.unwrap();
@@ -576,15 +515,6 @@ mod tests {
             "All original events should be preserved"
         );
 
-        // Verify file logging worked
-        assert!(
-            std::path::Path::new(test_log_file).exists(),
-            "Log file should exist"
-        );
-        let log_content = fs::read_to_string(test_log_file).unwrap();
-        let log_lines = log_content.lines().count();
-        assert!(log_lines > 0, "Log file should have content");
-
         // Verify performance characteristics
         let events_per_second = events.len() as f64 / elapsed.as_secs_f64();
         assert!(
@@ -600,9 +530,6 @@ mod tests {
             );
             assert!(event.pid > 0, "HTTP events should retain top-level pid");
         }
-
-        // Clean up
-        let _ = fs::remove_file(test_log_file);
     }
 
     #[test]

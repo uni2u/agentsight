@@ -71,7 +71,7 @@ let reverse_runner = ReverseProxyRunner::builder()
     .upstream("https://api.openai.com")
     .add_analyzer(HttpParser::new())
     .add_analyzer(ChunkMerger::new())
-    .add_analyzer(FileLogger::new("openai-proxy.log"))
+    .add_analyzer(MaterializingAnalyzer::with_view(MaterializedView::shared()))
     .build();
 
 reverse_runner.run().await?;

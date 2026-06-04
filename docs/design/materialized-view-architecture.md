@@ -1,196 +1,106 @@
 # Materialized View Architecture
 
-## Summary
-
-AgentSight uses a live materialized view as the boundary between capture and
+AgentSight uses one live materialized view as the boundary between capture and
 consumption.
 
-```
-Sources / analyzers                 View boundary                 Consumers
--------------------                 -------------                 ---------
-SSL / process / stdio / system  ->  MaterializingAnalyzer             ->  FileLogger
-HTTPParser / SSEProcessor       ->  MaterializedView            ->  SqliteSink
-Proc + session sources              ViewUpdate stream               OTel
-TimestampNormalizer / filters       in-memory query state           CLI/API
-```
-
-The important rule is that persistent outputs are derived from the view, not
-from raw event storage. SQLite stores selected materialized tables. JSONL logs
-store `ViewUpdate` records. Low-level `debug` commands can still print
-runner/analyzer events to stdout, but file/API output stays on the ViewUpdate
-path.
-
-## Why
-
-The old path had two kinds of complexity:
-
-1. Raw events were written to SQLite first, then SQL adapters/projectors rebuilt
-   the useful tables later.
-2. Commands such as `stat`, `report`, and `top` duplicated merge logic for token
-   totals, local sessions, tools, processes, and network targets.
-
-That made SQLite a critical path dependency and made each command responsible
-for knowing too much about storage internals.
-
-The current design keeps the analyzer pipeline for single-stream transforms, but
-makes the view the handoff point for everything downstream.
-
-## Live Path
-
-`build_trace_agent()` now always installs a `MaterializingAnalyzer` for `record` and
-`trace`.
-
-```
-Runner event stream
+```text
+Runner Event
   -> analyzer chain
   -> MaterializingAnalyzer
-       -> normalize Event into CanonicalEvent
-       -> ViewProjector produces ViewUpdate rows
-       -> MaterializedView updates in-memory state
-       -> ViewUpdateSink consumers are notified
+  -> MaterializedView
+       updates in-memory rows directly
+       publishes row-level sinks: SQLite, OTel
+       serves CLI, TUI, and Web API snapshots
 ```
 
-The view currently materializes:
+There is no AgentSight JSONL persistence or replay path. The embedded web
+server shares the live `MaterializedView`; it does not rebuild a temporary view
+from a file on each request.
+
+## View Rows
+
+The view owns the read model:
 
 - `llm_calls`
 - `token_usage`
 - `audit_events`
+- `process_nodes`
 - `tool_calls`
-- `agent_sessions`
+- `sessions`
 - `network_targets`
 - `resource_samples`
 
-This means a normal `record -o record.log` no longer writes every raw event. It
-writes structured view updates such as:
+Raw runner events enter the view once through `MaterializedView::ingest_event`.
+Projection and accumulation happen in the view implementation, so consumers do
+not handle raw event streams.
 
-```json
-{"kind":"token_usage","row":{"model":"claude-sonnet-4","total_tokens":15}}
-```
+## Consumers
 
-The actual row contains the full typed fields; the example is shortened.
+Consumers read the same view-native rows:
 
-## Consumer Boundary
+- CLI/TUI query `MaterializedView` snapshots and helper methods.
+- Web API serves `/api/v1/snapshot` and focused row endpoints from the shared
+  live view.
+- SQLite persists selected rows through `ViewSink`.
+- OTel exports completed `llm_call` rows through `ViewSink`.
 
-Consumers implement `ViewUpdateSink`.
+`ViewSink` is row-oriented, not enum-oriented:
 
 ```rust
-pub trait ViewUpdateSink: Send {
-    fn update(&mut self, update: &ViewUpdate) -> ViewResult<()>;
+pub trait ViewSink: Send {
+    fn llm_call(&mut self, row: &LlmCallRow) -> ViewResult<()> { Ok(()) }
+    fn token_usage(&mut self, row: &TokenUsageRow) -> ViewResult<()> { Ok(()) }
+    fn audit_event(&mut self, row: &AuditEventRow) -> ViewResult<()> { Ok(()) }
+    fn process_node(&mut self, row: &ProcessNodeRow) -> ViewResult<()> { Ok(()) }
+    fn tool_call(&mut self, row: &ToolCallRow) -> ViewResult<()> { Ok(()) }
+    fn network_target(&mut self, row: &NetworkTargetRow) -> ViewResult<()> { Ok(()) }
+    fn resource_sample(&mut self, row: &ResourceSampleRow) -> ViewResult<()> { Ok(()) }
 }
 ```
 
-Current consumers:
+## Process Tree
 
-- `FileLogger`: writes view-update JSONL for `record`/`trace`/`debug`.
-- `SqliteSink`: persists selected materialized view tables when `--db` is provided.
-- `OtelExporter`: exports completed `llm_call` rows as GenAI spans.
+Process tree rendering is view-native:
 
-## SQLite Role
-
-SQLite is a materialized-view store, not raw event storage.
-
-Removed tables:
-
-- `raw_events`
-- `canonical_events`
-- `view_events`
-- `adapter_runs`
-
-Removed code:
-
-- `framework/adapters/sql_adapter.rs`
-- SQL adapter files under `collector/adapters/sql/`
-- CLI flags for running adapters/projectors
-
-Opening an old raw-event-only database now fails with a clear error asking the
-user to re-import the JSONL capture.
-
-## Restore And Import
-
-There are two restore inputs:
-
-1. View-update JSONL from current `record`/`trace` logs.
-2. Legacy raw `Event` JSONL, kept for fixture and old-log compatibility.
-
-`db import` tries `ViewUpdate` first. If a line is not a view update, it falls
-back to the legacy `Event` parser and rebuilds view rows through
-`MaterializedView`/`ViewProjector`.
-
-`stat --db`, `report --db`, `top --db --once`, `prompts --db`, and
-`db export` rebuild the in-memory view from SQLite with `sources::sqlite::load_view`,
-then query the
-`MaterializedView`. Command code does not reach through to `SqliteStore`
-internals.
-
-## API Role
-
-- `/api/v1/*` endpoints read SQLite materialized tables when a DB is configured,
-  or rebuild the view from the configured JSONL log when no DB is available.
-
-## Command Flow
-
-### record / trace
-
-```
-runners -> analyzers -> MaterializingAnalyzer/MaterializedView
-                                |-> FileLogger(view JSONL)
-                                |-> SqliteSink(--db)
-                                |-> OtelExporter (--otel)
+```text
+Snapshot.process_nodes  -> tree skeleton
+Snapshot.audit_events   -> events attached by pid and timestamp window
+Snapshot.resource_samples -> metrics charts
 ```
 
-If `--db` is not provided, `MaterializingAnalyzer` still builds the same in-memory
-view and emits the same view rows; no SQLite database is opened.
+The frontend no longer uploads or parses AgentSight logs, and it does not
+reconstruct process nodes from pseudo events. It consumes the current snapshot
+contract directly.
 
-### top
+## SQLite
 
-Live `top` uses a `LiveView` that owns the previous `/proc` snapshot and sticky
-session bindings. It does not require SQLite; CLI and TUI render from the
-current materialized output instead of each maintaining their own live state.
+SQLite is an optional materialized row store for saved sessions. It is not raw
+event storage. Loading a saved database calls `sources::sqlite::load_view`,
+which inserts rows into a `MaterializedView` through `load_*` methods and then
+uses the same query path as live capture.
 
-### stat / report
+Legacy raw-event-only databases are rejected. Capture into a fresh view database
+instead.
 
-When a DB is provided, commands rebuild a `MaterializedView` from SQLite and then
-read through it. Without a DB, local agent session JSONL remains
-available as a source for local-only summaries.
+## Code Layout
 
-## Current Code Layout
+```text
+collector/src/framework/analyzers/materializing.rs
+  Event-stream analyzer that drives the shared view.
 
+collector/src/view/mod.rs
+  MaterializedView state, row emit/load methods, snapshot export.
+
+collector/src/view/projection.rs
+  Event normalization, LLM request/response matching, audit/process/resource
+  row projection implemented directly on MaterializedView.
+
+collector/src/view/types.rs
+  Snapshot, row types, ViewSink.
+
+collector/src/stores/sqlite.rs
+  SQLite row store and ViewSink implementation.
+
+collector/src/sinks/otel.rs
+  OTel ViewSink for GenAI spans.
 ```
-collector/src/sources/
-  proc.rs          /proc process/resource sampling source helpers
-  session.rs       local Claude/Codex/Gemini/OpenClaw JSONL source helpers
-  sqlite.rs        SQLite source that materializes DB rows into MaterializedView
-
-collector/src/view/
-  mod.rs           MaterializedView: in-memory aggregate/query state
-  projector.rs     Event-to-ViewUpdate projection and pending request matching
-  types.rs         owned query-facing rows, snapshots, and ViewUpdate contracts
-
-collector/src/sinks/
-  file_logger.rs   ViewUpdateSink for record/trace JSONL
-  otel.rs          ViewUpdateSink for completed LLM calls
-  sqlite.rs        ViewUpdateSink for SQLite persistence
-
-collector/src/output/
-  format.rs        CLI formatting and output structs
-  tui.rs           live top TUI rendering
-
-collector/src/framework/analyzers/
-  materializing.rs MaterializingAnalyzer: event-stream analyzer that drives the view
-
-collector/src/stores/
-  sqlite.rs        SQLite row store
-
-collector/src/cmd_trace.rs
-  builds runners/analyzers and attaches view sinks
-
-collector/src/cli_db.rs
-  imports ViewUpdate JSONL or legacy raw Event JSONL
-  reads MaterializedView snapshots for report/db commands
-```
-
-## Remaining Work
-
-The raw SQL adapter layer is gone, default recording no longer persists raw
-events, SQLite is split into source/sink boundary modules, row/update types are
-owned by `view::types`, and live top has a `LiveView` state object.

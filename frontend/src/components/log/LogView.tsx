@@ -4,15 +4,15 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Event, ProcessedEvent } from '@/types/event';
-import { processEvents, filterEvents } from '@/utils/eventProcessing';
+import { ViewEvent, ProcessedViewEvent } from '@/types/event';
+import { processViewEvents, filterViewEvents } from '@/utils/eventProcessing';
 import { EventFilters } from '@/components/common/EventFilters';
 import { EventModal } from '@/components/common/EventModal';
 import { LogList } from './LogList';
 import { useTranslation } from '@/i18n';
 
 interface LogViewProps {
-  events: Event[];
+  events: ViewEvent[];
 }
 
 export function LogView({ events }: LogViewProps) {
@@ -21,14 +21,14 @@ export function LogView({ events }: LogViewProps) {
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [selectedComm, setSelectedComm] = useState<string>('');
   const [selectedPid, setSelectedPid] = useState<string>('');
-  const [selectedEvent, setSelectedEvent] = useState<ProcessedEvent | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<ProcessedViewEvent | null>(null);
 
   // Process events with additional metadata
-  const processedEvents = useMemo(() => processEvents(events), [events]);
+  const processedEvents = useMemo(() => processViewEvents(events), [events]);
 
   // Filter events based on search, source, comm, and pid
   const filteredEvents = useMemo(() => {
-    return filterEvents(processedEvents, {
+    return filterViewEvents(processedEvents, {
       source: selectedSource,
       comm: selectedComm,
       pid: selectedPid,
@@ -62,7 +62,7 @@ export function LogView({ events }: LogViewProps) {
         />
       </div>
 
-      {/* Event Details Modal */}
+      {/* ViewEvent Details Modal */}
       <EventModal
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}

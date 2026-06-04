@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-import { ParsedEvent, ProcessNode } from './eventParsers';
+import { ParsedEvent, ProcessNode, timelineForProcess } from './eventParsers';
 import { ProcessTreeFilters } from '@/components/process-tree/ProcessTreeFilters';
 
 export function extractFilterOptions(processTree: ProcessNode[]) {
@@ -41,7 +41,6 @@ function parsedEventMatchesFilters(
   event: ParsedEvent,
   source: string,
   comm: string,
-  data: unknown,
   filters: ProcessTreeFilters,
 ): boolean {
   if (filters.eventTypes.length > 0 && !filters.eventTypes.includes(event.type)) {
@@ -79,7 +78,7 @@ function parsedEventMatchesFilters(
       comm,
       source,
       event.metadata?.model,
-      JSON.stringify(data)
+      JSON.stringify(event.metadata)
     ].filter(Boolean).join(' ').toLowerCase();
     
     if (!searchableText.includes(searchLower)) {
@@ -94,7 +93,7 @@ export function filterProcessTree(processTree: ProcessNode[], filters: ProcessTr
   return processTree.map(process => {
     const filteredEvents = process.events.filter(event => {
       const source = event.metadata?.original_source || sourceForEventType(event.type);
-      return parsedEventMatchesFilters(event, source, process.comm, event.metadata, filters);
+      return parsedEventMatchesFilters(event, source, process.comm, filters);
     });
     
     const filteredChildren = filterProcessTree(process.children, filters);
@@ -103,7 +102,8 @@ export function filterProcessTree(processTree: ProcessNode[], filters: ProcessTr
       return {
         ...process,
         events: filteredEvents,
-        children: filteredChildren
+        children: filteredChildren,
+        timeline: timelineForProcess({ ...process, events: filteredEvents, children: filteredChildren }),
       };
     }
     
