@@ -296,12 +296,12 @@ Deletion-first checklist:
   audit events.
 - [x] Add view-native `ProcessNodeRow` so snapshots can expose process structure
   without frontend audit-event tree reconstruction.
-- [x] Restore frontend process-tree rendering and prefer `process_nodes` when
-  present, keeping raw JSONL upload compatibility.
+- [x] Restore frontend process-tree rendering from `process_nodes`; audit rows do
+  not create saved snapshot process-tree nodes.
 - [x] Keep live `/proc` process-family handling as the live process-tree builder;
   saved snapshots use `process_nodes`.
-- [x] Treat `SessionRow.pid` as compatibility/display data only; do not add new
-  writes that use it as the canonical session-process relationship.
+- [x] Treat `SessionRow.pid` as display data only; do not add new writes that use
+  it as the canonical session-process relationship.
 - [ ] Add explicit `SessionProcessMatchRow` only when session-process matching has
   enough evidence to avoid reusing `SessionRow.pid` as ownership.
 

@@ -18,6 +18,7 @@
 //! stable view data to OTLP.
 //!
 use crate::framework::analyzers::AnalyzerError;
+use crate::framework::semantic::llm::provider_from_host;
 use crate::view::types::{LlmCallRow, ViewResult, ViewUpdate, ViewUpdateSink};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -77,26 +78,6 @@ impl OtelExporter {
             capture_content,
             client: Arc::new(Client::builder(TokioExecutor::new()).build_http()),
         }
-    }
-}
-
-/// Map an LLM API host to a `gen_ai.provider.name` value (per the spec's
-/// well-known provider list). Falls back to the host for unknown OpenAI-compatible
-/// endpoints (e.g. self-hosted llama.cpp / vLLM), which keeps spans useful.
-fn provider_from_host(host: &str) -> String {
-    let h = host.to_ascii_lowercase();
-    if h.contains("openai.azure.com") {
-        "azure.ai.openai".to_string()
-    } else if h.contains("openai") {
-        "openai".to_string()
-    } else if h.contains("anthropic") {
-        "anthropic".to_string()
-    } else if h.contains("generativelanguage") || h.contains("googleapis") {
-        "gcp.gen_ai".to_string()
-    } else if h.contains("bedrock") {
-        "aws.bedrock".to_string()
-    } else {
-        host.to_string()
     }
 }
 
@@ -363,7 +344,7 @@ mod tests {
             provider_from_host("my-resource.openai.azure.com"),
             "azure.ai.openai"
         );
-        // Unknown OpenAI-compatible host falls back to the host itself.
+        // Unknown OpenAI-compatible host is reported as the host itself.
         assert_eq!(provider_from_host("localhost:8443"), "localhost:8443");
     }
 

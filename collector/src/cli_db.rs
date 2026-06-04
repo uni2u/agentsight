@@ -4,13 +4,13 @@
 use crate::output::{
     FileAccessSummary, SessionSummary, SummaryStats, print_audit_rows, print_exported_snapshot,
     print_json, print_llm_prompts, print_local_audit, print_replay, print_session_summary,
-    print_token_summary, prompt_text_chars,
+    print_token_summary, prompt_text_chars, sorted_top_counts,
 };
 use crate::sinks::SqliteSink;
 use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::view::MaterializedView;
-use crate::view::types::SnapshotOptions;
+use crate::view::types::{SnapshotOptions, TokenSummary};
 
 #[cfg(test)]
 use crate::stores::sqlite::SqliteStore;
@@ -109,10 +109,6 @@ impl SessionSummary {
             audit_limit: 50_000,
         });
         let s = &snap.summary;
-        let duration_s = match (s.start_timestamp_ms, s.end_timestamp_ms) {
-            (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
-            _ => 0.0,
-        };
         let llm_rows = view.llm_call_rows(50_000);
         let first_llm_after_ms = s.start_timestamp_ms.and_then(|start| {
             llm_rows
@@ -134,20 +130,25 @@ impl SessionSummary {
                 llm_latency_ms.add(delta);
             }
         }
-        let models = snap.model_rows();
+        let models = token_summary_tuples(&snap.token_summary);
         let mut processes = BTreeMap::new();
-        for row in &snap.audit_events {
-            if row.action.as_deref() == Some("exec") {
-                *processes
-                    .entry(row.comm.clone().unwrap_or_default())
-                    .or_default() += 1;
-            }
-        }
         let mut process_exits = BTreeMap::new();
-        for row in &snap.audit_events {
-            if row.action.as_deref() == Some("exit") {
-                let status = row.status.as_deref().unwrap_or("observed").to_string();
-                *process_exits.entry(status).or_default() += 1;
+        for row in snap
+            .audit_events
+            .iter()
+            .filter(|row| row.audit_type == "process")
+        {
+            match row.action.as_deref() {
+                Some("exec") => {
+                    *processes
+                        .entry(row.comm.clone().unwrap_or_default())
+                        .or_default() += 1;
+                }
+                Some("exit") => {
+                    let status = row.status.as_deref().unwrap_or("observed").to_string();
+                    *process_exits.entry(status).or_default() += 1;
+                }
+                _ => {}
             }
         }
         let mut seen_files = BTreeSet::new();
@@ -180,9 +181,9 @@ impl SessionSummary {
                 *file_dirs.entry(file_directory(target)).or_default() += 1;
             }
         }
-        file_access.directories = top_counts(file_dirs, 8);
+        file_access.directories = sorted_top_counts(file_dirs, 8);
 
-        let mut endpoint_counts = BTreeMap::new();
+        let mut endpoint_counts = BTreeMap::<String, usize>::new();
         let mut network_events = 0usize;
         for target in &snap.network_targets {
             network_events += target.count.max(0) as usize;
@@ -194,7 +195,7 @@ impl SessionSummary {
                 .unwrap_or_else(|| target.host.clone());
             *endpoint_counts.entry(endpoint).or_default() += target.count.max(0) as usize;
         }
-        let endpoints = top_counts(endpoint_counts, 8)
+        let endpoints = sorted_top_counts(endpoint_counts, 8)
             .into_iter()
             .map(|(endpoint, count)| format!("{endpoint}({count})"))
             .collect();
@@ -208,7 +209,7 @@ impl SessionSummary {
         }
         Ok(Self {
             source: "agentsight".into(),
-            duration_s,
+            duration_s: s.duration_s(),
             first_llm_after_ms,
             first_tool_after_ms,
             prompt_chars,
@@ -242,8 +243,9 @@ impl SessionSummary {
             first_tool_after_ms: None,
             prompt_chars,
             llm_latency_ms: SummaryStats::default(),
-            models: local_sessions::materialized_snapshot(std::slice::from_ref(session))
-                .model_rows(),
+            models: token_summary_tuples(
+                &local_sessions::materialized_snapshot(std::slice::from_ref(session)).token_summary,
+            ),
             processes: BTreeMap::new(),
             process_exits: BTreeMap::new(),
             tool_calls: session.tools.clone(),
@@ -260,11 +262,19 @@ fn after_start(start_timestamp_ms: Option<u64>, timestamp_ms: u64) -> Option<u64
     start_timestamp_ms.and_then(|start| timestamp_ms.checked_sub(start))
 }
 
-fn top_counts(counts: BTreeMap<String, usize>, limit: usize) -> Vec<(String, usize)> {
-    let mut rows = counts.into_iter().collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    rows.truncate(limit);
-    rows
+fn token_summary_tuples(rows: &[TokenSummary]) -> Vec<(String, i64, i64, i64, i64)> {
+    rows.iter()
+        .filter(|row| row.input_tokens != 0 || row.output_tokens != 0 || row.total_tokens != 0)
+        .map(|row| {
+            (
+                row.group.clone(),
+                row.input_tokens,
+                row.output_tokens,
+                row.total_tokens,
+                row.calls,
+            )
+        })
+        .collect()
 }
 
 fn file_directory(path: &str) -> String {

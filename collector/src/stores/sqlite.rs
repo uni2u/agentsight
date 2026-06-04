@@ -421,9 +421,6 @@ impl SqliteStore {
     }
 
     pub(crate) fn process_node_rows(&self) -> ViewResult<Vec<ProcessNodeRow>> {
-        if !sqlite_table_exists(&self.conn, "process_nodes")? {
-            return Ok(Vec::new());
-        }
         let mut stmt = self.conn.prepare(
             "SELECT id, pid, ppid, root_pid, start_timestamp_ms, end_timestamp_ms,
                     comm, command, argv_json, cwd, exit_code, status, view_source, confidence

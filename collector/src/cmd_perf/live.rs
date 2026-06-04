@@ -13,7 +13,7 @@ use crate::output::{
 use crate::sources::proc::{self as procfs, ProcInfo, ProcSnapshot as LiveSample};
 use crate::sources::session::{self as local_sessions, LocalSession};
 use crate::view::MaterializedView;
-use crate::view::types::{Snapshot, SnapshotOptions};
+use crate::view::types::{AuditCounters, Snapshot, SnapshotOptions};
 use crossterm::{
     cursor::{Hide, Show},
     event::{self, Event as CrosstermEvent, KeyCode, KeyEventKind, KeyModifiers},
@@ -319,10 +319,10 @@ impl LiveView {
         }
 
         let local_summary = &session_snapshot.summary;
-        let (_, _, local_total_tokens) = session_snapshot.materialized_token_totals();
+        let local_total_tokens = local_summary.total_tokens;
         let capture_summary = capture.map(|capture| &capture.snapshot.summary);
         let capture_total_tokens = capture
-            .map(|capture| capture.snapshot.materialized_token_totals().2)
+            .map(|capture| capture.snapshot.summary.total_tokens)
             .unwrap_or_default();
         let has_local = rows.iter().any(|row| row.trace.contains("local"));
         let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
@@ -535,23 +535,20 @@ fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
 }
 
 fn capture_counters_by_pid(snapshot: &Snapshot) -> HashMap<u32, CaptureCounters> {
-    let mut by_pid = HashMap::new();
-    for row in &snapshot.audit_events {
-        let Some(pid) = row.pid else { continue };
-        let counters = by_pid.entry(pid).or_insert_with(CaptureCounters::default);
-        match row.audit_type.as_str() {
-            "process" if row.action.as_deref() == Some("exec") => counters.execs += 1,
-            "process" if row.action.as_deref() == Some("exit") => {
-                if row.status.as_deref() == Some("failure") {
-                    counters.failures += 1;
-                }
-            }
-            "file" => counters.files += 1,
-            "network" => counters.network += 1,
-            _ => {}
-        }
-    }
-    by_pid
+    AuditCounters::by_pid(&snapshot.audit_events)
+        .into_iter()
+        .map(|(pid, counters)| {
+            (
+                pid,
+                CaptureCounters {
+                    execs: counters.process_execs,
+                    failures: counters.process_exit_failure,
+                    files: counters.file_events,
+                    network: counters.network_events,
+                },
+            )
+        })
+        .collect()
 }
 
 fn session_path_from_process_event(data: &Value) -> Option<PathBuf> {

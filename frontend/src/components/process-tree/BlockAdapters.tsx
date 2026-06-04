@@ -13,8 +13,6 @@ import {
   LockClosedIcon 
 } from '@heroicons/react/24/outline';
 
-// Simplified - no longer need these helper functions
-
 function safeJsonParse(value: string): any | null {
   try {
     return JSON.parse(value);
@@ -28,11 +26,6 @@ function decodeEscapedText(value: string): string {
   return typeof parsed === 'string' ? parsed : value;
 }
 
-/**
- * Leniently unescape JSON string escape sequences.
- * Unlike JSON.parse, this handles invalid escape sequences (e.g. from SSL
- * capture corruption) gracefully by dropping the backslash.
- */
 function lenientUnescape(s: string): string {
   return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (_, seq: string) => {
     if (seq.length === 5 && seq[0] === 'u') {
@@ -52,11 +45,6 @@ function lenientUnescape(s: string): string {
   });
 }
 
-/**
- * Extract a string field's raw value from potentially malformed JSON.
- * Walks the string character by character to handle corrupted escape sequences
- * that would break JSON.parse.
- */
 function extractRawStringField(json: string, key: string): string | null {
   const keyStr = `"${key}"`;
   const keyIdx = json.indexOf(keyStr);
@@ -65,12 +53,12 @@ function extractRawStringField(json: string, key: string): string | null {
   let i = keyIdx + keyStr.length;
   while (i < json.length && (json[i] === ' ' || json[i] === ':' || json[i] === '\t')) i++;
   if (i >= json.length || json[i] !== '"') return null;
-  i++; // skip opening quote
+  i++;
 
   const start = i;
   while (i < json.length) {
     if (json[i] === '\\') {
-      i += 2; // skip any escape sequence (valid or not)
+      i += 2;
     } else if (json[i] === '"') {
       return json.substring(start, i);
     } else {
@@ -80,9 +68,6 @@ function extractRawStringField(json: string, key: string): string | null {
   return json.substring(start);
 }
 
-/**
- * Format extracted content with an optional file path header line.
- */
 function formatWithFilePath(content: string, filePath: string | null): string {
   if (filePath) {
     const separator = '\u2500'.repeat(Math.min(filePath.length + 2, 60));
@@ -166,8 +151,6 @@ function formatJsonContent(rawJsonContent: string): string {
         : JSON.stringify(parsedChunk, null, 2);
       filePath = typeof parsedChunk.file_path === 'string' ? parsedChunk.file_path : null;
     } else {
-      // JSON.parse failed — likely corrupted escape sequences from SSL capture.
-      // Try manual field extraction with lenient unescaping.
       const rawContent = extractRawStringField(chunk, 'content');
       const rawFilePath = extractRawStringField(chunk, 'file_path');
 
@@ -175,7 +158,6 @@ function formatJsonContent(rawJsonContent: string): string {
         content = lenientUnescape(rawContent);
         filePath = rawFilePath !== null ? lenientUnescape(rawFilePath) : null;
       } else {
-        // Can't locate a content field — unescape the whole chunk
         content = lenientUnescape(chunk);
       }
     }
@@ -190,10 +172,6 @@ function formatJsonContent(rawJsonContent: string): string {
   return formattedChunks.join('\n\n');
 }
 
-/**
- * Format prompt content for display.
- * Parses JSON and unescapes string literals so \n and \t render as real whitespace.
- */
 function formatPromptExpandedContent(content: string): string {
   const parsed = safeJsonParse(content);
   if (parsed && typeof parsed === 'object') {
@@ -217,20 +195,17 @@ function formatResponseExpandedContent(event: ParsedEvent): string {
   return event.content || JSON.stringify(event.metadata, null, 2);
 }
 
-export function adaptPromptEvent(event: ParsedEvent): UnifiedBlockData {
+function adaptPromptEvent(event: ParsedEvent): UnifiedBlockData {
   const metadata = event.metadata || {};
   
-  // Update tags to include diff info
   const tags = ['tag.aiPrompt', metadata.model, metadata.method].filter(Boolean);
   if (event.promptDiff?.hasChanges) {
     tags.push('tag.changed');
   }
   
-  // Expanded content: include diff if available
   const rawContent = event.content || JSON.stringify(event.metadata, null, 2);
   let expandedContent = formatPromptExpandedContent(rawContent);
 
-  // Fold content: use formatted content for preview so escape sequences are resolved
   let foldContent = expandedContent && expandedContent.length > 0
     ? expandedContent.replace(/\n/g, ' ').substring(0, 100) + (expandedContent.length > 100 ? '...' : '')
     : metadata.url || '';
@@ -263,11 +238,10 @@ export function adaptPromptEvent(event: ParsedEvent): UnifiedBlockData {
   };
 }
 
-export function adaptResponseEvent(event: ParsedEvent): UnifiedBlockData {
+function adaptResponseEvent(event: ParsedEvent): UnifiedBlockData {
   const metadata = event.metadata || {};
   const expandedContent = formatResponseExpandedContent(event);
   
-  // Fold content: short preview
   const foldContent = expandedContent && expandedContent.length > 0 
     ? expandedContent.substring(0, 100) + (expandedContent.length > 100 ? '...' : '')
     : '';
@@ -286,7 +260,6 @@ export function adaptResponseEvent(event: ParsedEvent): UnifiedBlockData {
   };
 }
 
-// Helper function to format file sizes
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -295,33 +268,48 @@ function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-export function adaptFileEvent(event: ParsedEvent): UnifiedBlockData {
+function fileIconColor(op: string): string {
+  const lowerOp = op.toLowerCase();
+  if (lowerOp.includes('read')) return 'text-blue-600';
+  if (lowerOp.includes('write')) return 'text-green-600';
+  if (lowerOp.includes('open')) return 'text-purple-600';
+  if (lowerOp.includes('close')) return 'text-gray-600';
+  if (lowerOp.includes('delete') || lowerOp.includes('unlink')) return 'text-red-600';
+  return 'text-indigo-600';
+}
+
+function processColors(eventType: string) {
+  const lowerEvent = eventType.toLowerCase();
+  if (lowerEvent.includes('exec')) return {
+    icon: 'text-green-700',
+    gradient: 'bg-gradient-to-r from-green-50 via-emerald-50 to-teal-50',
+    border: 'border-green-400'
+  };
+  if (lowerEvent.includes('exit')) return {
+    icon: 'text-red-700',
+    gradient: 'bg-gradient-to-r from-red-50 via-rose-50 to-pink-50',
+    border: 'border-red-400'
+  };
+  return {
+    icon: 'text-gray-700',
+    gradient: 'bg-gradient-to-r from-gray-50 via-slate-50 to-zinc-50',
+    border: 'border-gray-400'
+  };
+}
+
+function adaptFileEvent(event: ParsedEvent): UnifiedBlockData {
   const metadata = event.metadata || {};
   
   const operation = metadata.operation || metadata.event || 'file';
   const filepath = metadata.path || metadata.filepath || '';
-  
-  // Color scheme based on operation type - matching old FileBlock
-  const getOperationColors = (op: string) => {
-    const lowerOp = op.toLowerCase();
-    if (lowerOp.includes('read')) return 'text-blue-600';
-    if (lowerOp.includes('write')) return 'text-green-600';
-    if (lowerOp.includes('open')) return 'text-purple-600';
-    if (lowerOp.includes('close')) return 'text-gray-600';
-    if (lowerOp.includes('delete') || lowerOp.includes('unlink')) return 'text-red-600';
-    return 'text-indigo-600';
-  };
 
-  // Build tags for header
   const tags = [operation.toUpperCase()];
   if (metadata.fd !== undefined) tags.push(`FD ${metadata.fd}`);
   if (metadata.size !== undefined) tags.push(formatFileSize(metadata.size));
   if (metadata.container_id) tags.push(`🐳${metadata.container_id}`);
 
-  // Fold content: file path
   const foldContent = filepath;
 
-  // Expanded content: everything
   const expandedContent = event.content || JSON.stringify(event.metadata, null, 2);
 
   return {
@@ -331,50 +319,28 @@ export function adaptFileEvent(event: ParsedEvent): UnifiedBlockData {
     tags,
     bgGradient: 'bg-gradient-to-r from-cyan-50 via-sky-50 to-blue-50',
     borderColor: 'border-cyan-400',
-    iconColor: getOperationColors(operation),
+    iconColor: fileIconColor(operation),
     icon: DocumentIcon,
     foldContent,
     expandedContent
   };
 }
 
-export function adaptProcessEvent(event: ParsedEvent): UnifiedBlockData {
+function adaptProcessEvent(event: ParsedEvent): UnifiedBlockData {
   const metadata = event.metadata || {};
   
   const eventType = metadata.event || 'process';
   const comm = metadata.comm || '';
   const pid = metadata.pid || '';
 
-  // Styling based on event type
-  const getProcessColors = (eventType: string) => {
-    const lowerEvent = eventType.toLowerCase();
-    if (lowerEvent.includes('exec')) return { 
-      icon: 'text-green-700',
-      gradient: 'bg-gradient-to-r from-green-50 via-emerald-50 to-teal-50',
-      border: 'border-green-400'
-    };
-    if (lowerEvent.includes('exit')) return { 
-      icon: 'text-red-700',
-      gradient: 'bg-gradient-to-r from-red-50 via-rose-50 to-pink-50',
-      border: 'border-red-400'
-    };
-    return { 
-      icon: 'text-gray-700',
-      gradient: 'bg-gradient-to-r from-gray-50 via-slate-50 to-zinc-50',
-      border: 'border-gray-400'
-    };
-  };
-
-  const colors = getProcessColors(eventType);
+  const colors = processColors(eventType);
   const tags = [eventType.toUpperCase()];
   if (pid) tags.push(`PID ${pid}`);
   if (metadata.container_id) tags.push(`🐳${metadata.container_id}`);
 
-  // Fold content: command and PID, with ns_pid for container processes
   const pidDisplay = metadata.ns_pid ? `${pid} (ns:${metadata.ns_pid})` : pid;
   const foldContent = comm && pid ? `${comm} (PID: ${pidDisplay})` : comm || `PID: ${pidDisplay}`;
 
-  // Expanded content: everything
   const expandedContent = event.content || JSON.stringify(event.metadata, null, 2);
 
   return {
@@ -391,7 +357,7 @@ export function adaptProcessEvent(event: ParsedEvent): UnifiedBlockData {
   };
 }
 
-export function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
+function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
   const metadata = event.metadata || {};
   const originalSource = metadata.original_source || '';
   const isHttpParser = originalSource === 'http_parser';
@@ -402,7 +368,6 @@ export function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
   let expandedContent = '';
 
   if (isHttpParser) {
-    // http_parser transformed event: fields are method, host, path, body, headers, total_size, message_type, status_code, etc.
     const method = metadata.method || '';
     const messageType = metadata.message_type || '';
     const host = metadata.host || metadata.headers?.host || '';
@@ -415,7 +380,6 @@ export function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
                 (method && method !== 'UNKNOWN' ? 'SEND' : '');
     size = metadata.total_size || metadata.content_length || (typeof body === 'string' ? body.length : 0);
 
-    // Fold content: show HTTP first line summary
     const firstLine = metadata.first_line || '';
     if (firstLine) {
       foldContent = firstLine;
@@ -427,9 +391,7 @@ export function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
       foldContent = `${host}${path}`;
     }
 
-    // Expanded content: show body if available, else full metadata
     if (body && typeof body === 'string' && body.length > 0) {
-      // Try to pretty-print JSON body
       try {
         const parsed = JSON.parse(body);
         expandedContent = JSON.stringify(parsed, null, 2);
@@ -440,7 +402,6 @@ export function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
       expandedContent = event.content || JSON.stringify(metadata, null, 2);
     }
   } else {
-    // Raw sslsniff event: fields are function, buf_size, data, comm, ns_pid, container_id
     const sslFunction = metadata.function || metadata.direction || '';
     direction = sslFunction.includes('WRITE') || sslFunction.includes('SEND') ? 'SEND' :
                 sslFunction.includes('READ') || sslFunction.includes('RECV') ? 'RECV' :
@@ -482,7 +443,7 @@ export function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
   };
 }
 
-export function adaptStdioEvent(event: ParsedEvent): UnifiedBlockData {
+function adaptStdioEvent(event: ParsedEvent): UnifiedBlockData {
   const metadata = event.metadata || {};
   const decoded = decodeStdioMessage(metadata);
   const tags = ['tag.stdio', decoded.direction || 'UNKNOWN', decoded.fdRole.toUpperCase()];
@@ -511,7 +472,6 @@ export function adaptStdioEvent(event: ParsedEvent): UnifiedBlockData {
   };
 }
 
-// Main adapter function
 export function adaptEventToUnifiedBlock(event: ParsedEvent): UnifiedBlockData {
   switch (event.type) {
     case 'prompt':

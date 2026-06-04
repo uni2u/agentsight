@@ -91,21 +91,19 @@ interface AgentSightSnapshot {
 }
 
 function snapshotToEvents(snapshot: AgentSightSnapshot): Event[] {
-  const processEvents = materializedProcessNodeEvents(snapshot.process_nodes);
   return [
-    ...materializedAuditEvents(snapshot.audit_events, processEvents.length > 0),
-    ...processEvents,
+    ...materializedAuditEvents(snapshot.audit_events),
+    ...materializedProcessNodeEvents(snapshot.process_nodes),
     ...materializedNetworkEvents(snapshot.network_targets),
     ...materializedSessionEvents(snapshot.sessions),
     ...materializedTokenEvents(snapshot.token_summary, snapshot.generated_at),
   ].sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function materializedAuditEvents(rows?: SnapshotAuditEvent[], skipProcessRows = false): Event[] {
+function materializedAuditEvents(rows?: SnapshotAuditEvent[]): Event[] {
   if (!Array.isArray(rows)) return [];
   return rows
     .filter(row => typeof row.timestamp_ms === 'number')
-    .filter(row => !(skipProcessRows && row.audit_type === 'process'))
     .map(row => {
       const details = isRecord(row.details) ? row.details : {};
       const eventName = auditEventName(row);

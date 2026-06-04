@@ -1,45 +1,34 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-import { Event } from '@/types/event';
-import { ProcessNode, parseEventData } from './eventParsers';
+import { ParsedEvent, ProcessNode } from './eventParsers';
 import { ProcessTreeFilters } from '@/components/process-tree/ProcessTreeFilters';
 
 // Extract unique filter options from events
-export function extractFilterOptions(events: Event[]) {
+export function extractFilterOptions(processTree: ProcessNode[]) {
   const eventTypes = new Set<string>();
   const models = new Set<string>();
   const sources = new Set<string>();
   const commands = new Set<string>();
 
-  events.forEach(event => {
-    // Parse the event to get structured data
-    const parsedEvent = parseEventData(event);
-
-    // Skip system events
-    if (parsedEvent === null) {
-      return;
+  const visit = (process: ProcessNode) => {
+    if (process.comm) {
+      commands.add(process.comm);
     }
-
-    // Event types
-    eventTypes.add(parsedEvent.type);
-
-    // Sources
-    sources.add(event.source);
-
-    // Commands
-    if (event.comm) {
-      commands.add(event.comm);
-    }
-
-    // Models (extract from different event types)
-    if (parsedEvent.type === 'prompt' || parsedEvent.type === 'response') {
-      const model = parsedEvent.metadata?.model;
-      if (model && model !== 'Unknown Model') {
-        models.add(model);
+    process.events.forEach(event => {
+      eventTypes.add(event.type);
+      sources.add(event.metadata?.original_source || sourceForEventType(event.type));
+      if (event.type === 'prompt' || event.type === 'response') {
+        const model = event.metadata?.model;
+        if (model && model !== 'Unknown Model') {
+          models.add(model);
+        }
       }
-    }
-  });
+    });
+    process.children.forEach(visit);
+  };
+
+  processTree.forEach(visit);
 
   return {
     eventTypes: Array.from(eventTypes).sort(),
@@ -49,33 +38,31 @@ export function extractFilterOptions(events: Event[]) {
   };
 }
 
-// Check if an event matches the filters
-export function eventMatchesFilters(event: Event, filters: ProcessTreeFilters): boolean {
-  const parsedEvent = parseEventData(event);
-
-  // Skip system events
-  if (parsedEvent === null) {
-    return false;
-  }
-
+function parsedEventMatchesFilters(
+  event: ParsedEvent,
+  source: string,
+  comm: string,
+  data: unknown,
+  filters: ProcessTreeFilters,
+): boolean {
   // Event type filter
-  if (filters.eventTypes.length > 0 && !filters.eventTypes.includes(parsedEvent.type)) {
+  if (filters.eventTypes.length > 0 && !filters.eventTypes.includes(event.type)) {
     return false;
   }
   
   // Source filter
-  if (filters.sources.length > 0 && !filters.sources.includes(event.source)) {
+  if (filters.sources.length > 0 && !filters.sources.includes(source)) {
     return false;
   }
   
   // Command filter
-  if (filters.commands.length > 0 && (!event.comm || !filters.commands.includes(event.comm))) {
+  if (filters.commands.length > 0 && (!comm || !filters.commands.includes(comm))) {
     return false;
   }
   
   // Model filter
   if (filters.models.length > 0) {
-    const model = parsedEvent.metadata?.model;
+    const model = event.metadata?.model;
     if (!model || !filters.models.includes(model)) {
       return false;
     }
@@ -94,12 +81,12 @@ export function eventMatchesFilters(event: Event, filters: ProcessTreeFilters): 
   if (filters.searchText) {
     const searchLower = filters.searchText.toLowerCase();
     const searchableText = [
-      parsedEvent.title,
-      parsedEvent.content,
-      event.comm,
-      event.source,
-      parsedEvent.metadata?.model,
-      JSON.stringify(event.data)
+      event.title,
+      event.content,
+      comm,
+      source,
+      event.metadata?.model,
+      JSON.stringify(data)
     ].filter(Boolean).join(' ').toLowerCase();
     
     if (!searchableText.includes(searchLower)) {
@@ -110,42 +97,13 @@ export function eventMatchesFilters(event: Event, filters: ProcessTreeFilters): 
   return true;
 }
 
-// Filter events and return filtered events
-export function filterEvents(events: Event[], filters: ProcessTreeFilters): Event[] {
-  return events.filter(event => eventMatchesFilters(event, filters));
-}
-
 // Filter process tree by applying filters to events within each process
 export function filterProcessTree(processTree: ProcessNode[], filters: ProcessTreeFilters): ProcessNode[] {
   return processTree.map(process => {
     // Filter events within this process
     const filteredEvents = process.events.filter(event => {
-      // Create a mock Event object from ParsedEvent for filtering
-      const mockEvent: Event = {
-        id: event.id,
-        timestamp: event.timestamp,
-        source: '', // We'll need to reconstruct this from metadata
-        pid: process.pid,
-        comm: process.comm,
-        data: event.metadata
-      };
-      
-      // Try to reconstruct source from event metadata
-      if (event.metadata?.original_source) {
-        mockEvent.source = event.metadata.original_source;
-      } else if (event.type === 'prompt' || event.type === 'response') {
-        mockEvent.source = 'http_parser';
-      } else if (event.type === 'stdio') {
-        mockEvent.source = 'stdio';
-      } else if (event.type === 'file') {
-        mockEvent.source = 'process';
-      } else if (event.type === 'process') {
-        mockEvent.source = 'process';
-      } else {
-        mockEvent.source = 'ssl';
-      }
-      
-      return eventMatchesFilters(mockEvent, filters);
+      const source = event.metadata?.original_source || sourceForEventType(event.type);
+      return parsedEventMatchesFilters(event, source, process.comm, event.metadata, filters);
     });
     
     // Recursively filter children
@@ -162,6 +120,13 @@ export function filterProcessTree(processTree: ProcessNode[], filters: ProcessTr
     
     return null;
   }).filter((process): process is ProcessNode => process !== null);
+}
+
+function sourceForEventType(type: ParsedEvent['type']): string {
+  if (type === 'prompt' || type === 'response') return 'http_parser';
+  if (type === 'stdio') return 'stdio';
+  if (type === 'file' || type === 'process') return 'process';
+  return 'ssl';
 }
 
 // Get total event count from process tree

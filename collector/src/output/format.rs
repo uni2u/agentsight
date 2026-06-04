@@ -41,6 +41,27 @@ pub(crate) struct StatOutput {
 
 pub(crate) type TopSection = (&'static str, &'static str, Vec<(String, i64)>);
 
+pub(crate) fn sorted_top_counts<T>(counts: BTreeMap<String, T>, limit: usize) -> Vec<(String, T)>
+where
+    T: Ord,
+{
+    let mut rows: Vec<_> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(limit);
+    rows
+}
+
+pub(crate) fn top_counts_from_iter(
+    rows: impl IntoIterator<Item = String>,
+    limit: usize,
+) -> Vec<(String, i64)> {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        *counts.entry(row).or_insert(0) += 1;
+    }
+    sorted_top_counts(counts, limit)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TopOptions {
     pub(crate) pid: Option<u32>,

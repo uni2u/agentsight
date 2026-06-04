@@ -46,152 +46,6 @@ export interface ParsedEvent {
   };
 }
 
-export interface PromptData {
-  model?: string;
-  messages?: Array<{ 
-    role: string; 
-    content: string | Array<any> | any;
-  }>;
-  system?: Array<{ 
-    type?: string; 
-    text?: string; 
-    cache_control?: any;
-  } | string>;
-  temperature?: number;
-  max_tokens?: number;
-  stream?: boolean;
-  metadata?: {
-    user_id?: string;
-    [key: string]: any;
-  };
-}
-
-export interface ResponseData {
-  message_id?: string;
-  connection_id?: string;
-  model?: string;
-  role?: string;
-  content?: string;
-  duration_ns?: number;
-  event_count?: number;
-  function?: string;
-  has_message_start?: boolean;
-  start_time?: number;
-  end_time?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-    service_tier?: string;
-  };
-  sse_events?: Array<{
-    event: string;
-    data: string;
-    parsed_data?: any;
-  }>;
-  text_content?: string;
-}
-
-export interface SSLData {
-  method?: string;
-  path?: string;
-  host?: string;
-  headers?: Record<string, string>;
-  body?: string;
-  status_code?: number;
-  content_length?: number;
-  message_type?: 'request' | 'response';
-}
-
-export interface FileData {
-  operation?: string;
-  path?: string;
-  filepath?: string;
-  event?: string;
-  size?: number;
-  permissions?: string;
-  fd?: number;
-  flags?: number;
-  count?: number;
-  pid?: number;
-  comm?: string;
-}
-
-// Utility class for safe data extraction
-class DataExtractor {
-  private data: any;
-
-  constructor(data: any) {
-    this.data = data;
-  }
-
-  // Safely get nested values
-  get(path: string, defaultValue: any = undefined): any {
-    return path.split('.').reduce((obj, key) => {
-      return obj && obj[key] !== undefined ? obj[key] : defaultValue;
-    }, this.data);
-  }
-
-  // Try to parse JSON strings safely
-  parseJson(value: any): any {
-    if (typeof value === 'string') {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return value;
-      }
-    }
-    return value;
-  }
-
-  // Convert any value to readable string, pretty printing JSON
-  toString(value: any, indent = 2): string {
-    if (value === null || value === undefined) return '';
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-    if (typeof value === 'object') {
-      try {
-        return JSON.stringify(value, null, indent);
-      } catch (error) {
-        // Fallback for circular references or other JSON errors
-        return String(value);
-      }
-    }
-    return String(value);
-  }
-
-  // Get prompt data from various nested structures
-  getPromptData(): any {
-    const candidates = [
-      this.parseJson(this.get('body')),
-      this.parseJson(this.get('data.data')),
-      this.get('data'),
-      this.data
-    ];
-
-    for (const candidate of candidates) {
-      if (candidate && (candidate.model || candidate.messages || candidate.prompt)) {
-        return candidate;
-      }
-    }
-    return this.data;
-  }
-
-  // Get raw data for debugging/full visibility
-  getRawData(): string {
-    return this.toString(this.data, 2);
-  }
-
-  // Check if data seems to be AI-related but couldn't be parsed properly
-  isUnparsedAiData(): boolean {
-    const raw = this.toString(this.data).toLowerCase();
-    return raw.includes('model') || raw.includes('messages') || raw.includes('prompt') || 
-           raw.includes('temperature') || raw.includes('max_tokens') || raw.includes('anthropic') ||
-           raw.includes('openai') || raw.includes('claude');
-  }
-}
-
 // Parse different types of events
 export function parseEventData(event: Event): ParsedEvent | null {
   const eventType = determineEventType(event.source, event.data);
@@ -222,8 +76,8 @@ function determineEventType(source: string, data: any): ParsedEvent['type'] {
     return 'system';
   }
 
-  if (isStdioEvent(source, data)) return 'stdio';
-  if (isPromptEvent(source, data)) return 'prompt';
+  if (isStdioSource(source)) return 'stdio';
+  if (isPromptEvent(data)) return 'prompt';
   if (isResponseEvent(source, data)) return 'response';
   if (isFileEvent(source, data)) return 'file';
   if (isProcessEvent(source, data)) return 'process';
@@ -231,11 +85,7 @@ function determineEventType(source: string, data: any): ParsedEvent['type'] {
   return 'ssl';
 }
 
-function isStdioEvent(source: string, _data: any): boolean {
-  return isStdioSource(source);
-}
-
-function isPromptEvent(source: string, data: any): boolean {
+function isPromptEvent(data: any): boolean {
   // Simple heuristics for AI request detection
   const hasAIRequestIndicators = 
     data.model || 
@@ -265,22 +115,22 @@ function isResponseEvent(source: string, data: any): boolean {
 }
 
 function isFileEvent(source: string, data: any): boolean {
-  const extractor = new DataExtractor(data);
+  const eventName = String(data?.event ?? '');
   return source === 'file' || 
-         extractor.get('fd') !== undefined ||
-         (extractor.get('operation') && ['open', 'read', 'write', 'close'].includes(extractor.get('operation'))) ||
-         (extractor.get('event', '').includes('FILE_')) ||
-         extractor.get('filepath') !== undefined;
+         data?.fd !== undefined ||
+         (data?.operation && ['open', 'read', 'write', 'close'].includes(data.operation)) ||
+         eventName.includes('FILE_') ||
+         data?.filepath !== undefined;
 }
 
 function isProcessEvent(source: string, data: any): boolean {
-  const extractor = new DataExtractor(data);
-  return (source === 'process' && !extractor.get('event', '').includes('FILE_')) || 
-         extractor.get('exec') !== undefined ||
-         extractor.get('exit') !== undefined ||
-         extractor.get('event') === 'EXEC' ||
-         extractor.get('event') === 'EXIT' ||
-         (extractor.get('ppid') !== undefined && !extractor.get('event', '').includes('FILE_'));
+  const eventName = String(data?.event ?? '');
+  return (source === 'process' && !eventName.includes('FILE_')) ||
+         data?.exec !== undefined ||
+         data?.exit !== undefined ||
+         eventName === 'EXEC' ||
+         eventName === 'EXIT' ||
+         (data?.ppid !== undefined && !eventName.includes('FILE_'));
 }
 
 function parsePromptEvent(event: Event): ParsedEvent {
@@ -362,19 +212,8 @@ function parseResponseEvent(event: Event): ParsedEvent {
       }
     }
   }
-  
-  // Simply show the JSON data as-is
-  const content = JSON.stringify(displayData, null, 2);
-  
-  return {
-    id: event.id,
-    timestamp: event.timestamp,
-    type: 'response',
-    title: model,
-    content: content,
-    metadata: { model, raw: data, original_source: event.source },
-    isExpanded: false
-  };
+
+  return parsedEvent(event, 'response', model, { model, raw: data }, displayData);
 }
 
 function parseSSLEvent(event: Event): ParsedEvent {
@@ -387,38 +226,16 @@ function parseSSLEvent(event: Event): ParsedEvent {
   
   let title = `${method} ${host}${path}`;
   if (statusCode) title += ` (${statusCode})`;
-  
-  // Simply show the JSON data as-is
-  const content = JSON.stringify(data, null, 2);
 
-  return {
-    id: event.id,
-    timestamp: event.timestamp,
-    type: 'ssl',
-    title,
-    content: content,
-    metadata: { ...data, original_source: event.source },
-    isExpanded: false
-  };
+  return parsedEvent(event, 'ssl', title, data);
 }
 
 function parseFileEvent(event: Event): ParsedEvent {
   const data = event.data;
   const operation = data.operation || data.event || 'file op';
   const path = data.path || data.filepath || 'unknown';
-  
-  // Simply show the JSON data as-is
-  const content = JSON.stringify(data, null, 2);
 
-  return {
-    id: event.id,
-    timestamp: event.timestamp,
-    type: 'file',
-    title: `${operation} ${path}`,
-    content: content,
-    metadata: { ...data, original_source: event.source },
-    isExpanded: false
-  };
+  return parsedEvent(event, 'file', `${operation} ${path}`, data);
 }
 
 function parseProcessEvent(event: Event): ParsedEvent {
@@ -426,19 +243,8 @@ function parseProcessEvent(event: Event): ParsedEvent {
   const eventType = data.event || 'process';
   const filename = data.filename;
   const title = filename ? `${eventType}: ${filename}` : `${eventType} event`;
-  
-  // Simply show the JSON data as-is
-  const content = JSON.stringify(data, null, 2);
 
-  return {
-    id: event.id,
-    timestamp: event.timestamp,
-    type: 'process',
-    title,
-    content: content,
-    metadata: { ...data, original_source: event.source },
-    isExpanded: false
-  };
+  return parsedEvent(event, 'process', title, data);
 }
 
 function parseStdioEvent(event: Event): ParsedEvent {
@@ -465,16 +271,23 @@ function parseStdioEvent(event: Event): ParsedEvent {
 }
 
 function parseGenericEvent(event: Event): ParsedEvent {
-  // Simply show the JSON data as-is
-  const content = JSON.stringify(event.data, null, 2);
-  
+  return parsedEvent(event, 'ssl', `${event.source} event`, event.data);
+}
+
+function parsedEvent(
+  event: Event,
+  type: ParsedEvent['type'],
+  title: string,
+  metadata: Record<string, any>,
+  contentData: any = event.data,
+): ParsedEvent {
   return {
     id: event.id,
     timestamp: event.timestamp,
-    type: 'ssl',
-    title: `${event.source} event`,
-    content: content,
-    metadata: { ...event.data, original_source: event.source },
+    type,
+    title,
+    content: JSON.stringify(contentData, null, 2),
+    metadata: { ...metadata, original_source: event.source },
     isExpanded: false
   };
 }
@@ -496,53 +309,57 @@ function getEarliestTimestamp(process: ProcessNode): number {
   return earliest === Infinity ? 0 : earliest;
 }
 
-// Build process hierarchy from events
+function isProcessNodeEvent(event: Event): boolean {
+  return event.source === 'process' && event.data?.event === 'PROCESS_NODE';
+}
+
+function isSystemEvent(event: Event): boolean {
+  const source = String(event.source || '').toLowerCase().trim();
+  const dataType = String(event.data?.type || '').toLowerCase().trim();
+  return source === 'system' ||
+    dataType === 'system_metrics' ||
+    dataType === 'system_wide' ||
+    dataType.includes('system');
+}
+
+// Build process hierarchy from materialized process nodes, then attach matching events.
 export function buildProcessTree(events: Event[]): ProcessNode[] {
   const processMap = new Map<number, ProcessNode>();
   const eventsByPid = new Map<number, ParsedEvent[]>();
 
-  // First pass: create process nodes and parse events
+  // Process nodes are the only source of tree structure.
   events.forEach(event => {
-    // Skip system metrics events - they should not appear in process tree
-    const source = String(event.source || '').toLowerCase().trim();
-    const dataType = String(event.data?.type || '').toLowerCase().trim();
-
-    if (source === 'system' ||
-        dataType === 'system_metrics' ||
-        dataType === 'system_wide' ||
-        dataType.includes('system')) {
+    if (isSystemEvent(event) || !isProcessNodeEvent(event)) {
       return;
     }
-
     const { pid, comm } = event;
-    
-    // Initialize process if not exists
-    if (!processMap.has(pid)) {
-      processMap.set(pid, {
-        pid,
-        comm: comm || 'unknown',
-        children: [],
-        events: [],
-        timeline: [],
-        isExpanded: false
-      });
-    }
-    
-    // Parse event and group by PID
-    const parsedEvent = parseEventData(event);
-    if (parsedEvent === null) {
-      return; // Skip system events
-    }
-    if (!eventsByPid.has(pid)) {
-      eventsByPid.set(pid, []);
-    }
-    eventsByPid.get(pid)!.push(parsedEvent);
-    
-    // Extract parent PID if available
-    if (event.source === 'process' && event.data.ppid) {
-      const process = processMap.get(pid)!;
+    const process = processMap.get(pid) ?? {
+      pid,
+      comm: comm || 'unknown',
+      children: [],
+      events: [],
+      timeline: [],
+      isExpanded: false
+    };
+    process.comm = comm || process.comm;
+    if (event.data.ppid) {
       process.ppid = event.data.ppid;
     }
+    processMap.set(pid, process);
+  });
+
+  events.forEach(event => {
+    if (isSystemEvent(event) || !processMap.has(event.pid)) {
+      return;
+    }
+    const parsedEvent = parseEventData(event);
+    if (parsedEvent === null) {
+      return;
+    }
+    if (!eventsByPid.has(event.pid)) {
+      eventsByPid.set(event.pid, []);
+    }
+    eventsByPid.get(event.pid)!.push(parsedEvent);
   });
   
   // Assign events to processes

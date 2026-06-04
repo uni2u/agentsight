@@ -3,11 +3,11 @@
 
 use crate::output::{
     AgentTopOutput, AgentTopRow, ResourcePeaks, StatOutput, TopOptions, TopSection, clear_screen,
-    print_agent_top, print_json, print_stat,
+    print_agent_top, print_json, print_stat, sorted_top_counts, top_counts_from_iter,
 };
 use crate::sources::sqlite::load_view as load_sqlite_view;
 use crate::text::short_session_id;
-use crate::view::types::{SessionRow, Snapshot, SnapshotOptions, ViewResult};
+use crate::view::types::{AuditCounters, SessionRow, Snapshot, SnapshotOptions, ViewResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::time::Duration;
@@ -71,35 +71,7 @@ fn load_stat(db: &str) -> ViewResult<StatOutput> {
     });
     let resources = resource_peaks_from_samples(view.resource_samples());
     let tool_calls = view.tool_call_count();
-    let (input_tokens, output_tokens, total_tokens) = snapshot.materialized_token_totals();
-
-    let mut process_execs = 0usize;
-    let mut process_exits = 0usize;
-    let mut process_exit_success = 0usize;
-    let mut process_exit_failure = 0usize;
-    let mut file_events = 0usize;
-    let mut files = BTreeSet::new();
-
-    for row in &snapshot.audit_events {
-        match row.audit_type.as_str() {
-            "process" if row.action.as_deref() == Some("exec") => process_execs += 1,
-            "process" if row.action.as_deref() == Some("exit") => {
-                process_exits += 1;
-                match row.status.as_deref() {
-                    Some("success") => process_exit_success += 1,
-                    Some("failure") => process_exit_failure += 1,
-                    _ => {}
-                }
-            }
-            "file" => {
-                file_events += 1;
-                if let Some(target) = &row.target {
-                    files.insert(target.clone());
-                }
-            }
-            _ => {}
-        }
-    }
+    let audit = AuditCounters::from_rows(&snapshot.audit_events);
 
     let network_hosts = snapshot
         .network_targets
@@ -115,18 +87,18 @@ fn load_stat(db: &str) -> ViewResult<StatOutput> {
 
     Ok(StatOutput {
         db: db.to_string(),
-        duration_s: duration_s(&snapshot),
+        duration_s: snapshot.summary.duration_s(),
         view_events: snapshot.summary.view_events,
         llm_calls: snapshot.summary.llm_calls,
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        process_execs,
-        process_exits,
-        process_exit_success,
-        process_exit_failure,
-        file_events,
-        unique_files: files.len(),
+        input_tokens: snapshot.summary.input_tokens,
+        output_tokens: snapshot.summary.output_tokens,
+        total_tokens: snapshot.summary.total_tokens,
+        process_execs: audit.process_execs,
+        process_exits: audit.process_exits,
+        process_exit_success: audit.process_exit_success,
+        process_exit_failure: audit.process_exit_failure,
+        file_events: audit.file_events,
+        unique_files: audit.unique_files.len(),
         network_hosts,
         http_errors,
         tool_calls,
@@ -151,7 +123,7 @@ fn build_session_top<'a>(
     AgentTopOutput {
         mode: "static session",
         db: Some(db),
-        duration_s: duration_s(snapshot),
+        duration_s: snapshot.summary.duration_s(),
         view_events: snapshot.summary.view_events,
         llm_calls: snapshot.summary.llm_calls,
         total_tokens: snapshot.summary.total_tokens,
@@ -173,7 +145,7 @@ fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection
         (
             "Processes",
             "execs",
-            top_counts(
+            top_counts_from_iter(
                 audit
                     .iter()
                     .filter(|row| {
@@ -191,7 +163,7 @@ fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection
         (
             "Files",
             "events",
-            top_counts(
+            top_counts_from_iter(
                 audit
                     .iter()
                     .filter(|row| row.audit_type == "file")
@@ -202,9 +174,9 @@ fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection
         (
             "Network",
             "events",
-            sorted_counts(network_target_counts(snapshot), limit),
+            sorted_top_counts(network_target_counts(snapshot), limit),
         ),
-        ("Models", "tokens", sorted_counts(model_counts, limit)),
+        ("Models", "tokens", sorted_top_counts(model_counts, limit)),
     ];
     all.into_iter()
         .filter(|(title, _, _)| show_section(view, title))
@@ -276,34 +248,14 @@ fn saved_session_row(
     top_model: Option<String>,
     db_age_s: Option<f64>,
 ) -> Option<AgentTopRow> {
-    let mut execs = 0usize;
-    let mut failures = 0usize;
-    let mut files = BTreeSet::new();
     let mut pids = BTreeSet::new();
-
-    for row in snapshot
-        .audit_events
-        .iter()
-        .filter(|row| options.matches(row.pid, row.comm.as_deref(), row.target.as_deref()))
-    {
-        if let Some(pid) = row.pid {
-            pids.insert(pid);
-        }
-        match row.audit_type.as_str() {
-            "process" if row.action.as_deref() == Some("exec") => execs += 1,
-            "process" if row.action.as_deref() == Some("exit") => {
-                if row.status.as_deref() == Some("failure") {
-                    failures += 1;
-                }
-            }
-            "file" => {
-                if let Some(target) = &row.target {
-                    files.insert(target.clone());
-                }
-            }
-            _ => {}
-        }
-    }
+    let audit = AuditCounters::from_rows(
+        snapshot
+            .audit_events
+            .iter()
+            .filter(|row| options.matches(row.pid, row.comm.as_deref(), row.target.as_deref())),
+    );
+    pids.extend(audit.pids.iter().copied());
 
     let network = snapshot
         .network_targets
@@ -317,10 +269,10 @@ fn saved_session_row(
         })
         .collect::<BTreeSet<_>>()
         .len();
-    let (_, _, total_tokens) = snapshot.materialized_token_totals();
-    if execs == 0
-        && failures == 0
-        && files.is_empty()
+    let total_tokens = snapshot.summary.total_tokens;
+    if audit.process_execs == 0
+        && audit.process_exit_failure == 0
+        && audit.unique_files.is_empty()
         && network == 0
         && total_tokens == 0
         && resources.samples == 0
@@ -348,9 +300,9 @@ fn saved_session_row(
         processes: pids.len(),
         tokens: (total_tokens > 0).then_some(total_tokens),
         tools: 0,
-        execs,
-        failures,
-        files: files.len(),
+        execs: audit.process_execs,
+        failures: audit.process_exit_failure,
+        files: audit.unique_files.len(),
         network,
         unattributed: 0,
         trace: "db".to_string(),
@@ -441,33 +393,8 @@ fn recent_failures(snapshot: &Snapshot, limit: usize) -> Vec<String> {
         .collect()
 }
 
-fn sorted_counts(counts: BTreeMap<String, i64>, limit: usize) -> Vec<(String, i64)> {
-    let mut rows: Vec<_> = counts.into_iter().collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    rows.truncate(limit);
-    rows
-}
-
-fn top_counts(rows: impl Iterator<Item = String>, limit: usize) -> Vec<(String, i64)> {
-    let mut counts = BTreeMap::new();
-    for row in rows {
-        *counts.entry(row).or_insert(0) += 1;
-    }
-    sorted_counts(counts, limit)
-}
-
-fn duration_s(snapshot: &Snapshot) -> f64 {
-    match (
-        snapshot.summary.start_timestamp_ms,
-        snapshot.summary.end_timestamp_ms,
-    ) {
-        (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
-        _ => 0.0,
-    }
-}
-
 fn snapshot_age_s(snapshot: &Snapshot) -> Option<f64> {
-    let duration = duration_s(snapshot);
+    let duration = snapshot.summary.duration_s();
     (duration > 0.0).then_some(duration)
 }
 
@@ -522,7 +449,9 @@ mod tests {
         view.load_update(ViewUpdate::Session(session));
         let snapshot = view.export_snapshot(SnapshotOptions { audit_limit: 0 });
 
-        assert_eq!(snapshot.materialized_token_totals(), (3, 10, 27667));
+        assert_eq!(snapshot.summary.input_tokens, 3);
+        assert_eq!(snapshot.summary.output_tokens, 10);
+        assert_eq!(snapshot.summary.total_tokens, 27667);
         assert_eq!(snapshot.token_summary[0].group, "claude-opus-4-6");
     }
 
@@ -556,6 +485,8 @@ mod tests {
             details: serde_json::json!({}),
         }];
 
-        assert_eq!(snapshot.materialized_token_totals(), (8, 5, 13));
+        assert_eq!(snapshot.summary.input_tokens, 8);
+        assert_eq!(snapshot.summary.output_tokens, 5);
+        assert_eq!(snapshot.summary.total_tokens, 13);
     }
 }

@@ -26,22 +26,18 @@ export function ProcessTreeView({ events }: ProcessTreeViewProps) {
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<ProcessTreeFilters>(createDefaultFilters());
 
-  // Build process hierarchy from events using the new parser
   const processTree = useMemo(() => {
     return buildProcessTree(events);
   }, [events]);
 
-  // Extract available filter options
   const filterOptions = useMemo(() => {
-    return extractFilterOptions(events);
-  }, [events]);
+    return extractFilterOptions(processTree);
+  }, [processTree]);
 
-  // Apply filters to the process tree
   const filteredProcessTree = useMemo(() => {
     return filterProcessTree(processTree, filters);
   }, [processTree, filters]);
 
-  // Count total and filtered events
   const totalEvents = useMemo(() => getTotalEventCount(processTree), [processTree]);
   const filteredEvents = useMemo(() => getTotalEventCount(filteredProcessTree), [filteredProcessTree]);
 

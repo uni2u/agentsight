@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type ViewResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -60,14 +61,6 @@ pub struct SnapshotOptions {
     pub audit_limit: usize,
 }
 
-impl Default for SnapshotOptions {
-    fn default() -> Self {
-        Self {
-            audit_limit: 10_000,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub schema_version: u16,
@@ -94,30 +87,6 @@ impl Snapshot {
             sessions: Vec::new(),
             agents: Vec::new(),
         }
-    }
-
-    pub(crate) fn model_rows(&self) -> Vec<(String, i64, i64, i64, i64)> {
-        self.token_summary
-            .iter()
-            .filter(|row| row.input_tokens != 0 || row.output_tokens != 0 || row.total_tokens != 0)
-            .map(|row| {
-                (
-                    row.group.clone(),
-                    row.input_tokens,
-                    row.output_tokens,
-                    row.total_tokens,
-                    row.calls,
-                )
-            })
-            .collect()
-    }
-
-    pub(crate) fn materialized_token_totals(&self) -> (i64, i64, i64) {
-        (
-            self.summary.input_tokens,
-            self.summary.output_tokens,
-            self.summary.total_tokens,
-        )
     }
 }
 
@@ -152,6 +121,13 @@ impl SnapshotSummary {
             start_timestamp_ms: None,
             end_timestamp_ms: None,
             audit_limit: 0,
+        }
+    }
+
+    pub(crate) fn duration_s(&self) -> f64 {
+        match (self.start_timestamp_ms, self.end_timestamp_ms) {
+            (Some(start), Some(end)) if end > start => (end - start) as f64 / 1000.0,
+            _ => 0.0,
         }
     }
 }
@@ -190,6 +166,65 @@ pub struct AuditEventRow {
     pub status: Option<String>,
     pub summary: Option<String>,
     pub details: Value,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AuditCounters {
+    pub(crate) process_execs: usize,
+    pub(crate) process_exits: usize,
+    pub(crate) process_exit_success: usize,
+    pub(crate) process_exit_failure: usize,
+    pub(crate) file_events: usize,
+    pub(crate) network_events: usize,
+    pub(crate) unique_files: BTreeSet<String>,
+    pub(crate) pids: BTreeSet<u32>,
+}
+
+impl AuditCounters {
+    pub(crate) fn from_rows<'a>(rows: impl IntoIterator<Item = &'a AuditEventRow>) -> Self {
+        let mut counters = Self::default();
+        for row in rows {
+            counters.observe(row);
+        }
+        counters
+    }
+
+    pub(crate) fn by_pid<'a>(
+        rows: impl IntoIterator<Item = &'a AuditEventRow>,
+    ) -> BTreeMap<u32, Self> {
+        let mut by_pid = BTreeMap::new();
+        for row in rows {
+            if let Some(pid) = row.pid {
+                by_pid.entry(pid).or_insert_with(Self::default).observe(row);
+            }
+        }
+        by_pid
+    }
+
+    fn observe(&mut self, row: &AuditEventRow) {
+        if let Some(pid) = row.pid {
+            self.pids.insert(pid);
+        }
+        match row.audit_type.as_str() {
+            "process" if row.action.as_deref() == Some("exec") => self.process_execs += 1,
+            "process" if row.action.as_deref() == Some("exit") => {
+                self.process_exits += 1;
+                match row.status.as_deref() {
+                    Some("success") => self.process_exit_success += 1,
+                    Some("failure") => self.process_exit_failure += 1,
+                    _ => {}
+                }
+            }
+            "file" => {
+                self.file_events += 1;
+                if let Some(target) = &row.target {
+                    self.unique_files.insert(target.clone());
+                }
+            }
+            "network" => self.network_events += 1,
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
