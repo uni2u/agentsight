@@ -3,16 +3,13 @@
 
 use futures::stream::StreamExt;
 
+use crate::analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics};
+use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
 use crate::cli_db::load_agentsight_view;
 use crate::cmd_trace::{
     DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent_with_view, drain_stream_for,
     prepare_process_seeds, start_web_server_if_enabled,
-};
-use crate::framework::{
-    analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
-    binary_extractor::BinaryExtractor,
-    runners::{Runner, RunnerError},
 };
 use crate::output::{
     SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
@@ -22,6 +19,7 @@ use crate::output::{
     print_record_sudo_prompt, print_record_target_exited, print_record_target_shutdown_error,
     print_record_target_status_error, print_record_target_wait_error, print_record_web_ui,
 };
+use crate::runners::{Runner, RunnerError};
 use crate::session_db::sessions_dir;
 use crate::view::MaterializedView;
 

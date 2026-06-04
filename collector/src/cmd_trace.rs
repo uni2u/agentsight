@@ -3,24 +3,22 @@
 
 use futures::stream::StreamExt;
 
+use crate::analyzers::{
+    AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
+    TimestampNormalizer,
+};
+use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{
     binary_embeds_ssl, parse_container_ref, resolve_binary_path, resolve_container_binary_path,
-};
-use crate::framework::{
-    analyzers::{
-        AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
-        TimestampNormalizer,
-    },
-    binary_extractor::BinaryExtractor,
-    runners::{
-        AgentRunner, EventStream, ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner,
-        SystemRunner,
-    },
 };
 use crate::output::{
     print_event_json, print_trace_container_binary_resolved, print_trace_header,
     print_trace_shutdown, print_trace_ssl_binary_discovered, print_trace_start,
     print_web_server_error, print_web_server_start,
+};
+use crate::runners::{
+    AgentRunner, EventStream, ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner,
+    SystemRunner,
 };
 use crate::server::WebServer;
 use crate::sinks::OtelExporter;

@@ -125,16 +125,28 @@ async fn serve_asset(
     if let Some(content) = assets.get(path) {
         let content_type = assets.get_content_type(path);
         log::info!("✅ Serving asset: {} ({})", path, content_type);
-        Ok(plain_response(StatusCode::OK, &content_type, content.to_vec()))
+        Ok(plain_response(
+            StatusCode::OK,
+            &content_type,
+            content.to_vec(),
+        ))
     } else if is_frontend_route(path) {
         let content = assets
             .get("/")
             .unwrap_or_else(|| Bytes::new().to_vec().into());
         log::info!("✅ Serving frontend route: {}", path);
-        Ok(plain_response(StatusCode::OK, "text/html", content.to_vec()))
+        Ok(plain_response(
+            StatusCode::OK,
+            "text/html",
+            content.to_vec(),
+        ))
     } else {
         log::info!("❌ Asset not found: {}", path);
-        Ok(plain_response(StatusCode::NOT_FOUND, "text/plain", b"Asset not found".to_vec()))
+        Ok(plain_response(
+            StatusCode::NOT_FOUND,
+            "text/plain",
+            b"Asset not found".to_vec(),
+        ))
     }
 }
 

@@ -7,7 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::text::{short_session_id, truncate_text};
+use crate::json::i64_field as json_i64;
+use crate::text::{sanitize_ascii_identifier as sanitize_id, short_session_id, truncate_text};
 use crate::view::MaterializedView;
 use crate::view::types::{
     AGENT_NATIVE_SOURCE, SessionRow, Snapshot, SnapshotOptions, TokenUsageRow, ToolCallRow,
@@ -247,13 +248,6 @@ fn updated_ms(session: &LocalSession) -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-fn sanitize_id(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
 }
 
 fn matches_filter(
@@ -644,9 +638,15 @@ fn local_session_id(obj: &Value) -> Option<String> {
 
 fn is_noise_path(path: &str) -> bool {
     const NOISE: &[&str] = &[
-        "/.claude/", "/.codex/", "/.git/", "/.git\n",
-        "/node_modules/", "/.npm/", "/.cache/",
-        "CLAUDE.md", "AGENTS.md",
+        "/.claude/",
+        "/.codex/",
+        "/.git/",
+        "/.git\n",
+        "/node_modules/",
+        "/.npm/",
+        "/.cache/",
+        "CLAUDE.md",
+        "AGENTS.md",
     ];
     NOISE.iter().any(|pat| path.contains(pat))
 }
@@ -695,13 +695,6 @@ fn collect_local_text(value: &Value, out: &mut Vec<String>) {
         }
         _ => {}
     }
-}
-
-fn json_i64(value: &Value, key: &str) -> i64 {
-    value
-        .get(key)
-        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
-        .unwrap_or_default()
 }
 
 fn json_u64(value: &Value, key: &str) -> u64 {

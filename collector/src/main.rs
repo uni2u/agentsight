@@ -17,6 +17,8 @@ use std::sync::{
 use tokio::signal;
 use tokio::sync::Notify;
 
+mod analyzers;
+mod binary_extractor;
 mod binary_resolver;
 mod cli_db;
 mod cli_discover;
@@ -24,16 +26,22 @@ mod cmd_debug;
 mod cmd_exec;
 mod cmd_perf;
 mod cmd_trace;
-mod framework;
+mod event;
+mod json;
 mod output;
+mod runners;
+mod semantic;
 mod server;
 mod session_db;
 mod sinks;
 mod sources;
 mod stores;
 mod text;
+mod time;
 mod view;
 
+use analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics};
+use binary_extractor::BinaryExtractor;
 use cli_db::{
     configured_db_path, run_audit_query, run_db_summary, run_export, run_prompts_query,
     run_token_query,
@@ -44,10 +52,6 @@ use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
 use cmd_perf::{run_live_top_query, run_live_top_tui, run_stat_query, run_top_query};
 use cmd_trace::{
     DEFAULT_RECORD_STDIO_MAX_BYTES, OtelConfig, TraceConfig, convert_runner_error, run_trace,
-};
-use framework::{
-    analyzers::{print_global_http_filter_metrics, print_global_ssl_filter_metrics},
-    binary_extractor::BinaryExtractor,
 };
 use output::TopOptions;
 use output::print_record_session_db_error;

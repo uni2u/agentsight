@@ -27,7 +27,11 @@ pub struct SslFilterExpr {
 enum FilterNode {
     And(Box<FilterNode>, Box<FilterNode>),
     Or(Box<FilterNode>, Box<FilterNode>),
-    Condition { field: String, operator: String, value: String },
+    Condition {
+        field: String,
+        operator: String,
+        value: String,
+    },
     Empty,
 }
 
@@ -57,7 +61,9 @@ impl Analyzer for SSLFilter {
 
 impl SslFilterExpr {
     pub fn parse(expression: &str) -> Self {
-        Self { parsed: parse_expression(expression) }
+        Self {
+            parsed: parse_expression(expression),
+        }
     }
 
     pub fn process_escape_sequences(value: &str) -> String {
@@ -66,11 +72,26 @@ impl SslFilterExpr {
         while let Some(ch) = chars.next() {
             if ch == '\\' {
                 match chars.peek() {
-                    Some('r') => { chars.next(); result.push('\r'); }
-                    Some('n') => { chars.next(); result.push('\n'); }
-                    Some('t') => { chars.next(); result.push('\t'); }
-                    Some('\\') => { chars.next(); result.push('\\'); }
-                    Some('"') => { chars.next(); result.push('"'); }
+                    Some('r') => {
+                        chars.next();
+                        result.push('\r');
+                    }
+                    Some('n') => {
+                        chars.next();
+                        result.push('\n');
+                    }
+                    Some('t') => {
+                        chars.next();
+                        result.push('\t');
+                    }
+                    Some('\\') => {
+                        chars.next();
+                        result.push('\\');
+                    }
+                    Some('"') => {
+                        chars.next();
+                        result.push('"');
+                    }
                     _ => result.push(ch),
                 }
             } else {
@@ -124,9 +145,16 @@ fn parse_condition(expr: &str) -> FilterNode {
             let field = expr[..pos].trim().to_string();
             let raw_value = expr[pos + op.len()..].trim();
             let operator = match op {
-                "=" => "exact", "!=" => "not_equal", ">" => "gt", "<" => "lt",
-                ">=" => "gte", "<=" => "lte", "~" => "contains", _ => "exact",
-            }.to_string();
+                "=" => "exact",
+                "!=" => "not_equal",
+                ">" => "gt",
+                "<" => "lt",
+                ">=" => "gte",
+                "<=" => "lte",
+                "~" => "contains",
+                _ => "exact",
+            }
+            .to_string();
             return FilterNode::Condition {
                 field,
                 operator,
@@ -143,9 +171,11 @@ fn evaluate_node(node: &FilterNode, data: &Value) -> bool {
     match node {
         FilterNode::And(l, r) => evaluate_node(l, data) && evaluate_node(r, data),
         FilterNode::Or(l, r) => evaluate_node(l, data) || evaluate_node(r, data),
-        FilterNode::Condition { field, operator, value } => {
-            eval_condition(field, operator, value, data)
-        }
+        FilterNode::Condition {
+            field,
+            operator,
+            value,
+        } => eval_condition(field, operator, value, data),
         FilterNode::Empty => false,
     }
 }
@@ -161,18 +191,16 @@ fn eval_condition(field: &str, operator: &str, expected: &str, data: &Value) -> 
         "is_handshake" | "truncated" => {
             data.get(field).and_then(|v| v.as_bool()).unwrap_or(false) == (expected == "true")
         }
-        "len" | "pid" | "tid" | "uid" | "timestamp_ns" => {
-            data.get(field)
-                .and_then(|v| v.as_u64())
-                .map(|n| cmp_num(n, operator, expected))
-                .unwrap_or(false)
-        }
-        "latency_ms" => {
-            data.get("latency_ms")
-                .and_then(|v| v.as_f64())
-                .map(|n| cmp_float(n, operator, expected))
-                .unwrap_or(false)
-        }
+        "len" | "pid" | "tid" | "uid" | "timestamp_ns" => data
+            .get(field)
+            .and_then(|v| v.as_u64())
+            .map(|n| cmp_num(n, operator, expected))
+            .unwrap_or(false),
+        "latency_ms" => data
+            .get("latency_ms")
+            .and_then(|v| v.as_f64())
+            .map(|n| cmp_float(n, operator, expected))
+            .unwrap_or(false),
         _ => data
             .get(field)
             .and_then(|v| v.as_str())
@@ -193,22 +221,31 @@ fn cmp_str(actual: &str, op: &str, expected: &str) -> bool {
 }
 
 fn cmp_num(actual: u64, op: &str, expected: &str) -> bool {
-    let Ok(e) = expected.parse::<u64>() else { return false };
+    let Ok(e) = expected.parse::<u64>() else {
+        return false;
+    };
     match op {
-        "exact" => actual == e, "not_equal" => actual != e,
-        "gt" => actual > e, "lt" => actual < e,
-        "gte" => actual >= e, "lte" => actual <= e,
+        "exact" => actual == e,
+        "not_equal" => actual != e,
+        "gt" => actual > e,
+        "lt" => actual < e,
+        "gte" => actual >= e,
+        "lte" => actual <= e,
         _ => false,
     }
 }
 
 fn cmp_float(actual: f64, op: &str, expected: &str) -> bool {
-    let Ok(e) = expected.parse::<f64>() else { return false };
+    let Ok(e) = expected.parse::<f64>() else {
+        return false;
+    };
     match op {
         "exact" => (actual - e).abs() < f64::EPSILON,
         "not_equal" => (actual - e).abs() >= f64::EPSILON,
-        "gt" => actual > e, "lt" => actual < e,
-        "gte" => actual >= e, "lte" => actual <= e,
+        "gt" => actual > e,
+        "lt" => actual < e,
+        "gte" => actual >= e,
+        "lte" => actual <= e,
         _ => false,
     }
 }
@@ -249,8 +286,14 @@ mod tests {
 
     #[test]
     fn test_escape_sequences() {
-        assert_eq!(SslFilterExpr::process_escape_sequences("0\\r\\n\\r\\n"), "0\r\n\r\n");
-        assert_eq!(SslFilterExpr::process_escape_sequences("hello\\tworld\\n"), "hello\tworld\n");
+        assert_eq!(
+            SslFilterExpr::process_escape_sequences("0\\r\\n\\r\\n"),
+            "0\r\n\r\n"
+        );
+        assert_eq!(
+            SslFilterExpr::process_escape_sequences("hello\\tworld\\n"),
+            "hello\tworld\n"
+        );
 
         let expr = SslFilterExpr::parse("data=0\\r\\n\\r\\n");
         assert!(expr.evaluate(&json!({"data": "0\r\n\r\n"})));

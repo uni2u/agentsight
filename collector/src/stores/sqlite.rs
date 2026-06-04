@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+use crate::json::{parse_optional_value as parse_optional_json, parse_value as parse_json_value};
 use crate::view::types::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
     ToolCallRow, ViewResult, ViewSink,
 };
 use rusqlite::{Connection, OpenFlags, params};
-use serde_json::Value;
 use std::path::Path;
 
 pub(crate) struct SqliteStore {
@@ -461,14 +461,6 @@ fn read_audit_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEventR
         summary: row.get(9)?,
         details: parse_json_value(&details_json),
     })
-}
-
-fn parse_json_value(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
-}
-
-fn parse_optional_json(text: Option<&str>) -> Value {
-    text.map(parse_json_value).unwrap_or(Value::Null)
 }
 
 fn collect_rows<T, F>(rows: rusqlite::MappedRows<'_, F>) -> ViewResult<Vec<T>>

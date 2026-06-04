@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use super::event::SSEProcessorEvent;
+use super::protocol_events::SSEProcessorEvent;
 
 /// SSE Event Processor that merges Server-Sent Events content fragments
 pub struct SSEProcessor {
@@ -497,7 +497,7 @@ impl SSEProcessor {
             sse_events_json,
         );
 
-        // Convert to framework Event
+        // Convert to the raw event shape used by downstream analyzers.
         sse_processor_event.to_event(original_event)
     }
 }

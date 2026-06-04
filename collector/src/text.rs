@@ -27,6 +27,13 @@ pub(crate) fn short_session_id(id: &str) -> String {
     format!("{head}.{tail}")
 }
 
+pub(crate) fn sanitize_ascii_identifier(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 pub(crate) fn truncate_text(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()

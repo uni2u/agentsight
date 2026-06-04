@@ -26,7 +26,12 @@ pub struct HttpFilterExpr {
 enum FilterNode {
     And(Vec<FilterNode>),
     Or(Vec<FilterNode>),
-    Condition { target: String, field: String, operator: String, value: String },
+    Condition {
+        target: String,
+        field: String,
+        operator: String,
+        value: String,
+    },
     Empty,
 }
 
@@ -39,10 +44,8 @@ impl FilterExpr for HttpFilterExpr {
 impl HTTPFilter {
     pub fn with_patterns(patterns: Vec<String>) -> Self {
         Self {
-            base: FilterBase::new(
-                "http_parser", MetricsStrategy::SetPerEvent, &GLOBAL_METRICS,
-            )
-            .with_patterns(patterns, HttpFilterExpr::parse),
+            base: FilterBase::new("http_parser", MetricsStrategy::SetPerEvent, &GLOBAL_METRICS)
+                .with_patterns(patterns, HttpFilterExpr::parse),
         }
     }
 }
@@ -60,9 +63,13 @@ impl HttpFilterExpr {
     pub fn parse(expression: &str) -> Self {
         let trimmed = expression.trim();
         if trimmed.is_empty() {
-            return Self { parsed: FilterNode::Empty };
+            return Self {
+                parsed: FilterNode::Empty,
+            };
         }
-        Self { parsed: parse_or(trimmed) }
+        Self {
+            parsed: parse_or(trimmed),
+        }
     }
 }
 
@@ -88,11 +95,15 @@ fn parse_single(cond: &str) -> FilterNode {
     let cond = cond.trim();
     if !cond.contains('=') {
         return FilterNode::Condition {
-            target: "request".into(), field: "path".into(),
-            operator: "contains".into(), value: cond.into(),
+            target: "request".into(),
+            field: "path".into(),
+            operator: "contains".into(),
+            value: cond.into(),
         };
     }
-    let Some((key, value)) = cond.split_once('=') else { return FilterNode::Empty };
+    let Some((key, value)) = cond.split_once('=') else {
+        return FilterNode::Empty;
+    };
     let (key, value) = (key.trim(), value.trim());
 
     if let Some((target_raw, field)) = key.split_once('.') {
@@ -109,8 +120,10 @@ fn parse_single(cond: &str) -> FilterNode {
             _ => ("request", "exact"),
         };
         FilterNode::Condition {
-            target: target.into(), field: field.trim().into(),
-            operator: operator.into(), value: value.into(),
+            target: target.into(),
+            field: field.trim().into(),
+            operator: operator.into(),
+            value: value.into(),
         }
     } else {
         let operator = match key {
@@ -119,8 +132,10 @@ fn parse_single(cond: &str) -> FilterNode {
             _ => "exact",
         };
         FilterNode::Condition {
-            target: "request".into(), field: key.into(),
-            operator: operator.into(), value: value.into(),
+            target: "request".into(),
+            field: key.into(),
+            operator: operator.into(),
+            value: value.into(),
         }
     }
 }
@@ -132,14 +147,24 @@ fn evaluate_node(node: &FilterNode, data: &Value) -> bool {
         FilterNode::Empty => false,
         FilterNode::And(cs) => cs.iter().all(|c| evaluate_node(c, data)),
         FilterNode::Or(cs) => cs.iter().any(|c| evaluate_node(c, data)),
-        FilterNode::Condition { target, field, operator, value } => {
-            let msg_type = data.get("message_type").and_then(|v| v.as_str()).unwrap_or("");
+        FilterNode::Condition {
+            target,
+            field,
+            operator,
+            value,
+        } => {
+            let msg_type = data
+                .get("message_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let matches_target = match target.as_str() {
                 "request" => msg_type == "request",
                 "response" => msg_type == "response",
                 _ => false,
             };
-            if !matches_target { return false; }
+            if !matches_target {
+                return false;
+            }
             if target == "request" {
                 eval_request(field, operator, value, data)
             } else {
@@ -163,18 +188,22 @@ fn eval_request(field: &str, operator: &str, value: &str, data: &Value) -> bool 
                 _ => p == value,
             }
         }
-        "path_prefix" | "path_starts_with" => {
-            data.get("path").and_then(|v| v.as_str()).unwrap_or("").starts_with(value)
-        }
-        "path_contains" | "path_includes" => {
-            data.get("path").and_then(|v| v.as_str()).unwrap_or("").contains(value)
-        }
-        "host" | "hostname" => {
-            header_val(data, "host").unwrap_or("") == value
-        }
-        "body" | "body_contains" => {
-            data.get("body").and_then(|v| v.as_str()).unwrap_or("").contains(value)
-        }
+        "path_prefix" | "path_starts_with" => data
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .starts_with(value),
+        "path_contains" | "path_includes" => data
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains(value),
+        "host" | "hostname" => header_val(data, "host").unwrap_or("") == value,
+        "body" | "body_contains" => data
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains(value),
         _ => {
             let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
             path.split_once('?')
@@ -187,19 +216,27 @@ fn eval_request(field: &str, operator: &str, value: &str, data: &Value) -> bool 
 fn eval_response(field: &str, value: &str, data: &Value) -> bool {
     match field {
         "status_code" | "status" | "code" => {
-            let sc = data.get("status_code").and_then(|v| v.as_u64()).unwrap_or(0);
+            let sc = data
+                .get("status_code")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             value.parse::<u64>().ok().is_some_and(|v| sc == v)
         }
         "status_text" | "status_message" => {
-            let t = data.get("status_text").and_then(|v| v.as_str()).unwrap_or("");
+            let t = data
+                .get("status_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             t.to_lowercase().contains(&value.to_lowercase())
         }
-        "content_type" | "content-type" => {
-            header_val(data, "content-type").unwrap_or("").contains(value)
-        }
-        "body" | "body_contains" => {
-            data.get("body").and_then(|v| v.as_str()).unwrap_or("").contains(value)
-        }
+        "content_type" | "content-type" => header_val(data, "content-type")
+            .unwrap_or("")
+            .contains(value),
+        "body" | "body_contains" => data
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains(value),
         _ => header_val(data, field).unwrap_or("").contains(value),
     }
 }

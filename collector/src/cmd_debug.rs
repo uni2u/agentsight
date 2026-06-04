@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
+use crate::analyzers::{
+    AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
+    TimestampNormalizer,
+};
+use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{parse_container_ref, resolve_container_binary_path};
 use crate::cmd_trace::{
     build_stdio_args, drive_stream_until_shutdown, start_web_server_if_enabled,
 };
-use crate::framework::{
-    analyzers::{
-        AuthHeaderRemover, HTTPFilter, HTTPParser, MaterializingAnalyzer, SSEProcessor, SSLFilter,
-        TimestampNormalizer,
-    },
-    binary_extractor::BinaryExtractor,
-    runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner},
-};
+use crate::runners::{ProcessRunner, Runner, RunnerError, SslRunner, StdioRunner, SystemRunner};
 use crate::view::MaterializedView;
 
 /// Show raw SSL events as JSON with optional chunk merging and HTTP parsing

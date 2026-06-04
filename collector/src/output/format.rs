@@ -118,15 +118,79 @@ pub(crate) struct AgentTopRow {
     pub(crate) file_breakdown: Vec<(String, i64)>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TopEvidence {
+    pub(crate) agent_native: bool,
+    pub(crate) local: bool,
+    pub(crate) proc: bool,
+    pub(crate) proc_fd: bool,
+    pub(crate) sticky: bool,
+    pub(crate) ebpf: bool,
+    pub(crate) ebpf_file: bool,
+    pub(crate) db: bool,
+}
+
+impl TopEvidence {
+    pub(crate) fn from_trace(trace: &str) -> Self {
+        let mut evidence = Self::default();
+        for token in trace.split('+') {
+            match token {
+                "agent-native" => evidence.agent_native = true,
+                "local" => evidence.local = true,
+                "proc" => evidence.proc = true,
+                "proc_fd" => {
+                    evidence.proc = true;
+                    evidence.proc_fd = true;
+                }
+                "sticky" => {
+                    evidence.proc = true;
+                    evidence.sticky = true;
+                }
+                "ebpf" => evidence.ebpf = true,
+                "ebpf_file" => {
+                    evidence.ebpf = true;
+                    evidence.ebpf_file = true;
+                }
+                "db" => evidence.db = true,
+                _ => {}
+            }
+        }
+        evidence
+    }
+
+    pub(crate) fn has_history(self) -> bool {
+        self.local || self.agent_native
+    }
+
+    pub(crate) fn has_session_path_link(self) -> bool {
+        self.ebpf_file || self.proc_fd || self.sticky
+    }
+}
+
 impl AgentTopRow {
+    pub(crate) fn evidence(&self) -> TopEvidence {
+        TopEvidence::from_trace(&self.trace)
+    }
+
+    pub(crate) fn add_trace(&mut self, token: &str) {
+        if self.trace.split('+').any(|part| part == token) {
+            return;
+        }
+        if !self.trace.is_empty() {
+            self.trace.push('+');
+        }
+        self.trace.push_str(token);
+    }
+
     pub(crate) fn state_label(&self) -> &'static str {
-        if self.trace.contains("proc") {
+        let evidence = self.evidence();
+        if evidence.proc {
             "live"
         } else if self.failures > 0 {
             "failed"
-        } else if self.trace.contains("local") || self.trace.contains("agent-native") {
+        } else if evidence.has_history() {
             "history"
-        } else if self.trace.contains("db") {
+        } else if evidence.db {
             "saved"
         } else {
             "-"
@@ -200,24 +264,25 @@ impl AgentTopRow {
 
     pub(crate) fn evidence_label(&self) -> String {
         let mut parts = Vec::new();
-        if self.trace.contains("local") {
+        let evidence = self.evidence();
+        if evidence.has_history() {
             parts.push("logs");
         }
-        if self.trace.contains("proc") {
+        if evidence.proc {
             parts.push("/proc");
         }
-        if self.trace.contains("proc_fd") {
+        if evidence.proc_fd {
             parts.push("fd");
         }
-        if self.trace.contains("sticky") {
+        if evidence.sticky {
             parts.push("linked");
         }
-        if self.trace.contains("ebpf_file") {
+        if evidence.ebpf_file {
             parts.push("eBPF:file");
-        } else if self.trace.contains("ebpf") {
+        } else if evidence.ebpf {
             parts.push("eBPF");
         }
-        if self.trace.contains("db") {
+        if evidence.db {
             parts.push("db");
         }
         if parts.is_empty() {
@@ -541,7 +606,17 @@ pub(crate) fn print_agent_top(top: &AgentTopOutput<'_>) {
     println!();
     println!(
         "{:<18} {:<10} {:<8} {:>6} {:>9} {:<18} {:>8} {:<20} {:<12} {:<12} {:<24} CONTEXT",
-        "SESSION", "AGENT", "STATE", "AGE", "LAST MSG", "MODEL", "TOKENS", "ACTIVITY", "HEALTH", "EVIDENCE", "WORKSPACE"
+        "SESSION",
+        "AGENT",
+        "STATE",
+        "AGE",
+        "LAST MSG",
+        "MODEL",
+        "TOKENS",
+        "ACTIVITY",
+        "HEALTH",
+        "EVIDENCE",
+        "WORKSPACE"
     );
     for row in &top.rows {
         println!(

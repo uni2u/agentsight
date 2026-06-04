@@ -222,24 +222,20 @@ fn render_top_footer(frame: &mut Frame<'_>, area: Rect, top: &AgentTopOutput<'_>
 
 pub(crate) fn tui_status_line(top: &AgentTopOutput<'_>) -> String {
     let mut parts = Vec::new();
+    if top.rows.iter().any(|row| row.evidence().agent_native) {
+        parts.push("agent-native".to_string());
+    }
+    if top.rows.iter().any(|row| row.evidence().proc) {
+        parts.push("/proc".to_string());
+    }
+    if top.rows.iter().any(|row| row.evidence().ebpf) {
+        parts.push("eBPF".to_string());
+    }
     if top
         .rows
         .iter()
-        .any(|row| row.trace.contains("agent-native"))
+        .any(|row| row.evidence().has_session_path_link())
     {
-        parts.push("agent-native".to_string());
-    }
-    if top.rows.iter().any(|row| row.trace.contains("proc")) {
-        parts.push("/proc".to_string());
-    }
-    if top.rows.iter().any(|row| row.trace.contains("ebpf")) {
-        parts.push("eBPF".to_string());
-    }
-    if top.rows.iter().any(|row| {
-        row.trace.contains("ebpf_file")
-            || row.trace.contains("proc_fd")
-            || row.trace.contains("sticky")
-    }) {
         parts.push("session path linked".to_string());
     }
     if top.total_tokens > 0 {
@@ -361,12 +357,16 @@ fn session_detail_lines(
     let tools = if !row.tool_breakdown.is_empty() {
         &row.tool_breakdown
     } else {
-        find_section(&top.sections, "Tools").map(|v| v.as_slice()).unwrap_or(&[])
+        find_section(&top.sections, "Tools")
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     };
     let files = if !row.file_breakdown.is_empty() {
         &row.file_breakdown
     } else {
-        find_section(&top.sections, "Files").map(|v| v.as_slice()).unwrap_or(&[])
+        find_section(&top.sections, "Files")
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     };
 
     match view.as_str() {
@@ -434,10 +434,7 @@ fn session_detail_lines(
             } else {
                 lines.push(detail_line(
                     "network",
-                    format!(
-                        "{} hosts (use `record` for network detail)",
-                        row.network
-                    ),
+                    format!("{} hosts (use `record` for network detail)", row.network),
                 ));
             }
             if let Some(items) = find_section(&top.sections, "Models") {
@@ -497,10 +494,7 @@ fn session_detail_lines(
     }
 }
 
-fn find_section<'a>(
-    sections: &'a [TopSection],
-    title: &str,
-) -> Option<&'a Vec<(String, i64)>> {
+fn find_section<'a>(sections: &'a [TopSection], title: &str) -> Option<&'a Vec<(String, i64)>> {
     sections
         .iter()
         .find(|(t, _, _)| *t == title)
@@ -608,11 +602,12 @@ fn label_style() -> Style {
 }
 
 fn row_style(row: &AgentTopRow) -> Style {
+    let evidence = row.evidence();
     if row.failures > 0 {
         Style::default().fg(Color::Red)
-    } else if row.trace.contains("ebpf") {
+    } else if evidence.ebpf {
         Style::default().fg(Color::Green)
-    } else if row.trace.contains("local") {
+    } else if evidence.has_history() {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default()
@@ -623,33 +618,17 @@ fn evidence_summary(top: &AgentTopOutput<'_>) -> String {
     let local = top
         .rows
         .iter()
-        .filter(|row| row.trace.contains("local"))
+        .filter(|row| row.evidence().has_history())
         .count();
-    let proc_rows = top
-        .rows
-        .iter()
-        .filter(|row| row.trace.contains("proc"))
-        .count();
-    let ebpf = top
-        .rows
-        .iter()
-        .filter(|row| row.trace.contains("ebpf"))
-        .count();
+    let proc_rows = top.rows.iter().filter(|row| row.evidence().proc).count();
+    let ebpf = top.rows.iter().filter(|row| row.evidence().ebpf).count();
     let ebpf_file = top
         .rows
         .iter()
-        .filter(|row| row.trace.contains("ebpf_file"))
+        .filter(|row| row.evidence().ebpf_file)
         .count();
-    let proc_fd = top
-        .rows
-        .iter()
-        .filter(|row| row.trace.contains("proc_fd"))
-        .count();
-    let sticky = top
-        .rows
-        .iter()
-        .filter(|row| row.trace.contains("sticky"))
-        .count();
+    let proc_fd = top.rows.iter().filter(|row| row.evidence().proc_fd).count();
+    let sticky = top.rows.iter().filter(|row| row.evidence().sticky).count();
     let mut parts = Vec::new();
     if local > 0 {
         parts.push(format!("local={local}"));

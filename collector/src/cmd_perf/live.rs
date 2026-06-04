@@ -5,11 +5,11 @@ use super::sort_agent_rows;
 use crate::analyzers::TimestampNormalizer;
 use crate::binary_extractor::BinaryExtractor;
 use crate::event::Event;
-use crate::runners::{ProcessRunner, Runner};
 use crate::output::{
     AgentTopOutput, AgentTopRow, TopOptions, clear_screen, draw_live_top_tui, next_view_key,
     print_agent_top, print_top_sudo_prompt,
 };
+use crate::runners::{ProcessRunner, Runner};
 use crate::sources::agent_native as agent_native_sessions;
 use crate::sources::proc::{self as procfs, ProcInfo, ProcSnapshot as LiveSample};
 use crate::view::MaterializedView;
@@ -219,6 +219,30 @@ impl LiveView {
         Ok(top)
     }
 
+    fn link_live_session(
+        &mut self,
+        session: &SessionRow,
+        session_path: Option<&Path>,
+        live_rows: &[AgentTopRow],
+        used_live_pids: &HashSet<u32>,
+        sample: &LiveSample,
+        path_evidence: &HashMap<u32, BTreeMap<PathBuf, &'static str>>,
+        options: &TopOptions,
+    ) -> Option<(AgentTopRow, &'static str)> {
+        let session_path = session_path?;
+        live_rows.iter().find_map(|row| {
+            if row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
+                || row.agent != session.agent_type
+                || !options.matches(row.pid, Some(&row.agent), Some(&row.command))
+            {
+                return None;
+            }
+            self.bindings
+                .link_trace(session_path, row, sample, path_evidence)
+                .map(|trace| (row.clone(), trace))
+        })
+    }
+
     fn build_top<'a>(
         &mut self,
         sample: &LiveSample,
@@ -242,20 +266,15 @@ impl LiveView {
 
         for session in &session_snapshot.sessions {
             let session_path = session_attr(session, "path").map(PathBuf::from);
-            let live_match = live_rows.iter().enumerate().find_map(|(idx, row)| {
-                if row.pid.is_some_and(|pid| used_live_pids.contains(&pid))
-                    || row.agent != session.agent_type
-                    || !options.matches(row.pid, Some(&row.agent), Some(&row.command))
-                {
-                    return None;
-                }
-                let path = session_path.as_deref()?;
-                self.bindings
-                    .link_trace(path, row, sample, &path_evidence)
-                    .map(|trace| (idx, trace))
-            });
-            let live = live_match
-                .and_then(|(idx, trace)| live_rows.get(idx).cloned().map(|row| (row, trace)));
+            let live = self.link_live_session(
+                session,
+                session_path.as_deref(),
+                &live_rows,
+                &used_live_pids,
+                sample,
+                &path_evidence,
+                options,
+            );
             if options.pid.is_some() && live.is_none() {
                 continue;
             }
@@ -290,9 +309,11 @@ impl LiveView {
                 });
             let tool_breakdown = {
                 let mut counts = BTreeMap::new();
-                for tool in session_snapshot.tool_calls.iter().filter(|t| {
-                    t.session_id.as_deref() == Some(session.id.as_str())
-                }) {
+                for tool in session_snapshot
+                    .tool_calls
+                    .iter()
+                    .filter(|t| t.session_id.as_deref() == Some(session.id.as_str()))
+                {
                     if let Some(name) = &tool.tool_name {
                         *counts.entry(name.clone()).or_insert(0i64) += 1;
                     }
@@ -343,8 +364,7 @@ impl LiveView {
                 trace,
                 command,
                 workspace,
-                last_message_at: session_attr(session, "last_message_at")
-                    .map(ToString::to_string),
+                last_message_at: session_attr(session, "last_message_at").map(ToString::to_string),
                 tool_breakdown,
                 file_breakdown,
             });
@@ -358,59 +378,7 @@ impl LiveView {
                     .unwrap_or(true)
             })
             .collect();
-
-        // Best-effort merge: bind unmatched live processes to unmatched
-        // agent-native sessions of the same type, matched by recency. This
-        // covers runtimes like Bun (Claude) that don't keep the session JSONL
-        // file open as an fd, so the proc_fd/eBPF-file binding path doesn't
-        // fire immediately.
-        let mut merged_live_pids = HashSet::new();
-        let mut merged_agent_indices = HashSet::new();
-        let mut live_by_recency: Vec<_> = remaining_live
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| row.pid.is_some())
-            .collect();
-        live_by_recency.sort_by(|(_, a), (_, b)| {
-            a.age_s
-                .partial_cmp(&b.age_s)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for (_, live_row) in &live_by_recency {
-            let best = rows
-                .iter()
-                .enumerate()
-                .filter(|(idx, row)| {
-                    row.trace == "agent-native"
-                        && row.agent == live_row.agent
-                        && row.pid.is_none()
-                        && !merged_agent_indices.contains(idx)
-                })
-                .min_by(|(_, a), (_, b)| {
-                    a.age_s
-                        .partial_cmp(&b.age_s)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(idx, _)| idx);
-            if let Some(idx) = best {
-                let agent_row = &mut rows[idx];
-                agent_row.pid = live_row.pid;
-                agent_row.cpu_percent = live_row.cpu_percent;
-                agent_row.rss_mb = live_row.rss_mb;
-                agent_row.processes = live_row.processes;
-                agent_row.trace = "agent-native+proc".to_string();
-                if agent_row.age_s.is_none() {
-                    agent_row.age_s = live_row.age_s;
-                }
-                merged_live_pids.insert(live_row.pid.unwrap());
-                merged_agent_indices.insert(idx);
-            }
-        }
-        rows.extend(
-            remaining_live
-                .into_iter()
-                .filter(|row| !row.pid.is_some_and(|pid| merged_live_pids.contains(&pid))),
-        );
+        rows.extend(remaining_live);
 
         if let Some(capture) = capture {
             apply_live_capture(&mut rows, sample, capture, &children);
@@ -422,14 +390,12 @@ impl LiveView {
         let capture_total_tokens = capture
             .map(|capture| capture.snapshot.summary.total_tokens)
             .unwrap_or_default();
-        let has_agent_native = rows.iter().any(|row| row.trace.contains("agent-native"));
-        let has_proc = rows.iter().any(|row| row.trace.contains("proc"));
-        let has_ebpf = rows.iter().any(|row| row.trace.contains("ebpf"));
-        let has_session_file_link = rows.iter().any(|row| {
-            row.trace.contains("ebpf_file")
-                || row.trace.contains("proc_fd")
-                || row.trace.contains("sticky")
-        });
+        let has_agent_native = rows.iter().any(|row| row.evidence().agent_native);
+        let has_proc = rows.iter().any(|row| row.evidence().proc);
+        let has_ebpf = rows.iter().any(|row| row.evidence().ebpf);
+        let has_session_file_link = rows
+            .iter()
+            .any(|row| row.evidence().has_session_path_link());
         let mut notes = Vec::new();
         if has_agent_native {
             notes.push(
@@ -471,14 +437,15 @@ impl LiveView {
             }
         }
 
-        let mut sections =
-            super::top_sections(session_snapshot, rows.len().max(10), &options.view);
-        if !sections.iter().any(|(t, _, items)| *t == "Processes" && !items.is_empty()) {
+        let mut sections = super::top_sections(session_snapshot, rows.len().max(10), &options.view);
+        if !sections
+            .iter()
+            .any(|(t, _, items)| *t == "Processes" && !items.is_empty())
+        {
             let proc_counts: Vec<_> = {
                 let mut counts = BTreeMap::new();
                 for row in &rows {
-                    *counts.entry(row.agent.clone()).or_insert(0i64) +=
-                        row.processes.max(1) as i64;
+                    *counts.entry(row.agent.clone()).or_insert(0i64) += row.processes.max(1) as i64;
                 }
                 let mut sorted: Vec<_> = counts.into_iter().collect();
                 sorted.sort_by(|a, b| b.1.cmp(&a.1));
@@ -1040,9 +1007,7 @@ fn apply_live_capture(
         row.failures += counters.failures;
         row.files += counters.files;
         row.network += counters.network;
-        if !row.trace.contains("ebpf") {
-            row.trace = format!("{}+ebpf", row.trace);
-        }
+        row.add_trace("ebpf");
     }
 
     let unattributed = capture
@@ -1053,7 +1018,7 @@ fn apply_live_capture(
     if unattributed == 0 {
         return;
     }
-    if let Some(row) = rows.iter_mut().find(|row| row.trace.contains("ebpf")) {
+    if let Some(row) = rows.iter_mut().find(|row| row.evidence().ebpf) {
         row.unattributed += unattributed;
     }
 }

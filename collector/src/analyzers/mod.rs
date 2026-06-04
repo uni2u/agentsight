@@ -16,12 +16,12 @@ pub trait Analyzer: Send + Sync {
 
 pub mod auth_header_remover;
 pub mod common;
-pub mod event;
 mod filter_base;
 mod filter_metrics;
 pub mod http_filter;
 pub mod http_parser;
 pub mod materializing;
+mod protocol_events;
 pub mod sse_processor;
 pub mod ssl_filter;
 pub mod timestamp_normalizer;

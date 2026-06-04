@@ -9,9 +9,9 @@ use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 use tokio::time::{Duration, sleep};
 
-const PROCESS_BINARY: &[u8] = include_bytes!("../../vendor/bpf/process");
-const SSLSNIFF_BINARY: &[u8] = include_bytes!("../../vendor/bpf/sslsniff");
-const STDIOCAP_BINARY: &[u8] = include_bytes!("../../vendor/bpf/stdiocap");
+const PROCESS_BINARY: &[u8] = include_bytes!("../vendor/bpf/process");
+const SSLSNIFF_BINARY: &[u8] = include_bytes!("../vendor/bpf/sslsniff");
+const STDIOCAP_BINARY: &[u8] = include_bytes!("../vendor/bpf/stdiocap");
 
 pub struct BinaryExtractor {
     _temp_dir: TempDir, // Keep alive to prevent cleanup

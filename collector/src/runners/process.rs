@@ -65,8 +65,7 @@ impl Runner for ProcessRunner {
     async fn run(&mut self) -> Result<EventStream, RunnerError> {
         let json_stream = self.executor.get_json_stream().await?;
         let errors = Arc::new(AtomicU64::new(0));
-        let stream =
-            json_stream.map(move |v| Self::parse_process_event(v, &errors));
+        let stream = json_stream.map(move |v| Self::parse_process_event(v, &errors));
         AnalyzerProcessor::process_through_analyzers(Box::pin(stream), &mut self.analyzers).await
     }
 

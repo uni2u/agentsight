@@ -7,8 +7,8 @@ use crate::runners::EventStream;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) trait FilterExpr: Clone + Send + Sync + 'static {
     fn evaluate(&self, data: &Value) -> bool;

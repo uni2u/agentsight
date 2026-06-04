@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use super::event::HTTPEvent;
+use super::protocol_events::HTTPEvent;
 use super::{Analyzer, AnalyzerError};
 use crate::event::Event;
 use crate::runners::EventStream;

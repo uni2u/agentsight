@@ -2,11 +2,16 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::event::Event;
+use crate::json::{
+    i64_field as json_i64, parse_optional_value as parse_optional_json,
+    parse_value as parse_json_value,
+};
 use crate::semantic::llm::TokenUsage;
 use crate::semantic::{
     CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
     extract_token_usage_from_sse, normalize_event, provider_from_host,
 };
+use crate::text::sanitize_ascii_identifier as sanitize_id;
 use crate::view::types::{
     AuditEventRow, LlmCallRow, NetworkTargetRow, ProcessNodeRow, ResourceSampleRow, TokenUsageRow,
     ToolCallRow, ViewResult,
@@ -772,13 +777,6 @@ fn parse_json_str(text: &str) -> Option<Value> {
     serde_json::from_str(text).ok()
 }
 
-fn json_i64(value: &Value, key: &str) -> i64 {
-    value
-        .get(key)
-        .and_then(|value| value.as_i64().or_else(|| value.as_u64().map(|v| v as i64)))
-        .unwrap_or_default()
-}
-
 fn number_or_string(value: Option<&Value>) -> Option<f64> {
     value.and_then(|v| {
         v.as_f64()
@@ -820,12 +818,6 @@ fn resource_sample_from_event(event: &CanonicalEvent) -> Option<ResourceSampleRo
     })
 }
 
-fn sanitize_id(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 fn llm_call_row(
     id: &str,
@@ -858,14 +850,6 @@ fn llm_call_row(
         request: parse_optional_json(request_body_json),
         response: parse_optional_json(response_body_json),
     }
-}
-
-fn parse_json_value(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
-}
-
-fn parse_optional_json(text: Option<&str>) -> Value {
-    text.map(parse_json_value).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]
@@ -951,7 +935,8 @@ mod tests {
         view.ingest_event(&req).expect("ingest request");
         view.ingest_event(&resp).expect("ingest response");
 
-        let snapshot = view.export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 100 });
+        let snapshot =
+            view.export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 100 });
         let llm_actions = snapshot
             .audit_events
             .iter()

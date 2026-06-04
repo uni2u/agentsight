@@ -162,24 +162,20 @@ pub(crate) fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec
                 limit,
             ),
         ),
-        (
-            "Files",
-            "events",
-            {
-                let audit_files = top_counts_from_iter(
-                    audit
-                        .iter()
-                        .filter(|row| row.audit_type == "file")
-                        .filter_map(|row| row.target.clone()),
-                    limit,
-                );
-                if audit_files.is_empty() {
-                    files_from_sessions(snapshot, limit)
-                } else {
-                    audit_files
-                }
-            },
-        ),
+        ("Files", "events", {
+            let audit_files = top_counts_from_iter(
+                audit
+                    .iter()
+                    .filter(|row| row.audit_type == "file")
+                    .filter_map(|row| row.target.clone()),
+                limit,
+            );
+            if audit_files.is_empty() {
+                files_from_sessions(snapshot, limit)
+            } else {
+                audit_files
+            }
+        }),
         (
             "Network",
             "events",
@@ -355,7 +351,10 @@ fn files_from_sessions(snapshot: &Snapshot, limit: usize) -> Vec<(String, i64)> 
     for session in &snapshot.sessions {
         if let Some(files) = session.attributes.get("files").and_then(|v| v.as_object()) {
             for (path, count) in files {
-                let count = count.as_i64().or_else(|| count.as_u64().map(|v| v as i64)).unwrap_or(1);
+                let count = count
+                    .as_i64()
+                    .or_else(|| count.as_u64().map(|v| v as i64))
+                    .unwrap_or(1);
                 *counts.entry(path.clone()).or_insert(0i64) += count;
             }
         }
