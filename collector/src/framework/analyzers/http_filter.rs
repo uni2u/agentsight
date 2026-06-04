@@ -37,21 +37,12 @@ impl FilterExpr for HttpFilterExpr {
 }
 
 impl HTTPFilter {
-    #[cfg(test)]
-    pub fn new() -> Self {
-        Self {
-            base: FilterBase::new(
-                "http_parser", MetricsStrategy::SetPerEvent, &GLOBAL_METRICS,
-            ),
-        }
-    }
-
     pub fn with_patterns(patterns: Vec<String>) -> Self {
         Self {
             base: FilterBase::new(
                 "http_parser", MetricsStrategy::SetPerEvent, &GLOBAL_METRICS,
             )
-            .with_patterns(patterns, |p| HttpFilterExpr::parse(p)),
+            .with_patterns(patterns, HttpFilterExpr::parse),
         }
     }
 }

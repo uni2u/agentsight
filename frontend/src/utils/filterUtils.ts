@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-import { ParsedEvent, ProcessNode, timelineForProcess } from './eventParsers';
+import {
+  ProcessNode,
+  TreeAuditEvent,
+  eventModel,
+  eventSearchText,
+  eventTarget,
+  timelineForProcess,
+  treeEventType,
+} from './eventParsers';
 import { ProcessTreeFilters } from '@/components/process-tree/ProcessTreeFilters';
 
 export function extractFilterOptions(processTree: ProcessNode[]) {
@@ -10,118 +18,40 @@ export function extractFilterOptions(processTree: ProcessNode[]) {
   const sources = new Set<string>();
   const commands = new Set<string>();
 
-  const visit = (process: ProcessNode) => {
-    if (process.comm) {
-      commands.add(process.comm);
-    }
+  visitProcesses(processTree, process => {
+    if (process.comm) commands.add(process.comm);
     process.events.forEach(event => {
-      eventTypes.add(event.type);
-      sources.add(event.metadata?.original_source || sourceForEventType(event.type));
-      if (event.type === 'prompt' || event.type === 'response') {
-        const model = event.metadata?.model;
-        if (model && model !== 'Unknown Model') {
-          models.add(model);
-        }
-      }
+      eventTypes.add(treeEventType(event));
+      sources.add(event.audit_type);
+      const model = eventModel(event);
+      if (model && model !== 'Unknown Model') models.add(model);
     });
-    process.children.forEach(visit);
-  };
-
-  processTree.forEach(visit);
+  });
 
   return {
     eventTypes: Array.from(eventTypes).sort(),
     models: Array.from(models).sort(),
     sources: Array.from(sources).sort(),
-    commands: Array.from(commands).sort()
+    commands: Array.from(commands).sort(),
   };
 }
 
-function parsedEventMatchesFilters(
-  event: ParsedEvent,
-  source: string,
-  comm: string,
-  filters: ProcessTreeFilters,
-): boolean {
-  if (filters.eventTypes.length > 0 && !filters.eventTypes.includes(event.type)) {
-    return false;
-  }
-  
-  if (filters.sources.length > 0 && !filters.sources.includes(source)) {
-    return false;
-  }
-  
-  if (filters.commands.length > 0 && (!comm || !filters.commands.includes(comm))) {
-    return false;
-  }
-  
-  if (filters.models.length > 0) {
-    const model = event.metadata?.model;
-    if (!model || !filters.models.includes(model)) {
-      return false;
-    }
-  }
-  
-  if (filters.timeRange.start && event.timestamp < filters.timeRange.start) {
-    return false;
-  }
-  
-  if (filters.timeRange.end && event.timestamp > filters.timeRange.end) {
-    return false;
-  }
-  
-  if (filters.searchText) {
-    const searchLower = filters.searchText.toLowerCase();
-    const searchableText = [
-      event.title,
-      event.content,
-      comm,
-      source,
-      event.metadata?.model,
-      JSON.stringify(event.metadata)
-    ].filter(Boolean).join(' ').toLowerCase();
-    
-    if (!searchableText.includes(searchLower)) {
-      return false;
-    }
-  }
-  
-  return true;
-}
-
 export function filterProcessTree(processTree: ProcessNode[], filters: ProcessTreeFilters): ProcessNode[] {
-  return processTree.map(process => {
-    const filteredEvents = process.events.filter(event => {
-      const source = event.metadata?.original_source || sourceForEventType(event.type);
-      return parsedEventMatchesFilters(event, source, process.comm, filters);
-    });
-    
-    const filteredChildren = filterProcessTree(process.children, filters);
-    
-    if (filteredEvents.length > 0 || filteredChildren.length > 0) {
-      return {
-        ...process,
-        events: filteredEvents,
-        children: filteredChildren,
-        timeline: timelineForProcess({ ...process, events: filteredEvents, children: filteredChildren }),
-      };
-    }
-    
-    return null;
-  }).filter((process): process is ProcessNode => process !== null);
-}
-
-function sourceForEventType(type: ParsedEvent['type']): string {
-  if (type === 'prompt' || type === 'response') return 'http_parser';
-  if (type === 'stdio') return 'stdio';
-  if (type === 'file' || type === 'process') return 'process';
-  return 'ssl';
+  return processTree.flatMap(process => {
+    const events = process.events.filter(event => eventMatches(event, process.comm, filters));
+    const children = filterProcessTree(process.children, filters);
+    if (events.length === 0 && children.length === 0) return [];
+    const filtered = { ...process, events, children };
+    return [{ ...filtered, timeline: timelineForProcess(filtered) }];
+  });
 }
 
 export function getTotalEventCount(processTree: ProcessNode[]): number {
-  return processTree.reduce((total, process) => {
-    return total + process.events.length + getTotalEventCount(process.children);
-  }, 0);
+  let count = 0;
+  visitProcesses(processTree, process => {
+    count += process.events.length;
+  });
+  return count;
 }
 
 export function createDefaultFilters(): ProcessTreeFilters {
@@ -131,6 +61,32 @@ export function createDefaultFilters(): ProcessTreeFilters {
     sources: [],
     commands: [],
     searchText: '',
-    timeRange: {}
+    timeRange: {},
   };
+}
+
+function eventMatches(event: TreeAuditEvent, comm: string, filters: ProcessTreeFilters): boolean {
+  const type = treeEventType(event);
+  const model = eventModel(event);
+  const searchText = filters.searchText.toLowerCase();
+  if (filters.eventTypes.length > 0 && !filters.eventTypes.includes(type)) return false;
+  if (filters.sources.length > 0 && !filters.sources.includes(event.audit_type)) return false;
+  if (filters.commands.length > 0 && (!comm || !filters.commands.includes(comm))) return false;
+  if (filters.models.length > 0 && (!model || !filters.models.includes(model))) return false;
+  if (filters.timeRange.start && event.timestamp_ms < filters.timeRange.start) return false;
+  if (filters.timeRange.end && event.timestamp_ms > filters.timeRange.end) return false;
+  if (searchText && ![
+    comm,
+    eventModel(event),
+    eventTarget(event),
+    eventSearchText(event),
+  ].filter(Boolean).join(' ').toLowerCase().includes(searchText)) return false;
+  return true;
+}
+
+function visitProcesses(processes: ProcessNode[], visit: (process: ProcessNode) => void) {
+  processes.forEach(process => {
+    visit(process);
+    visitProcesses(process.children, visit);
+  });
 }

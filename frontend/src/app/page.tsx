@@ -4,16 +4,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LogView } from '@/components/LogView';
-import { TimelineView } from '@/components/TimelineView';
+import { LogView } from '@/components/log/LogView';
+import { Timeline as TimelineView } from '@/components/timeline/Timeline';
 import { ProcessTreeView } from '@/components/ProcessTreeView';
 import { ResourceMetricsView } from '@/components/ResourceMetricsView';
 import { LanguageSwitcher } from '@/components/common/LanguageSwitcher';
 import { useTranslation } from '@/i18n';
-import {
-  AgentSightSnapshot,
-  snapshotToViewEvents,
-} from '@/types/event';
+import { AgentSightSnapshot } from '@/types/event';
+import { displayEventsFromSnapshot } from '@/utils/eventProcessing';
 
 type ViewMode = 'log' | 'timeline' | 'process-tree' | 'metrics';
 
@@ -39,8 +37,8 @@ export default function Home() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string>('');
 
-  const viewEvents = useMemo(() => snapshotToViewEvents(snapshot), [snapshot]);
-  const eventCount = viewEvents.length;
+  const displayEvents = useMemo(() => displayEventsFromSnapshot(snapshot), [snapshot]);
+  const eventCount = displayEvents.length;
 
   const syncData = useCallback(async () => {
     setSyncing(true);
@@ -157,9 +155,9 @@ export default function Home() {
 
           {eventCount > 0 ? (
             viewMode === 'log' ? (
-              <LogView events={viewEvents} />
+              <LogView events={displayEvents} />
             ) : viewMode === 'timeline' ? (
-              <TimelineView events={viewEvents} />
+              <TimelineView events={displayEvents} />
             ) : viewMode === 'process-tree' ? (
               <ProcessTreeView snapshot={snapshot} />
             ) : (

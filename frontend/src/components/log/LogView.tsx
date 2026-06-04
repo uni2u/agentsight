@@ -4,15 +4,14 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { ViewEvent, ProcessedViewEvent } from '@/types/event';
-import { processViewEvents, filterViewEvents } from '@/utils/eventProcessing';
+import { DisplayEvent, filterDisplayEvents } from '@/utils/eventProcessing';
 import { EventFilters } from '@/components/common/EventFilters';
 import { EventModal } from '@/components/common/EventModal';
 import { LogList } from './LogList';
 import { useTranslation } from '@/i18n';
 
 interface LogViewProps {
-  events: ViewEvent[];
+  events: DisplayEvent[];
 }
 
 export function LogView({ events }: LogViewProps) {
@@ -21,27 +20,24 @@ export function LogView({ events }: LogViewProps) {
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [selectedComm, setSelectedComm] = useState<string>('');
   const [selectedPid, setSelectedPid] = useState<string>('');
-  const [selectedEvent, setSelectedEvent] = useState<ProcessedViewEvent | null>(null);
-
-  // Process events with additional metadata
-  const processedEvents = useMemo(() => processViewEvents(events), [events]);
+  const [selectedEvent, setSelectedEvent] = useState<DisplayEvent | null>(null);
 
   // Filter events based on search, source, comm, and pid
   const filteredEvents = useMemo(() => {
-    return filterViewEvents(processedEvents, {
+    return filterDisplayEvents(events, {
       source: selectedSource,
       comm: selectedComm,
       pid: selectedPid,
       searchTerm
     });
-  }, [processedEvents, searchTerm, selectedSource, selectedComm, selectedPid]);
+  }, [events, searchTerm, selectedSource, selectedComm, selectedPid]);
 
   return (
     <div className="bg-white rounded-lg shadow-md">
       {/* Filters */}
       <div className="border-b border-gray-200 p-4">
         <EventFilters
-          events={processedEvents}
+          events={events}
           selectedSource={selectedSource}
           selectedComm={selectedComm}
           selectedPid={selectedPid}
@@ -62,7 +58,7 @@ export function LogView({ events }: LogViewProps) {
         />
       </div>
 
-      {/* ViewEvent Details Modal */}
+      {/* Event details modal */}
       <EventModal
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}

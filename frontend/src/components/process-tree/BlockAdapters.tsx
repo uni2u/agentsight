@@ -1,19 +1,189 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-import { ParsedEvent } from '@/utils/eventParsers';
+import {
+  TreeAuditEvent,
+  TreeEventType,
+  eventDetails,
+  eventModel,
+  eventName,
+  eventTarget,
+  treeEventType,
+} from '@/utils/eventParsers';
 import { decodeStdioMessage } from '@/utils/stdioParser';
 import { UnifiedBlockData } from './UnifiedBlock';
-import { 
-  SparklesIcon, 
-  CheckCircleIcon, 
-  DocumentIcon, 
-  CpuChipIcon, 
+import {
+  CheckCircleIcon,
   CommandLineIcon,
-  LockClosedIcon 
+  CpuChipIcon,
+  DocumentIcon,
+  LockClosedIcon,
+  SparklesIcon,
 } from '@heroicons/react/24/outline';
 
-function safeJsonParse(value: string): any | null {
+type Icon = UnifiedBlockData['icon'];
+
+const STYLE_BY_TYPE: Record<TreeEventType, {
+  tag: string;
+  gradient: string;
+  border: string;
+  iconColor: string;
+  icon: Icon;
+}> = {
+  prompt: {
+    tag: 'tag.aiPrompt',
+    gradient: 'bg-gradient-to-r from-blue-50 via-purple-50 to-pink-50',
+    border: 'border-blue-400',
+    iconColor: 'text-blue-600',
+    icon: SparklesIcon,
+  },
+  response: {
+    tag: 'tag.aiResponse',
+    gradient: 'bg-gradient-to-r from-green-50 via-emerald-50 to-teal-50',
+    border: 'border-green-400',
+    iconColor: 'text-green-600',
+    icon: CheckCircleIcon,
+  },
+  file: {
+    tag: 'FILE',
+    gradient: 'bg-gradient-to-r from-cyan-50 via-sky-50 to-blue-50',
+    border: 'border-cyan-400',
+    iconColor: 'text-cyan-700',
+    icon: DocumentIcon,
+  },
+  process: {
+    tag: 'PROCESS',
+    gradient: 'bg-gradient-to-r from-purple-50 via-violet-50 to-indigo-50',
+    border: 'border-purple-400',
+    iconColor: 'text-purple-700',
+    icon: CpuChipIcon,
+  },
+  stdio: {
+    tag: 'tag.stdio',
+    gradient: 'bg-gradient-to-r from-slate-50 via-indigo-50 to-sky-50',
+    border: 'border-indigo-400',
+    iconColor: 'text-indigo-700',
+    icon: CommandLineIcon,
+  },
+  ssl: {
+    tag: 'tag.ssl',
+    gradient: 'bg-gradient-to-r from-orange-50 via-amber-50 to-yellow-50',
+    border: 'border-orange-400',
+    iconColor: 'text-orange-600',
+    icon: LockClosedIcon,
+  },
+  system: {
+    tag: 'SYSTEM',
+    gradient: 'bg-gradient-to-r from-gray-50 via-slate-50 to-zinc-50',
+    border: 'border-gray-400',
+    iconColor: 'text-gray-700',
+    icon: CpuChipIcon,
+  },
+};
+
+export function adaptEventToUnifiedBlock(event: TreeAuditEvent): UnifiedBlockData {
+  const type = treeEventType(event);
+  const style = styleForEvent(type, event);
+  const expandedContent = expandedEventContent(event, type);
+  const tags = [
+    style.tag,
+    eventModel(event),
+    event.action?.toUpperCase(),
+    event.status,
+    event.pid ? `PID ${event.pid}` : '',
+  ].filter(Boolean) as string[];
+
+  return {
+    id: event.id,
+    type,
+    timestamp: event.timestamp_ms,
+    tags,
+    bgGradient: style.gradient,
+    borderColor: style.border,
+    iconColor: style.iconColor,
+    icon: style.icon,
+    foldContent: foldedEventContent(event, expandedContent),
+    expandedContent,
+  };
+}
+
+function styleForEvent(type: TreeEventType, event: TreeAuditEvent) {
+  if (type === 'process' && event.action === 'exit') {
+    return {
+      ...STYLE_BY_TYPE.process,
+      gradient: 'bg-gradient-to-r from-red-50 via-rose-50 to-pink-50',
+      border: 'border-red-400',
+      iconColor: 'text-red-700',
+    };
+  }
+  if (type === 'prompt' && event.promptDiff?.hasChanges) {
+    return {
+      ...STYLE_BY_TYPE.prompt,
+      gradient: 'bg-gradient-to-r from-yellow-50 via-orange-50 to-red-50',
+      border: 'border-yellow-400',
+      iconColor: 'text-yellow-600',
+    };
+  }
+  return STYLE_BY_TYPE[type];
+}
+
+function foldedEventContent(event: TreeAuditEvent, expandedContent: string): string {
+  if (event.promptDiff?.summary) return `Changed: ${event.promptDiff.summary}`;
+  return event.summary
+    || eventTarget(event)
+    || preview(expandedContent, 120)
+    || eventName(event);
+}
+
+function expandedEventContent(event: TreeAuditEvent, type: TreeEventType): string {
+  const details = eventDetails(event);
+  let content = '';
+
+  if (type === 'stdio') {
+    content = formatStdio(details);
+  } else if (typeof details.json_content === 'string' && details.json_content.trim()) {
+    content = formatJsonish(details.json_content);
+  } else if (typeof details.text_content === 'string' && details.text_content.trim()) {
+    content = details.text_content.trim();
+  } else if (typeof details.body === 'string' && details.body.trim()) {
+    content = formatJsonish(details.body);
+  } else {
+    content = JSON.stringify(event.details ?? event, null, 2);
+  }
+
+  if (event.promptDiff?.diff) {
+    return [
+      '=== CHANGES FROM PREVIOUS PROMPT ===',
+      event.promptDiff.diff,
+      '',
+      '=== FULL CONTENT ===',
+      content,
+    ].join('\n');
+  }
+
+  return content;
+}
+
+function formatStdio(details: Record<string, any>): string {
+  const decoded = decodeStdioMessage(details);
+  return decoded.parsedPayload !== null
+    ? JSON.stringify(decoded.parsedPayload, null, 2)
+    : decoded.rawPayload || JSON.stringify(details, null, 2);
+}
+
+function formatJsonish(value: string): string {
+  const decoded = parseMaybeString(value);
+  if (typeof decoded !== 'string') return JSON.stringify(decoded, null, 2);
+  const parsed = safeJsonParse(decoded);
+  return parsed ? JSON.stringify(parsed, null, 2) : decoded;
+}
+
+function parseMaybeString(value: string): unknown {
+  const parsed = safeJsonParse(value);
+  return typeof parsed === 'string' ? parsed : parsed ?? value;
+}
+
+function safeJsonParse(value: string): unknown | null {
   try {
     return JSON.parse(value);
   } catch {
@@ -21,471 +191,7 @@ function safeJsonParse(value: string): any | null {
   }
 }
 
-function decodeEscapedText(value: string): string {
-  const parsed = safeJsonParse(value);
-  return typeof parsed === 'string' ? parsed : value;
-}
-
-function lenientUnescape(s: string): string {
-  return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (_, seq: string) => {
-    if (seq.length === 5 && seq[0] === 'u') {
-      return String.fromCharCode(parseInt(seq.substring(1), 16));
-    }
-    switch (seq) {
-      case 'n': return '\n';
-      case 't': return '\t';
-      case 'r': return '\r';
-      case '"': return '"';
-      case '\\': return '\\';
-      case '/': return '/';
-      case 'b': return '\b';
-      case 'f': return '\f';
-      default: return seq;
-    }
-  });
-}
-
-function extractRawStringField(json: string, key: string): string | null {
-  const keyStr = `"${key}"`;
-  const keyIdx = json.indexOf(keyStr);
-  if (keyIdx === -1) return null;
-
-  let i = keyIdx + keyStr.length;
-  while (i < json.length && (json[i] === ' ' || json[i] === ':' || json[i] === '\t')) i++;
-  if (i >= json.length || json[i] !== '"') return null;
-  i++;
-
-  const start = i;
-  while (i < json.length) {
-    if (json[i] === '\\') {
-      i += 2;
-    } else if (json[i] === '"') {
-      return json.substring(start, i);
-    } else {
-      i++;
-    }
-  }
-  return json.substring(start);
-}
-
-function formatWithFilePath(content: string, filePath: string | null): string {
-  if (filePath) {
-    const separator = '\u2500'.repeat(Math.min(filePath.length + 2, 60));
-    return `[${filePath}]\n${separator}\n${content}`;
-  }
-  return content;
-}
-
-function splitConcatenatedJsonObjects(value: string): string[] {
-  const chunks: string[] = [];
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-
-  for (let i = 0; i < value.length; i++) {
-    const char = value[i];
-
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (char === '\\') {
-        escape = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === '{') {
-      if (depth === 0) {
-        start = i;
-      }
-      depth += 1;
-      continue;
-    }
-
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        chunks.push(value.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return chunks;
-}
-
-function formatJsonContent(rawJsonContent: string): string {
-  const decoded = decodeEscapedText(rawJsonContent).trim();
-
-  const parsedWhole = safeJsonParse(decoded);
-  if (parsedWhole && typeof parsedWhole === 'object') {
-    const content = typeof parsedWhole.content === 'string'
-      ? parsedWhole.content
-      : JSON.stringify(parsedWhole, null, 2);
-    const filePath = typeof parsedWhole.file_path === 'string' ? parsedWhole.file_path : null;
-    return formatWithFilePath(String(content).trim(), filePath);
-  }
-
-  const chunks = splitConcatenatedJsonObjects(decoded);
-  if (chunks.length === 0) {
-    return decoded;
-  }
-
-  const formattedChunks = chunks.map((chunk, index) => {
-    const parsedChunk = safeJsonParse(chunk);
-
-    let content: string;
-    let filePath: string | null = null;
-
-    if (parsedChunk && typeof parsedChunk === 'object') {
-      content = typeof parsedChunk.content === 'string'
-        ? parsedChunk.content
-        : JSON.stringify(parsedChunk, null, 2);
-      filePath = typeof parsedChunk.file_path === 'string' ? parsedChunk.file_path : null;
-    } else {
-      const rawContent = extractRawStringField(chunk, 'content');
-      const rawFilePath = extractRawStringField(chunk, 'file_path');
-
-      if (rawContent !== null) {
-        content = lenientUnescape(rawContent);
-        filePath = rawFilePath !== null ? lenientUnescape(rawFilePath) : null;
-      } else {
-        content = lenientUnescape(chunk);
-      }
-    }
-
-    const formatted = formatWithFilePath(String(content).trim(), filePath);
-
-    return chunks.length > 1
-      ? `=== PART ${index + 1} ===\n${formatted}`
-      : formatted;
-  });
-
-  return formattedChunks.join('\n\n');
-}
-
-function formatPromptExpandedContent(content: string): string {
-  const parsed = safeJsonParse(content);
-  if (parsed && typeof parsed === 'object') {
-    const pretty = JSON.stringify(parsed, null, 2);
-    return lenientUnescape(pretty);
-  }
-  return lenientUnescape(content);
-}
-
-function formatResponseExpandedContent(event: ParsedEvent): string {
-  const raw = event.metadata?.raw;
-  if (raw && typeof raw === 'object') {
-    if (typeof raw.json_content === 'string' && raw.json_content.trim().length > 0) {
-      return formatJsonContent(raw.json_content);
-    }
-    if (typeof raw.text_content === 'string' && raw.text_content.trim().length > 0) {
-      return raw.text_content.trim();
-    }
-    return JSON.stringify(raw, null, 2);
-  }
-  return event.content || JSON.stringify(event.metadata, null, 2);
-}
-
-function adaptPromptEvent(event: ParsedEvent): UnifiedBlockData {
-  const metadata = event.metadata || {};
-  
-  const tags = ['tag.aiPrompt', metadata.model, metadata.method].filter(Boolean);
-  if (event.promptDiff?.hasChanges) {
-    tags.push('tag.changed');
-  }
-  
-  const rawContent = event.content || JSON.stringify(event.metadata, null, 2);
-  let expandedContent = formatPromptExpandedContent(rawContent);
-
-  let foldContent = expandedContent && expandedContent.length > 0
-    ? expandedContent.replace(/\n/g, ' ').substring(0, 100) + (expandedContent.length > 100 ? '...' : '')
-    : metadata.url || '';
-
-  if (event.promptDiff?.summary) {
-    foldContent = `📝 ${event.promptDiff.summary}`;
-  }
-  
-  if (event.promptDiff?.diff) {
-    expandedContent = `=== CHANGES FROM PREVIOUS PROMPT ===\n${event.promptDiff.diff}\n\n=== FULL CONTENT ===\n${expandedContent}`;
-  }
-
-  return {
-    id: event.id,
-    type: 'prompt',
-    timestamp: event.timestamp,
-    tags,
-    bgGradient: event.promptDiff?.hasChanges 
-      ? 'bg-gradient-to-r from-yellow-50 via-orange-50 to-red-50'
-      : 'bg-gradient-to-r from-blue-50 via-purple-50 to-pink-50',
-    borderColor: event.promptDiff?.hasChanges 
-      ? 'border-yellow-400'
-      : 'border-blue-400',
-    iconColor: event.promptDiff?.hasChanges 
-      ? 'text-yellow-600'
-      : 'text-blue-600',
-    icon: SparklesIcon,
-    foldContent,
-    expandedContent
-  };
-}
-
-function adaptResponseEvent(event: ParsedEvent): UnifiedBlockData {
-  const metadata = event.metadata || {};
-  const expandedContent = formatResponseExpandedContent(event);
-  
-  const foldContent = expandedContent && expandedContent.length > 0 
-    ? expandedContent.substring(0, 100) + (expandedContent.length > 100 ? '...' : '')
-    : '';
-
-  return {
-    id: event.id,
-    type: 'response',
-    timestamp: event.timestamp,
-    tags: ['tag.aiResponse', metadata.model].filter(Boolean),
-    bgGradient: 'bg-gradient-to-r from-green-50 via-emerald-50 to-teal-50',
-    borderColor: 'border-green-400',
-    iconColor: 'text-green-600',
-    icon: CheckCircleIcon,
-    foldContent,
-    expandedContent
-  };
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-function fileIconColor(op: string): string {
-  const lowerOp = op.toLowerCase();
-  if (lowerOp.includes('read')) return 'text-blue-600';
-  if (lowerOp.includes('write')) return 'text-green-600';
-  if (lowerOp.includes('open')) return 'text-purple-600';
-  if (lowerOp.includes('close')) return 'text-gray-600';
-  if (lowerOp.includes('delete') || lowerOp.includes('unlink')) return 'text-red-600';
-  return 'text-indigo-600';
-}
-
-function processColors(eventType: string) {
-  const lowerEvent = eventType.toLowerCase();
-  if (lowerEvent.includes('exec')) return {
-    icon: 'text-green-700',
-    gradient: 'bg-gradient-to-r from-green-50 via-emerald-50 to-teal-50',
-    border: 'border-green-400'
-  };
-  if (lowerEvent.includes('exit')) return {
-    icon: 'text-red-700',
-    gradient: 'bg-gradient-to-r from-red-50 via-rose-50 to-pink-50',
-    border: 'border-red-400'
-  };
-  return {
-    icon: 'text-gray-700',
-    gradient: 'bg-gradient-to-r from-gray-50 via-slate-50 to-zinc-50',
-    border: 'border-gray-400'
-  };
-}
-
-function adaptFileEvent(event: ParsedEvent): UnifiedBlockData {
-  const metadata = event.metadata || {};
-  
-  const operation = metadata.operation || metadata.event || 'file';
-  const filepath = metadata.path || metadata.filepath || '';
-
-  const tags = [operation.toUpperCase()];
-  if (metadata.fd !== undefined) tags.push(`FD ${metadata.fd}`);
-  if (metadata.size !== undefined) tags.push(formatFileSize(metadata.size));
-  if (metadata.container_id) tags.push(`🐳${metadata.container_id}`);
-
-  const foldContent = filepath;
-
-  const expandedContent = event.content || JSON.stringify(event.metadata, null, 2);
-
-  return {
-    id: event.id,
-    type: 'file',
-    timestamp: event.timestamp,
-    tags,
-    bgGradient: 'bg-gradient-to-r from-cyan-50 via-sky-50 to-blue-50',
-    borderColor: 'border-cyan-400',
-    iconColor: fileIconColor(operation),
-    icon: DocumentIcon,
-    foldContent,
-    expandedContent
-  };
-}
-
-function adaptProcessEvent(event: ParsedEvent): UnifiedBlockData {
-  const metadata = event.metadata || {};
-  
-  const eventType = metadata.event || 'process';
-  const comm = metadata.comm || '';
-  const pid = metadata.pid || '';
-
-  const colors = processColors(eventType);
-  const tags = [eventType.toUpperCase()];
-  if (pid) tags.push(`PID ${pid}`);
-  if (metadata.container_id) tags.push(`🐳${metadata.container_id}`);
-
-  const pidDisplay = metadata.ns_pid ? `${pid} (ns:${metadata.ns_pid})` : pid;
-  const foldContent = comm && pid ? `${comm} (PID: ${pidDisplay})` : comm || `PID: ${pidDisplay}`;
-
-  const expandedContent = event.content || JSON.stringify(event.metadata, null, 2);
-
-  return {
-    id: event.id,
-    type: 'process',
-    timestamp: event.timestamp,
-    tags,
-    bgGradient: colors.gradient,
-    borderColor: colors.border,
-    iconColor: colors.icon,
-    icon: CpuChipIcon,
-    foldContent,
-    expandedContent
-  };
-}
-
-function adaptSSLEvent(event: ParsedEvent): UnifiedBlockData {
-  const metadata = event.metadata || {};
-  const originalSource = metadata.original_source || '';
-  const isHttpParser = originalSource === 'http_parser';
-
-  let direction = '';
-  let size = 0;
-  let foldContent = '';
-  let expandedContent = '';
-
-  if (isHttpParser) {
-    const method = metadata.method || '';
-    const messageType = metadata.message_type || '';
-    const host = metadata.host || metadata.headers?.host || '';
-    const path = metadata.path || '/';
-    const statusCode = metadata.status_code;
-    const body = metadata.body || '';
-
-    direction = messageType === 'response' ? 'RECV' :
-                messageType === 'request' ? 'SEND' :
-                (method && method !== 'UNKNOWN' ? 'SEND' : '');
-    size = metadata.total_size || metadata.content_length || (typeof body === 'string' ? body.length : 0);
-
-    const firstLine = metadata.first_line || '';
-    if (firstLine) {
-      foldContent = firstLine;
-    } else if (statusCode) {
-      foldContent = `${statusCode} ${host}${path}`;
-    } else if (method && method !== 'UNKNOWN') {
-      foldContent = `${method} ${host}${path}`;
-    } else {
-      foldContent = `${host}${path}`;
-    }
-
-    if (body && typeof body === 'string' && body.length > 0) {
-      try {
-        const parsed = JSON.parse(body);
-        expandedContent = JSON.stringify(parsed, null, 2);
-      } catch {
-        expandedContent = body;
-      }
-    } else {
-      expandedContent = event.content || JSON.stringify(metadata, null, 2);
-    }
-  } else {
-    const sslFunction = metadata.function || metadata.direction || '';
-    direction = sslFunction.includes('WRITE') || sslFunction.includes('SEND') ? 'SEND' :
-                sslFunction.includes('READ') || sslFunction.includes('RECV') ? 'RECV' :
-                sslFunction.includes('HANDSHAKE') ? 'HANDSHAKE' : '';
-    size = metadata.buf_size || metadata.data_size || metadata.len || metadata.size || 0;
-    const comm = metadata.comm || '';
-    const sslData = metadata.data || '';
-
-    if (sslData && typeof sslData === 'string' && sslData.length > 0) {
-      const previewSource = sslData.slice(0, 240);
-      const preview = previewSource.replace(/\r\n/g, ' ').replace(/\n/g, ' ').substring(0, 120);
-      foldContent = preview + (sslData.length > 120 ? '...' : '');
-    } else {
-      foldContent = comm ? `${size} bytes - ${comm}` : `${size} bytes`;
-    }
-
-    if (sslData && typeof sslData === 'string' && sslData.length > 0) {
-      expandedContent = sslData;
-    } else {
-      expandedContent = event.content || JSON.stringify(metadata, null, 2);
-    }
-  }
-
-  const sizeTag = size > 0 ? formatFileSize(size) : '';
-  const containerTag = metadata.container_id ? `🐳${metadata.container_id}` : '';
-  const sourceTag = isHttpParser ? 'HTTP' : 'TLS';
-
-  return {
-    id: event.id,
-    type: 'ssl',
-    timestamp: event.timestamp,
-    tags: ['tag.ssl', sourceTag, direction, sizeTag, containerTag].filter(Boolean),
-    bgGradient: 'bg-gradient-to-r from-orange-50 via-amber-50 to-yellow-50',
-    borderColor: 'border-orange-400',
-    iconColor: 'text-orange-600',
-    icon: LockClosedIcon,
-    foldContent,
-    expandedContent
-  };
-}
-
-function adaptStdioEvent(event: ParsedEvent): UnifiedBlockData {
-  const metadata = event.metadata || {};
-  const decoded = decodeStdioMessage(metadata);
-  const tags = ['tag.stdio', decoded.direction || 'UNKNOWN', decoded.fdRole.toUpperCase()];
-
-  if (decoded.method) {
-    tags.push(decoded.method);
-  } else if (decoded.kind !== 'text' && decoded.kind !== 'unknown') {
-    tags.push(decoded.kind.toUpperCase());
-  }
-
-  if (decoded.toolName) {
-    tags.push(decoded.toolName);
-  }
-
-  return {
-    id: event.id,
-    type: 'stdio',
-    timestamp: event.timestamp,
-    tags,
-    bgGradient: 'bg-gradient-to-r from-slate-50 via-indigo-50 to-sky-50',
-    borderColor: 'border-indigo-400',
-    iconColor: 'text-indigo-700',
-    icon: CommandLineIcon,
-    foldContent: decoded.summary,
-    expandedContent: event.content || JSON.stringify(event.metadata, null, 2)
-  };
-}
-
-export function adaptEventToUnifiedBlock(event: ParsedEvent): UnifiedBlockData {
-  switch (event.type) {
-    case 'prompt':
-      return adaptPromptEvent(event);
-    case 'response':
-      return adaptResponseEvent(event);
-    case 'file':
-      return adaptFileEvent(event);
-    case 'process':
-      return adaptProcessEvent(event);
-    case 'stdio':
-      return adaptStdioEvent(event);
-    case 'ssl':
-    default:
-      return adaptSSLEvent(event);
-  }
+function preview(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 3)}...` : normalized;
 }

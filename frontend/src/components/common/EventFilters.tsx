@@ -3,13 +3,17 @@
 
 'use client';
 
-import { ProcessedViewEvent } from '@/types/event';
-import { getUniqueValues } from '@/utils/eventProcessing';
 import { useMemo } from 'react';
 import { useTranslation } from '@/i18n';
 
+interface FilterableEvent {
+  source: string;
+  comm: string;
+  pid: number;
+}
+
 interface EventFiltersProps {
-  events: ProcessedViewEvent[];
+  events: FilterableEvent[];
   selectedSource: string;
   selectedComm: string;
   selectedPid: string;
@@ -40,13 +44,13 @@ export function EventFilters({
   }, [events]);
 
   const commValues = useMemo(() => {
-    const unique = getUniqueValues(events, 'comm') as string[];
-    return unique.sort();
+    return Array.from(new Set(events.map(event => event.comm))).sort();
   }, [events]);
 
   const pidValues = useMemo(() => {
-    const unique = getUniqueValues(events, 'pid') as number[];
-    return unique.map(pid => pid.toString()).sort((a, b) => parseInt(a) - parseInt(b));
+    return Array.from(new Set(events.map(event => event.pid)))
+      .map(pid => pid.toString())
+      .sort((a, b) => parseInt(a) - parseInt(b));
   }, [events]);
 
   return (

@@ -4,7 +4,7 @@
 'use client';
 
 import { ChevronDownIcon, ChevronRightIcon, CpuChipIcon } from '@heroicons/react/24/outline';
-import { ProcessNode as ProcessNodeType, ParsedEvent, TimelineItem } from '@/utils/eventParsers';
+import { ProcessNode as ProcessNodeType, TimelineItem, TreeAuditEvent, treeEventType } from '@/utils/eventParsers';
 import { UnifiedBlock } from './UnifiedBlock';
 import { adaptEventToUnifiedBlock } from './BlockAdapters';
 import { useTranslation } from '@/i18n';
@@ -33,7 +33,8 @@ export function ProcessNode({
   const indent = depth * 24;
 
   const eventCounts = process.events.reduce((counts, event) => {
-    counts[event.type] = (counts[event.type] || 0) + 1;
+    const type = treeEventType(event);
+    counts[type] = (counts[type] || 0) + 1;
     return counts;
   }, {} as Record<string, number>);
 
@@ -55,7 +56,7 @@ export function ProcessNode({
     });
   };
 
-  const renderEvent = (event: ParsedEvent) => {
+  const renderEvent = (event: TreeAuditEvent) => {
     const isEventExpanded = expandedEvents.has(event.id);
     const unifiedBlockData = adaptEventToUnifiedBlock(event);
     

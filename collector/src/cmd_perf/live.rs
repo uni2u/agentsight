@@ -441,6 +441,10 @@ impl LiveView {
             }
         }
 
+        let sections =
+            super::top_sections(session_snapshot, rows.len().max(10), &options.view);
+        let failures = super::recent_failures(session_snapshot, 5);
+
         AgentTopOutput {
             mode: "live sessions",
             db: None,
@@ -455,8 +459,8 @@ impl LiveView {
                     .unwrap_or_default(),
             total_tokens: local_total_tokens + capture_total_tokens,
             rows,
-            sections: Vec::new(),
-            failures: Vec::new(),
+            sections,
+            failures,
             notes,
         }
     }

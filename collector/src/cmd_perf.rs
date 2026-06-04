@@ -136,7 +136,7 @@ fn build_session_top<'a>(
     }
 }
 
-fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection> {
+pub(crate) fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection> {
     let audit = &snapshot.audit_events;
     let model_counts = snapshot
         .token_summary
@@ -179,6 +179,17 @@ fn top_sections(snapshot: &Snapshot, limit: usize, view: &str) -> Vec<TopSection
             sorted_top_counts(network_target_counts(snapshot), limit),
         ),
         ("Models", "tokens", sorted_top_counts(model_counts, limit)),
+        (
+            "Tools",
+            "calls",
+            top_counts_from_iter(
+                snapshot
+                    .tool_calls
+                    .iter()
+                    .filter_map(|row| row.tool_name.clone()),
+                limit,
+            ),
+        ),
     ];
     all.into_iter()
         .filter(|(title, _, _)| show_section(view, title))
@@ -192,7 +203,8 @@ fn show_section(view: &str, title: &str) -> bool {
         "process" | "processes" | "proc" => title == "Processes",
         "file" | "files" | "fs" => title == "Files",
         "network" | "net" => title == "Network",
-        "model" | "models" | "tokens" => title == "Models",
+        "model" | "models" | "tokens" => matches!(title, "Models" | "Tools"),
+        "tool" | "tools" => title == "Tools",
         _ => true,
     }
 }
@@ -394,7 +406,7 @@ fn resource_peaks_from_samples(samples: &[ResourceSampleRow]) -> ResourcePeaks {
     peaks
 }
 
-fn recent_failures(snapshot: &Snapshot, limit: usize) -> Vec<String> {
+pub(crate) fn recent_failures(snapshot: &Snapshot, limit: usize) -> Vec<String> {
     snapshot
         .audit_events
         .iter()

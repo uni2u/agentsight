@@ -4,8 +4,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import { ViewEvent, ProcessedViewEvent } from '@/types/event';
-import { processViewEvents, filterViewEvents, formatDuration } from '@/utils/eventProcessing';
+import { DisplayEvent, filterDisplayEvents, formatDuration } from '@/utils/eventProcessing';
 import { EventFilters } from '@/components/common/EventFilters';
 import { EventModal } from '@/components/common/EventModal';
 import { ZoomControls } from './ZoomControls';
@@ -16,17 +15,17 @@ import { TimelineScrollBar } from './TimelineScrollBar';
 import { useTranslation } from '@/i18n';
 
 interface TimelineProps {
-  events: ViewEvent[];
+  events: DisplayEvent[];
 }
 
 interface TimelineGroupData {
   source: string;
-  events: ProcessedViewEvent[];
+  events: DisplayEvent[];
   color: string;
 }
 
 export function Timeline({ events }: TimelineProps) {
-  const [selectedEvent, setSelectedEvent] = useState<ProcessedViewEvent | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<DisplayEvent | null>(null);
   const [timeRange, setTimeRange] = useState<{ start: number; end: number } | null>(null);
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [selectedComm, setSelectedComm] = useState<string>('');
@@ -35,21 +34,18 @@ export function Timeline({ events }: TimelineProps) {
   const [scrollOffset, setScrollOffset] = useState<number>(0);
   const { t } = useTranslation();
 
-  // Process events with additional metadata
-  const processedEvents = useMemo(() => processViewEvents(events), [events]);
-
   // Filter events based on selected filters
   const filteredEvents = useMemo(() => {
-    return filterViewEvents(processedEvents, {
+    return filterDisplayEvents(events, {
       source: selectedSource,
       comm: selectedComm,
       pid: selectedPid
     });
-  }, [processedEvents, selectedSource, selectedComm, selectedPid]);
+  }, [events, selectedSource, selectedComm, selectedPid]);
 
   // Group filtered events by source
   const timelineGroups: TimelineGroupData[] = useMemo(() => {
-    const grouped: { [source: string]: ProcessedViewEvent[] } = {};
+    const grouped: { [source: string]: DisplayEvent[] } = {};
     filteredEvents.forEach(event => {
       if (!grouped[event.source]) {
         grouped[event.source] = [];
@@ -237,8 +233,8 @@ export function Timeline({ events }: TimelineProps) {
         </div>
         
         {/* Filters */}
-        <EventFilters
-          events={processedEvents}
+          <EventFilters
+          events={events}
           selectedSource={selectedSource}
           selectedComm={selectedComm}
           selectedPid={selectedPid}
@@ -300,7 +296,7 @@ export function Timeline({ events }: TimelineProps) {
         )}
       </div>
 
-      {/* ViewEvent Details Modal */}
+      {/* Event details modal */}
       <EventModal
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}

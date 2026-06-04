@@ -38,17 +38,10 @@ impl FilterExpr for SslFilterExpr {
 }
 
 impl SSLFilter {
-    #[cfg(test)]
-    pub fn new() -> Self {
-        Self {
-            base: FilterBase::new("ssl", MetricsStrategy::AddOnDrop, &GLOBAL_METRICS),
-        }
-    }
-
     pub fn with_patterns(patterns: Vec<String>) -> Self {
         Self {
             base: FilterBase::new("ssl", MetricsStrategy::AddOnDrop, &GLOBAL_METRICS)
-                .with_patterns(patterns, |p| SslFilterExpr::parse(p)),
+                .with_patterns(patterns, SslFilterExpr::parse),
         }
     }
 }

@@ -127,6 +127,7 @@ pub(crate) struct LocalSession {
     total_tokens: i64,
     models: BTreeMap<String, (i64, i64, i64)>,
     tools: BTreeMap<String, usize>,
+    pub(crate) files: BTreeMap<String, usize>,
     prompt_preview: Option<String>,
     duration_ms: u64,
     cwd: Option<String>,
@@ -376,6 +377,7 @@ fn parse_content(
     let mut claude_message_models = BTreeMap::<String, (i64, i64, i64)>::new();
     let mut claude_seen_usage = HashSet::new();
     let mut tools = BTreeMap::new();
+    let mut files = BTreeMap::<String, usize>::new();
     let mut prompt_preview = None;
     let mut cwd: Option<String> = None;
     let mut last_message_at: Option<String> = None;
@@ -460,6 +462,13 @@ fn parse_content(
                                 .and_then(|value| value.as_str())
                                 .unwrap_or("?");
                             *tools.entry(name.to_string()).or_default() += 1;
+                            if let Some(fp) = item
+                                .pointer("/input/file_path")
+                                .and_then(Value::as_str)
+                                .filter(|s| !is_noise_path(s))
+                            {
+                                *files.entry(fp.to_string()).or_default() += 1;
+                            }
                         }
                     }
                 }
@@ -549,6 +558,7 @@ fn parse_content(
         total_tokens,
         models,
         tools,
+        files,
         prompt_preview,
         duration_ms,
         cwd,
@@ -629,6 +639,15 @@ fn local_session_id(obj: &Value) -> Option<String> {
         }
     }
     None
+}
+
+fn is_noise_path(path: &str) -> bool {
+    const NOISE: &[&str] = &[
+        "/.claude/", "/.codex/", "/.git/", "/.git\n",
+        "/node_modules/", "/.npm/", "/.cache/",
+        "CLAUDE.md", "AGENTS.md",
+    ];
+    NOISE.iter().any(|pat| path.contains(pat))
 }
 
 fn claude_usage_key(obj: &Value) -> String {

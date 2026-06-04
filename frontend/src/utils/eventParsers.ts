@@ -7,6 +7,18 @@ import {
   SnapshotProcessNode,
 } from '@/types/event';
 import { comparePrompts } from './jsonDiff';
+import { auditEventName } from './eventProcessing';
+
+export type TreeEventType = 'prompt' | 'response' | 'ssl' | 'file' | 'process' | 'stdio' | 'system';
+
+export interface PromptDiff {
+  diff: string;
+  summary: string;
+  hasChanges: boolean;
+  previousPromptId?: string;
+}
+
+export type TreeAuditEvent = SnapshotAuditEvent & { promptDiff?: PromptDiff };
 
 export interface ProcessNode {
   id: string;
@@ -16,53 +28,43 @@ export interface ProcessNode {
   startTimestamp?: number;
   endTimestamp?: number;
   children: ProcessNode[];
-  events: ParsedEvent[];
+  events: TreeAuditEvent[];
   timeline: TimelineItem[];
 }
 
 export interface TimelineItem {
   type: 'event' | 'process';
   timestamp: number;
-  event?: ParsedEvent;
+  event?: TreeAuditEvent;
   process?: ProcessNode;
-}
-
-export interface ParsedEvent {
-  id: string;
-  timestamp: number;
-  type: 'prompt' | 'response' | 'ssl' | 'file' | 'process' | 'stdio' | 'system';
-  title: string;
-  content: string;
-  metadata: Record<string, any>;
-  promptDiff?: {
-    diff: string;
-    summary: string;
-    hasChanges: boolean;
-    previousPromptId?: string;
-  };
 }
 
 export function buildProcessTree(snapshot: AgentSightSnapshot | null): ProcessNode[] {
   const processMap = new Map<string, ProcessNode>();
   const nodesByPid = new Map<number, ProcessNode[]>();
-  const promptHistoryByProcess = new Map<string, ParsedEvent[]>();
+  const promptHistoryByProcess = new Map<string, TreeAuditEvent[]>();
 
   for (const row of snapshot?.process_nodes ?? []) {
     const process = processFromRow(row);
     processMap.set(process.id, process);
     nodesByPid.set(process.pid, [...(nodesByPid.get(process.pid) ?? []), process]);
   }
-
   nodesByPid.forEach(nodes => nodes.sort((a, b) => firstTimestamp(a) - firstTimestamp(b)));
 
   for (const row of [...(snapshot?.audit_events ?? [])].sort((a, b) => a.timestamp_ms - b.timestamp_ms)) {
     const process = processForAudit(row, nodesByPid);
     if (!process) continue;
 
-    const event = auditToParsedEvent(row);
-    if (event.type === 'prompt') {
+    const event: TreeAuditEvent = { ...row };
+    if (treeEventType(event) === 'prompt') {
       const history = promptHistoryByProcess.get(process.id) ?? [];
-      attachPromptDiff(event, history);
+      const previousPrompt = history[history.length - 1];
+      if (previousPrompt) {
+        event.promptDiff = {
+          ...comparePrompts(eventRaw(previousPrompt), eventRaw(event)),
+          previousPromptId: previousPrompt.id,
+        };
+      }
       promptHistoryByProcess.set(process.id, [...history, event].slice(-10));
     }
     process.events.push(event);
@@ -77,7 +79,7 @@ export function buildProcessTree(snapshot: AgentSightSnapshot | null): ProcessNo
   });
 
   processMap.forEach(process => {
-    process.events.sort((a, b) => a.timestamp - b.timestamp);
+    process.events.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
     process.children.sort((a, b) => firstTimestamp(a) - firstTimestamp(b));
     process.timeline = timelineForProcess(process);
   });
@@ -89,9 +91,53 @@ export function buildProcessTree(snapshot: AgentSightSnapshot | null): ProcessNo
 
 export function timelineForProcess(process: ProcessNode): TimelineItem[] {
   return [
-    ...process.events.map(event => ({ type: 'event' as const, timestamp: event.timestamp, event })),
+    ...process.events.map(event => ({ type: 'event' as const, timestamp: event.timestamp_ms, event })),
     ...process.children.map(child => ({ type: 'process' as const, timestamp: firstTimestamp(child), process: child })),
   ].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export function treeEventType(row: SnapshotAuditEvent): TreeEventType {
+  if (row.audit_type === 'llm') return row.action === 'request' ? 'prompt' : 'response';
+  if (row.audit_type === 'file') return 'file';
+  if (row.audit_type === 'process') return 'process';
+  if (row.audit_type === 'stdio') return 'stdio';
+  if (row.audit_type === 'system') return 'system';
+  return 'ssl';
+}
+
+export function eventDetails(row: SnapshotAuditEvent): Record<string, any> {
+  return isRecord(row.details) ? row.details : {};
+}
+
+export function eventModel(row: SnapshotAuditEvent): string | undefined {
+  return row.subject ?? stringValue(eventDetails(row).model);
+}
+
+export function eventTarget(row: SnapshotAuditEvent): string | undefined {
+  const details = eventDetails(row);
+  return row.target ?? stringValue(details.path) ?? stringValue(details.filepath);
+}
+
+export function eventSearchText(row: SnapshotAuditEvent): string {
+  return [
+    row.id,
+    row.audit_type,
+    row.action,
+    row.status,
+    row.summary,
+    row.comm,
+    eventModel(row),
+    eventTarget(row),
+    JSON.stringify(row.details ?? row),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+export function eventName(row: SnapshotAuditEvent): string {
+  return auditEventName(row);
+}
+
+export function eventRaw(row: SnapshotAuditEvent): unknown {
+  return row.details ?? row;
 }
 
 function processFromRow(row: SnapshotProcessNode): ProcessNode {
@@ -149,85 +195,10 @@ function firstTimestamp(process: ProcessNode): number {
     (earliest, child) => Math.min(earliest, firstTimestamp(child)),
     Infinity,
   );
-  const eventStart = process.events[0]?.timestamp ?? Infinity;
+  const eventStart = process.events[0]?.timestamp_ms ?? Infinity;
   const ownStart = process.startTimestamp ?? Infinity;
   const earliest = Math.min(ownStart, eventStart, childStart);
   return earliest === Infinity ? 0 : earliest;
-}
-
-function auditToParsedEvent(row: SnapshotAuditEvent): ParsedEvent {
-  const details = isRecord(row.details) ? row.details : {};
-  const type = auditEventType(row);
-  const model = row.subject ?? stringValue(details.model);
-  const target = row.target ?? stringValue(details.path) ?? stringValue(details.filepath);
-  const metadata = {
-    ...details,
-    raw: row.details ?? row,
-    original_source: row.audit_type,
-    event: auditEventName(row),
-    audit_type: row.audit_type,
-    action: row.action,
-    status: row.status,
-    model,
-    method: row.action,
-    url: target,
-    path: target,
-    filepath: row.audit_type === 'file' ? target : details.filepath,
-    filename: row.audit_type === 'process' ? target : details.filename,
-    comm: row.comm,
-    pid: row.pid,
-  };
-
-  return {
-    id: row.id,
-    timestamp: row.timestamp_ms,
-    type,
-    title: eventTitle(row, type, model, target),
-    content: JSON.stringify(row.details ?? row, null, 2),
-    metadata,
-  };
-}
-
-function auditEventType(row: SnapshotAuditEvent): ParsedEvent['type'] {
-  if (row.audit_type === 'llm') {
-    return row.action === 'request' ? 'prompt' : 'response';
-  }
-  if (row.audit_type === 'file') return 'file';
-  if (row.audit_type === 'process') return 'process';
-  return 'ssl';
-}
-
-function auditEventName(row: SnapshotAuditEvent): string {
-  if (row.audit_type === 'process') {
-    if (row.action === 'exec') return 'EXEC';
-    if (row.action === 'exit') return 'EXIT';
-    return (row.action ?? 'PROCESS').toUpperCase();
-  }
-  if (row.audit_type === 'file') return 'FILE_WRITE';
-  if (row.audit_type === 'llm') return 'LLM_CALL';
-  return row.audit_type.toUpperCase();
-}
-
-function eventTitle(
-  row: SnapshotAuditEvent,
-  type: ParsedEvent['type'],
-  model?: string,
-  target?: string,
-): string {
-  if (type === 'prompt') return `LLM request ${model ?? ''}`.trim();
-  if (type === 'response') return `LLM ${row.action ?? 'response'} ${model ?? ''}`.trim();
-  if (type === 'file') return `${row.action ?? 'file'} ${target ?? ''}`.trim();
-  if (type === 'process') return `${row.action ?? 'process'} ${target ?? row.comm ?? ''}`.trim();
-  return `${row.audit_type} ${target ?? ''}`.trim();
-}
-
-function attachPromptDiff(event: ParsedEvent, history: ParsedEvent[]) {
-  const previousPrompt = history[history.length - 1];
-  if (!previousPrompt) return;
-  event.promptDiff = {
-    ...comparePrompts(previousPrompt.metadata.raw, event.metadata.raw),
-    previousPromptId: previousPrompt.id,
-  };
 }
 
 function stringValue(value: unknown): string | undefined {

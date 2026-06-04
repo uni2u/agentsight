@@ -12,7 +12,7 @@ import type { TranslationKey } from '@/i18n';
 
 export interface UnifiedBlockData {
   id: string;
-  type: 'prompt' | 'response' | 'ssl' | 'file' | 'process' | 'stdio';
+  type: 'prompt' | 'response' | 'ssl' | 'file' | 'process' | 'stdio' | 'system';
   timestamp: number;
   tags: string[];
   bgGradient: string;

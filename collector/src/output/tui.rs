@@ -352,22 +352,20 @@ fn session_detail_lines(
     options: &TopOptions,
 ) -> Vec<Line<'static>> {
     let view = normalize_view_key(&options.view);
+    let header = format!(
+        "{}  model={}  trace={}",
+        row.session,
+        row.model_label(),
+        row.trace,
+    );
     match view.as_str() {
         "processes" => {
             let mut lines = vec![
+                detail_line("session", header),
                 detail_line(
-                    "session",
+                    "resources",
                     format!(
-                        "{}  model={}  workspace={}",
-                        row.session,
-                        row.model_label(),
-                        row.workspace.as_deref().unwrap_or("-")
-                    ),
-                ),
-                detail_line(
-                    "pid",
-                    format!(
-                        "{}  cpu={:.1}%  rss={} MB  processes={}",
+                        "pid={}  cpu={:.1}%  rss={} MB  tree={}",
                         row.pid
                             .map(|p| p.to_string())
                             .unwrap_or_else(|| "-".to_string()),
@@ -376,110 +374,123 @@ fn session_detail_lines(
                         row.processes
                     ),
                 ),
+                detail_line(
+                    "workspace",
+                    row.workspace.as_deref().unwrap_or("-").to_string(),
+                ),
             ];
             if let Some(items) = find_section(&top.sections, "Processes") {
-                lines.push(detail_line(
-                    "recent execs",
-                    format_top_items(items, 6),
-                ));
+                lines.push(detail_line("top execs", format_top_items(items, 8)));
+            }
+            if let Some(items) = find_section(&top.sections, "Tools") {
+                lines.push(detail_line("top tools", format_top_items(items, 6)));
             }
             lines
         }
         "files" => {
-            let mut lines = vec![detail_line(
-                "session",
-                format!(
-                    "{}  files={}  workspace={}",
-                    row.session,
-                    row.files,
-                    row.workspace.as_deref().unwrap_or("-")
+            let mut lines = vec![
+                detail_line("session", header),
+                detail_line(
+                    "workspace",
+                    row.workspace.as_deref().unwrap_or("-").to_string(),
                 ),
-            )];
+            ];
             if let Some(items) = find_section(&top.sections, "Files") {
                 let dirs = aggregate_to_dirs(items);
-                lines.push(detail_line("top dirs", format_top_items(&dirs, 5)));
-                let recent: Vec<_> = items.iter().take(4).collect();
-                let formatted = recent
+                lines.push(detail_line("top dirs", format_top_items(&dirs, 6)));
+                let recent: Vec<_> = items
                     .iter()
+                    .take(5)
                     .map(|(name, count)| {
                         let basename = name.rsplit('/').next().unwrap_or(name);
                         format!("{basename}({count})")
                     })
-                    .collect::<Vec<_>>()
-                    .join("  ");
-                lines.push(detail_line("recent files", formatted));
+                    .collect();
+                lines.push(detail_line("top files", recent.join("  ")));
+            } else {
+                lines.push(detail_line(
+                    "files",
+                    format!("{} events (use `record` for file-level detail)", row.files),
+                ));
+            }
+            if let Some(items) = find_section(&top.sections, "Tools") {
+                lines.push(detail_line("top tools", format_top_items(items, 6)));
             }
             lines
         }
         "network" => {
-            let mut lines = vec![detail_line(
-                "session",
-                format!(
-                    "{}  network={}  tokens={}",
-                    row.session,
-                    row.network,
-                    format_token_value(row.tokens)
+            let mut lines = vec![
+                detail_line("session", header),
+                detail_line(
+                    "workspace",
+                    row.workspace.as_deref().unwrap_or("-").to_string(),
                 ),
-            )];
+            ];
             if let Some(items) = find_section(&top.sections, "Network") {
-                lines.push(detail_line("top hosts", format_top_items(items, 6)));
+                lines.push(detail_line("top hosts", format_top_items(items, 8)));
+            } else {
+                lines.push(detail_line(
+                    "network",
+                    format!(
+                        "{} hosts (use `record` for network detail)",
+                        row.network
+                    ),
+                ));
             }
-            lines
-        }
-        "models" => {
-            let mut lines = vec![detail_line(
-                "session",
-                format!(
-                    "{}  tokens={}  tools={}  workspace={}",
-                    row.session,
-                    row.token_label(),
-                    row.tools,
-                    row.workspace.as_deref().unwrap_or("-")
-                ),
-            )];
             if let Some(items) = find_section(&top.sections, "Models") {
                 lines.push(detail_line("models", format_top_items(items, 5)));
             }
             lines
         }
-        _ => vec![
-            detail_line(
-                "session",
-                format!(
-                    "{}  pid={}  trace={}",
-                    row.session,
-                    row.pid
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    row.trace,
+        "models" => {
+            let mut lines = vec![
+                detail_line("session", header),
+                detail_line(
+                    "workspace",
+                    row.workspace.as_deref().unwrap_or("-").to_string(),
                 ),
-            ),
-            detail_line(
-                "model",
-                format!(
-                    "{}  tokens={}  tools={}",
-                    row.model_label(),
-                    row.token_label(),
-                    row.tools,
+            ];
+            if let Some(items) = find_section(&top.sections, "Models") {
+                lines.push(detail_line("models", format_top_items(items, 5)));
+            }
+            if let Some(items) = find_section(&top.sections, "Tools") {
+                lines.push(detail_line("top tools", format_top_items(items, 6)));
+            }
+            lines
+        }
+        _ => {
+            let mut lines = vec![
+                detail_line("session", header),
+                detail_line(
+                    "model",
+                    format!(
+                        "{}  tokens={}  tools={}  last_msg={}",
+                        row.model_label(),
+                        row.token_label(),
+                        row.tools,
+                        row.last_msg_label(),
+                    ),
                 ),
-            ),
-            detail_line(
-                "workspace",
-                row.workspace.as_deref().unwrap_or("-").to_string(),
-            ),
-            detail_line(
-                "last message",
-                row.last_msg_label(),
-            ),
-            detail_line(
-                "resources",
-                format!(
-                    "cpu={:.1}%  rss={} MB  processes={}",
-                    row.cpu_percent, row.rss_mb, row.processes
+                detail_line(
+                    "workspace",
+                    row.workspace.as_deref().unwrap_or("-").to_string(),
                 ),
-            ),
-            detail_line("command", row.command.clone()),
-        ],
+                detail_line(
+                    "resources",
+                    format!(
+                        "cpu={:.1}%  rss={} MB  processes={}",
+                        row.cpu_percent, row.rss_mb, row.processes
+                    ),
+                ),
+            ];
+            if let Some(items) = find_section(&top.sections, "Tools") {
+                lines.push(detail_line("top tools", format_top_items(items, 6)));
+            }
+            if let Some(items) = find_section(&top.sections, "Models") {
+                lines.push(detail_line("models", format_top_items(items, 5)));
+            }
+            lines
+        }
     }
 }
 

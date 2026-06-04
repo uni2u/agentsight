@@ -613,7 +613,7 @@ fn emit_llm_audit(
     details_json: Option<&str>,
 ) -> ViewResult<()> {
     view.emit_audit_event(AuditEventRow {
-        id: format!("audit-{llm_call_id}"),
+        id: format!("audit-{llm_call_id}-{action}"),
         timestamp_ms,
         audit_type: "llm".to_string(),
         pid: Some(pid),
@@ -915,5 +915,50 @@ mod tests {
         assert_eq!(first_exec, first_exit);
         assert_eq!(second_exec, second_exit);
         assert_ne!(first_exec, second_exec);
+    }
+
+    #[test]
+    fn llm_request_audit_survives_response_pairing() {
+        let mut view = MaterializedView::new();
+        let req = Event::new_with_timestamp(
+            1_000,
+            "http_parser".to_string(),
+            42,
+            "agent".to_string(),
+            json!({
+                "tid": 7,
+                "message_type": "request",
+                "method": "POST",
+                "path": "/v1/messages",
+                "headers": { "host": "api.anthropic.com" },
+                "body": "{\"model\":\"claude-sonnet\"}"
+            }),
+        );
+        let resp = Event::new_with_timestamp(
+            2_000,
+            "http_parser".to_string(),
+            42,
+            "agent".to_string(),
+            json!({
+                "tid": 7,
+                "message_type": "response",
+                "status_code": 200,
+                "headers": { "host": "api.anthropic.com" },
+                "body": "{\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}"
+            }),
+        );
+
+        view.ingest_event(&req).expect("ingest request");
+        view.ingest_event(&resp).expect("ingest response");
+
+        let snapshot = view.export_snapshot(crate::view::types::SnapshotOptions { audit_limit: 100 });
+        let llm_actions = snapshot
+            .audit_events
+            .iter()
+            .filter(|row| row.audit_type == "llm")
+            .filter_map(|row| row.action.as_deref())
+            .collect::<Vec<_>>();
+        assert!(llm_actions.contains(&"request"));
+        assert!(llm_actions.contains(&"call"));
     }
 }
