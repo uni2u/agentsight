@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 eunomia-bpf org.
 
-use crate::analyzers::{SSEProcessor, SSLFilter, TimestampNormalizer};
+use crate::analyzers::{SSEProcessor, TimestampNormalizer};
 use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::resolve_container_binary_arg;
-use crate::cmd_trace::{add_http_analyzers, build_stdio_args, run_debug_runner};
+use crate::cmd_trace::{build_stdio_args, configure_ssl_runner, run_debug_runner};
 use crate::output::separator_line;
 use crate::runners::{BinaryRunner, ProcessRunner, Runner, RunnerError, SystemRunner};
 
@@ -45,21 +45,16 @@ pub(crate) async fn run_raw_ssl(
         ssl_runner = ssl_runner.with_args(&final_args);
     }
 
-    ssl_runner = ssl_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
-
-    if !ssl_filter_patterns.is_empty() {
-        ssl_runner = ssl_runner.add_analyzer(Box::new(SSLFilter::with_patterns(
-            ssl_filter_patterns.to_vec(),
-        )));
-    }
+    ssl_runner = configure_ssl_runner(
+        ssl_runner,
+        ssl_filter_patterns,
+        enable_http_parser,
+        include_raw_data,
+        http_filter_patterns,
+        disable_auth_removal,
+    );
 
     if enable_http_parser {
-        ssl_runner = add_http_analyzers(
-            ssl_runner,
-            include_raw_data,
-            http_filter_patterns,
-            disable_auth_removal,
-        );
         println!(
             "Starting SSL event stream with SSE processing + HTTP parsing (press Ctrl+C to stop):"
         );

@@ -8,8 +8,8 @@ use crate::binary_extractor::BinaryExtractor;
 use crate::binary_resolver::{binary_embeds_ssl, resolve_binary_path};
 use crate::cli_db::load_agentsight_view;
 use crate::cmd_trace::{
-    DEFAULT_RECORD_STDIO_MAX_BYTES, TraceConfig, build_trace_agent_with_view, drain_stream_for,
-    prepare_process_seeds, start_web_server_if_enabled,
+    TraceConfig, build_trace_agent_with_view, drain_stream_for, prepare_process_seeds,
+    start_web_server_if_enabled,
 };
 use crate::output::{
     SessionSummary, print_record_attribution_session, print_record_auto_binary_path,
@@ -180,22 +180,13 @@ pub(crate) async fn run_exec(
 
     let db_path_for_summary = db_path.clone();
     let mut cfg = TraceConfig {
-        ssl: true,
         pid: Some(child_pid),
         session_id: Some(child_pid),
-        ssl_filter: vec![crate::cmd_trace::DEFAULT_SSL_FILTER.to_string()],
-        ssl_http: true,
-        process: true,
         stdio: true,
-        stdio_max_bytes: DEFAULT_RECORD_STDIO_MAX_BYTES,
-        system: true,
-        system_interval: 2,
-        http_filter: vec![crate::cmd_trace::DEFAULT_HTTP_FILTER.to_string()],
         binary_path: ssl_binary_path,
         db_path,
-        quiet: true,
         server_listen: Some(server_listen.to_string()),
-        ..Default::default()
+        ..TraceConfig::for_record()
     };
 
     prepare_process_seeds(&mut cfg)?;

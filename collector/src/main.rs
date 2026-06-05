@@ -52,9 +52,7 @@ use cmd_exec::{default_session_db_path, print_session_summary, run_exec};
 use cmd_perf::{run_stat_query, run_top_query};
 use cmd_perf_live::run_live_top_query;
 use cmd_perf_tui::run_live_top_tui;
-use cmd_trace::{
-    DEFAULT_RECORD_STDIO_MAX_BYTES, OtelConfig, TraceConfig, convert_runner_error, run_trace,
-};
+use cmd_trace::{OtelConfig, TraceConfig, convert_runner_error, run_trace};
 use output::TopOptions;
 use output::print_record_session_db_error;
 use sources::session_db::{resolve_db_or_latest, run_db_list};
@@ -776,27 +774,16 @@ async fn run_with_extractor(
                 },
             };
             let db_path_for_summary = db_path.clone();
-            // Predefined filter patterns optimized for agent monitoring. Enables
-            // SSL + process + system monitoring and the web server by default.
             let cfg = TraceConfig {
-                ssl: true,
                 pid: *pid,
                 comm: comm.clone(),
-                ssl_filter: vec![crate::cmd_trace::DEFAULT_SSL_FILTER.to_string()],
-                ssl_http: true,
-                process: true,
                 stdio: pid.is_some(),
-                stdio_max_bytes: DEFAULT_RECORD_STDIO_MAX_BYTES,
-                system: true,
-                system_interval: 2,
-                http_filter: vec![crate::cmd_trace::DEFAULT_HTTP_FILTER.to_string()],
                 binary_path: binary_path.clone(),
                 db_path,
-                quiet: true,
                 server: !*no_server,
                 server_listen: Some(cli.listen.clone()),
                 server_port: *server_port,
-                ..Default::default()
+                ..TraceConfig::for_record()
             };
             run_trace(&binary_extractor, cfg)
                 .await

@@ -28,8 +28,8 @@ use crate::view::{MaterializedView, SharedMaterializedView, process_select};
 pub(crate) const DEFAULT_SERVER_LISTEN: &str = "127.0.0.1";
 pub(crate) const DEFAULT_RECORD_STDIO_MAX_BYTES: u32 = 65_536;
 
-pub(crate) const DEFAULT_SSL_FILTER: &str = "data=0\\r\\n\\r\\n";
-pub(crate) const DEFAULT_HTTP_FILTER: &str = "request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=";
+const DEFAULT_SSL_FILTER: &str = "data=0\\r\\n\\r\\n";
+const DEFAULT_HTTP_FILTER: &str = "request.path_prefix=/v1/rgstr | response.status_code=202 | request.method=HEAD | response.body=";
 
 pub(crate) struct StartedWebServer {
     pub(crate) url: String,
@@ -45,12 +45,6 @@ pub(crate) struct OtelConfig {
     pub(crate) capture_content: bool,
 }
 
-/// All options for a trace/record/exec monitoring session.
-///
-/// Collapses what used to be ~28 positional arguments threaded through
-/// trace and record commands. The `Default` impl is the neutral
-/// "nothing enabled" baseline; the `trace` and `record` handlers each
-/// fill in only the fields they care about.
 #[derive(Default)]
 pub(crate) struct TraceConfig {
     pub(crate) ssl: bool,
@@ -83,6 +77,41 @@ pub(crate) struct TraceConfig {
     pub(crate) server: bool,
     pub(crate) server_listen: Option<String>,
     pub(crate) server_port: u16,
+}
+
+impl TraceConfig {
+    pub(crate) fn for_record() -> Self {
+        Self {
+            ssl: true,
+            ssl_filter: vec![DEFAULT_SSL_FILTER.to_string()],
+            ssl_http: true,
+            process: true,
+            stdio_max_bytes: DEFAULT_RECORD_STDIO_MAX_BYTES,
+            system: true,
+            system_interval: 2,
+            http_filter: vec![DEFAULT_HTTP_FILTER.to_string()],
+            quiet: true,
+            ..Default::default()
+        }
+    }
+}
+
+pub(crate) fn configure_ssl_runner(
+    runner: BinaryRunner,
+    ssl_filter: &[String],
+    ssl_http: bool,
+    ssl_raw_data: bool,
+    http_filter: &[String],
+    disable_auth_removal: bool,
+) -> BinaryRunner {
+    let mut runner = runner.add_analyzer(Box::new(TimestampNormalizer::new()));
+    if !ssl_filter.is_empty() {
+        runner = runner.add_analyzer(Box::new(SSLFilter::with_patterns(ssl_filter.to_vec())));
+    }
+    if ssl_http {
+        runner = add_http_analyzers(runner, ssl_raw_data, http_filter, disable_auth_removal);
+    }
+    runner
 }
 
 pub(crate) fn build_stdio_args(
@@ -134,28 +163,18 @@ pub(crate) fn build_trace_agent_with_view(
 
     if cfg.ssl {
         let mut ssl_runner = BinaryRunner::ssl(binary_extractor.get_sslsniff_path());
-
         let ssl_args = build_ssl_args(cfg);
         if !ssl_args.is_empty() {
             ssl_runner = ssl_runner.with_args(&ssl_args);
         }
-
-        ssl_runner = ssl_runner.add_analyzer(Box::new(TimestampNormalizer::new()));
-
-        if !cfg.ssl_filter.is_empty() {
-            ssl_runner = ssl_runner
-                .add_analyzer(Box::new(SSLFilter::with_patterns(cfg.ssl_filter.clone())));
-        }
-
-        if cfg.ssl_http {
-            ssl_runner = add_http_analyzers(
-                ssl_runner,
-                cfg.ssl_raw_data,
-                &cfg.http_filter,
-                cfg.disable_auth_removal,
-            );
-        }
-
+        ssl_runner = configure_ssl_runner(
+            ssl_runner,
+            &cfg.ssl_filter,
+            cfg.ssl_http,
+            cfg.ssl_raw_data,
+            &cfg.http_filter,
+            cfg.disable_auth_removal,
+        );
         agent = agent.add_runner(Box::new(ssl_runner));
     }
 

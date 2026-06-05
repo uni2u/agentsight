@@ -11,26 +11,40 @@ pub(crate) fn load_view(path: impl AsRef<Path>) -> ViewResult<MaterializedView> 
     let mut view = MaterializedView::new();
     view.set_source("sqlite");
 
-    for row in store.all_llm_call_rows()? {
-        view.apply_llm_call(&row);
+    if let Ok(rows) = store.all_llm_call_rows() {
+        for row in rows {
+            view.apply_llm_call(&row);
+        }
     }
-    for row in store.token_usage_rows()? {
-        view.apply_token_usage(&row);
+    if let Ok(rows) = store.token_usage_rows() {
+        for row in rows {
+            view.apply_token_usage(&row);
+        }
     }
-    for row in store.all_audit_event_rows()? {
-        view.apply_audit_event(&row);
+    if let Ok(rows) = store.all_audit_event_rows() {
+        for row in rows {
+            view.apply_audit_event(&row);
+        }
     }
-    for row in store.process_node_rows()? {
-        view.upsert_process_node(&row);
+    if let Ok(rows) = store.process_node_rows() {
+        for row in rows {
+            view.upsert_process_node(&row);
+        }
     }
-    for row in store.tool_call_rows()? {
-        view.apply_tool_call(&row);
+    if let Ok(rows) = store.tool_call_rows() {
+        for row in rows {
+            view.apply_tool_call(&row);
+        }
     }
-    for row in store.network_target_rows()? {
-        view.upsert_network_target(&row);
+    if let Ok(rows) = store.network_target_rows() {
+        for row in rows {
+            view.upsert_network_target(&row);
+        }
     }
-    for row in store.resource_sample_rows()? {
-        view.apply_resource_sample(&row);
+    if let Ok(rows) = store.resource_sample_rows() {
+        for row in rows {
+            view.apply_resource_sample(&row);
+        }
     }
 
     Ok(view)

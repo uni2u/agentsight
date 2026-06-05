@@ -2,10 +2,7 @@
 // Copyright (c) 2026 eunomia-bpf org.
 
 use crate::event::Event;
-use crate::json::{
-    i64_field as json_i64, parse_optional_value as parse_optional_json,
-    parse_value as parse_json_value,
-};
+use crate::json::{i64_field as json_i64, parse_optional_value as parse_optional_json};
 use crate::view::llm::TokenUsage;
 use crate::view::{
     CanonicalEvent, EventKind, body_json, extract_model, extract_token_usage,
@@ -153,8 +150,6 @@ impl MaterializedView {
             .clone()
             .or_else(|| req.host.as_deref().map(provider_from_host));
         let llm_call_id = format!("llm-{}", req.event_id);
-        let request_body_json = req.body_json.as_ref().map(Value::to_string);
-        let response_body_json = response_body.as_ref().map(Value::to_string);
         let status_code = resp.status_code;
         let mut call_row = llm_call_row(
             &llm_call_id,
@@ -167,8 +162,8 @@ impl MaterializedView {
             req.host.as_deref(),
             req.path.as_deref(),
             status_code,
-            request_body_json.as_deref(),
-            response_body_json.as_deref(),
+            req.body_json.as_ref(),
+            response_body.as_ref(),
         );
         if let Some(usage) = self.ingest_response_usage_and_tools(
             resp,
@@ -177,7 +172,7 @@ impl MaterializedView {
             &req.comm,
             provider.as_deref(),
             &model,
-            response_body_json.as_deref(),
+            response_body.as_ref(),
             confidence,
         )? {
             call_row.input_tokens = usage.input_tokens;
@@ -199,7 +194,7 @@ impl MaterializedView {
                 "success"
             },
             "LLM call",
-            response_body_json.as_deref(),
+            response_body.as_ref(),
         )?;
         self.emit_llm_call(call_row)
     }
@@ -210,7 +205,6 @@ impl MaterializedView {
             .provider
             .clone()
             .or_else(|| req.host.as_deref().map(provider_from_host));
-        let request_body_json = req.body_json.as_ref().map(Value::to_string);
         let call_row = llm_call_row(
             &llm_call_id,
             req.timestamp_ms,
@@ -222,7 +216,7 @@ impl MaterializedView {
             req.host.as_deref(),
             req.path.as_deref(),
             None,
-            request_body_json.as_deref(),
+            req.body_json.as_ref(),
             None,
         );
         emit_llm_audit(
@@ -236,14 +230,13 @@ impl MaterializedView {
             req.host.as_deref(),
             "orphan_request",
             "LLM request",
-            request_body_json.as_deref(),
+            req.body_json.as_ref(),
         )?;
         self.emit_llm_call(call_row)
     }
 
     fn insert_orphan_llm_response(&mut self, resp: &CanonicalEvent) -> ViewResult<()> {
         let response_body = response_body_json(resp);
-        let response_body_text = response_body.as_ref().map(Value::to_string);
         let model = resp
             .model
             .clone()
@@ -268,7 +261,7 @@ impl MaterializedView {
             resp.path.as_deref(),
             resp.status_code,
             None,
-            response_body_text.as_deref(),
+            response_body.as_ref(),
         );
         if let Some(usage) = self.ingest_response_usage_and_tools(
             resp,
@@ -277,7 +270,7 @@ impl MaterializedView {
             &comm,
             provider.as_deref(),
             &model,
-            response_body_text.as_deref(),
+            response_body.as_ref(),
             0.35,
         )? {
             call_row.input_tokens = usage.input_tokens;
@@ -295,7 +288,7 @@ impl MaterializedView {
             resp.host.as_deref(),
             "orphan_response",
             "LLM response",
-            response_body_text.as_deref(),
+            response_body.as_ref(),
         )?;
         self.emit_llm_call(call_row)
     }
@@ -309,16 +302,13 @@ impl MaterializedView {
         comm: &str,
         provider: Option<&str>,
         model: &str,
-        response_body_json: Option<&str>,
+        response_body: Option<&Value>,
         confidence: f32,
     ) -> ViewResult<Option<TokenUsageRow>> {
-        let response_body =
-            response_body_json.and_then(|text| serde_json::from_str::<Value>(text).ok());
         let usage = if resp.source == "sse_processor" {
             extract_token_usage_from_sse(&resp.attributes)
         } else {
             response_body
-                .as_ref()
                 .map(extract_token_usage)
                 .unwrap_or_default()
         };
@@ -615,7 +605,7 @@ fn emit_llm_audit(
     target: Option<&str>,
     status: &str,
     summary: &str,
-    details_json: Option<&str>,
+    details: Option<&Value>,
 ) -> ViewResult<()> {
     view.emit_audit_event(AuditEventRow {
         id: format!("audit-{llm_call_id}-{action}"),
@@ -628,7 +618,7 @@ fn emit_llm_audit(
         target: target.map(str::to_string),
         status: Some(status.to_string()),
         summary: Some(summary.to_string()),
-        details: parse_json_value(details_json.unwrap_or("{}")),
+        details: details.cloned().unwrap_or_else(|| serde_json::json!({})),
     })
 }
 
@@ -830,8 +820,8 @@ fn llm_call_row(
     host: Option<&str>,
     path: Option<&str>,
     status_code: Option<u16>,
-    request_body_json: Option<&str>,
-    response_body_json: Option<&str>,
+    request_body: Option<&Value>,
+    response_body: Option<&Value>,
 ) -> LlmCallRow {
     LlmCallRow {
         id: id.to_string(),
@@ -847,8 +837,8 @@ fn llm_call_row(
         input_tokens: 0,
         output_tokens: 0,
         total_tokens: 0,
-        request: parse_optional_json(request_body_json),
-        response: parse_optional_json(response_body_json),
+        request: request_body.cloned().unwrap_or(Value::Null),
+        response: response_body.cloned().unwrap_or(Value::Null),
     }
 }
 

@@ -59,8 +59,8 @@ sudo ./agentsight record -c claude --binary-path "$CLAUDE_BIN"
 # Open http://127.0.0.1:7395 to view timeline
 
 # Advanced: full trace with custom filters
-sudo ./agentsight debug trace --ssl true --process true --comm claude \
-  --binary-path "$CLAUDE_BIN" --server true --server-port 8080
+sudo ./agentsight debug trace --comm claude \
+  --binary-path "$CLAUDE_BIN" --server --server-port 8080
 ```
 
 This captures:
@@ -166,7 +166,7 @@ it into the Rust collector.
 
 ```bash
 # Combined SSL and process monitoring with web interface
-sudo ./agentsight debug trace --ssl true --process true --server true
+sudo ./agentsight debug trace --server
 
 # Custom web UI port
 sudo ./agentsight record -c "python" --server-port 8080

@@ -26,6 +26,12 @@ impl SqliteStore {
         Ok(Self { conn })
     }
 
+    fn has_column(&self, table: &str, column: &str) -> bool {
+        self.conn
+            .prepare(&format!("SELECT {column} FROM {table} LIMIT 0"))
+            .is_ok()
+    }
+
     #[cfg(test)]
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
@@ -248,14 +254,21 @@ impl SqliteStore {
     }
 
     pub(crate) fn token_usage_rows(&self) -> ViewResult<Vec<TokenUsageRow>> {
-        let mut stmt = self.conn.prepare(
+        let has_view_source = self.has_column("token_usage", "view_source");
+        let extra_cols = if has_view_source {
+            ", view_source, confidence"
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT id, llm_call_id, timestamp_ms, pid, comm, provider, model,
                     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-                    total_tokens, source, view_source, confidence
+                    total_tokens, source{extra_cols}
              FROM token_usage
-             ORDER BY timestamp_ms, id",
-        )?;
-        let rows = stmt.query_map([], |row| {
+             ORDER BY timestamp_ms, id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], move |row| {
             Ok(TokenUsageRow {
                 id: row.get(0)?,
                 llm_call_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -272,24 +285,38 @@ impl SqliteStore {
                 source: row
                     .get::<_, Option<String>>(12)?
                     .unwrap_or_else(|| "unknown".to_string()),
-                view_source: row
-                    .get::<_, Option<String>>(13)?
-                    .unwrap_or_else(|| "view".to_string()),
-                confidence: row.get(14)?,
+                view_source: if has_view_source {
+                    row.get::<_, Option<String>>(13)?
+                        .unwrap_or_else(|| "view".to_string())
+                } else {
+                    "view".to_string()
+                },
+                confidence: if has_view_source {
+                    row.get(14)?
+                } else {
+                    None
+                },
             })
         })?;
         collect_rows(rows)
     }
 
     pub(crate) fn tool_call_rows(&self) -> ViewResult<Vec<ToolCallRow>> {
-        let mut stmt = self.conn.prepare(
+        let has_view_source = self.has_column("tool_calls", "view_source");
+        let extra_cols = if has_view_source {
+            ", view_source, confidence"
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT id, session_id, conversation_id, timestamp_ms, tool_name, tool_call_id,
                     start_timestamp_ms, end_timestamp_ms, duration_ms, status, input_json,
-                    output_json, related_pid, related_event_id, view_source, confidence
+                    output_json, related_pid, related_event_id{extra_cols}
              FROM tool_calls
-             ORDER BY timestamp_ms, id",
-        )?;
-        let rows = stmt.query_map([], |row| {
+             ORDER BY timestamp_ms, id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], move |row| {
             let input_json: Option<String> = row.get(10)?;
             let output_json: Option<String> = row.get(11)?;
             Ok(ToolCallRow {
@@ -307,8 +334,17 @@ impl SqliteStore {
                 output: parse_optional_json(output_json.as_deref()),
                 related_pid: row.get::<_, Option<i64>>(12)?.map(|v| v as u32),
                 related_event_id: row.get(13)?,
-                view_source: row.get(14)?,
-                confidence: row.get(15)?,
+                view_source: if has_view_source {
+                    row.get::<_, Option<String>>(14)?
+                        .unwrap_or_else(|| "view".to_string())
+                } else {
+                    "view".to_string()
+                },
+                confidence: if has_view_source {
+                    row.get(15)?
+                } else {
+                    None
+                },
             })
         })?;
         collect_rows(rows)
@@ -365,13 +401,20 @@ impl SqliteStore {
     }
 
     pub(crate) fn process_node_rows(&self) -> ViewResult<Vec<ProcessNodeRow>> {
-        let mut stmt = self.conn.prepare(
+        let has_view_source = self.has_column("process_nodes", "view_source");
+        let extra_cols = if has_view_source {
+            ", view_source, confidence"
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT id, pid, ppid, root_pid, start_timestamp_ms, end_timestamp_ms,
-                    comm, command, argv_json, cwd, exit_code, status, view_source, confidence
+                    comm, command, argv_json, cwd, exit_code, status{extra_cols}
              FROM process_nodes
-             ORDER BY COALESCE(start_timestamp_ms, end_timestamp_ms, 0), pid, id",
-        )?;
-        let rows = stmt.query_map([], |row| {
+             ORDER BY COALESCE(start_timestamp_ms, end_timestamp_ms, 0), pid, id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], move |row| {
             let argv_json: String = row.get(8)?;
             Ok(ProcessNodeRow {
                 id: row.get(0)?,
@@ -386,8 +429,17 @@ impl SqliteStore {
                 cwd: row.get(9)?,
                 exit_code: row.get::<_, Option<i64>>(10)?.map(|v| v as i32),
                 status: row.get(11)?,
-                view_source: row.get(12)?,
-                confidence: row.get(13)?,
+                view_source: if has_view_source {
+                    row.get::<_, Option<String>>(12)?
+                        .unwrap_or_else(|| "view".to_string())
+                } else {
+                    "view".to_string()
+                },
+                confidence: if has_view_source {
+                    row.get(13)?
+                } else {
+                    None
+                },
             })
         })?;
         collect_rows(rows)
