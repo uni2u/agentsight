@@ -14,7 +14,7 @@ agent are left on the terminal and are not written to SQLite. AgentSight records
 OS-side process/file/network facts, then derives model/token data only from
 network request/response/telemetry that can be parsed or from explicit
 agent-native local session logs such as `~/.claude` and `~/.codex`.
-Use `agentsight prompts --json` to inspect LLM request/response bodies that
+Use `agentsight report prompts --json` to inspect LLM request/response bodies that
 were stored in SQLite from parsed network traffic or SQL adapters.
 
 Use the debug binary shown below from the repository root, or replace
@@ -65,7 +65,7 @@ Summary:
 
 ```bash
 ./collector/target/debug/agentsight report --db /tmp/agentsight-claude.db
-./collector/target/debug/agentsight prompts --db /tmp/agentsight-claude.db --json
+./collector/target/debug/agentsight report prompts --db /tmp/agentsight-claude.db --json
 ./collector/target/debug/agentsight report --local
 ```
 

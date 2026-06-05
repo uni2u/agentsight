@@ -163,7 +163,7 @@ agentsight record \
   --label permission-eval-001 \
   -- claude
 
-agentsight db export -o permission-eval-001.json
+agentsight report export -o permission-eval-001.json
 ```
 
 数据 schema 需要明确区分：
@@ -511,7 +511,7 @@ Manifest、README、final diff 都不能证明代码能在 clean environment 跑
 
 ```bash
 agentsight record --label task-001 -- claude
-agentsight db export -o task-001.json
+agentsight report export -o task-001.json
 agentsight report --label task-001 --format markdown
 agentsight query --label task-001 --json "what changed outside the repo?"
 agentsight diff --baseline codex-task-001 --candidate claude-task-001 --json

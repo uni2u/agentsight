@@ -78,7 +78,7 @@ Potential product command:
 
 ```bash
 agentsight report --recovery --since "last agent run"
-agentsight db export -o recovery.json
+agentsight report export -o recovery.json
 ```
 
 ### 3. Token/Cost Runaway And Agent Loops

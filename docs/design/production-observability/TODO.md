@@ -59,7 +59,7 @@ Claude/Gemini smoke path. Keep items small enough to finish and test in one PR.
   - Scope: add DB-backed dashboard client and keep static JSON snapshot upload
     for demos.
   - Done when: local server can show a SQLite-backed capture and static demo
-    upload can show `agentsight db export` snapshots.
+    upload can show `agentsight report export` snapshots.
 
 ## Cleanup Before PR
 

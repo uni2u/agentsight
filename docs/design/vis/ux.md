@@ -285,10 +285,10 @@ agentsight stat    [options] [-- command ...]
 agentsight top     [options]
 agentsight record  [options] [-- command ...]
 agentsight report  [options]
-agentsight prompts [options]
-agentsight list
+agentsight report prompts [options]
+agentsight report list
 agentsight discover
-agentsight db      ...
+agentsight report      ...
 agentsight debug   ...
 ```
 
@@ -507,7 +507,7 @@ Capture notes
 ### Future: `agentsight script`
 
 Like `perf script`: ordered event stream. Current CLI users should query saved
-sessions with `agentsight db audit --json` until this shorthand exists.
+sessions with `agentsight report audit --json` until this shorthand exists.
 
 Examples:
 

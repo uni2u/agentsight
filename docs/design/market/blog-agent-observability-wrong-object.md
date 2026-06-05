@@ -372,7 +372,7 @@ Fixed the API test and ran npm test successfully.
 这句话不一定是谎言。它可能只是把自己最后一次看到的局部结果，当成了整次 run 的事实。AgentSight 里更有用的输出应该长这样：
 
 ```text
-$ agentsight db summary --db run.db
+$ agentsight report summary --db run.db
 
 agentsight session · 7s · 1 API calls · 1380 tokens
 
@@ -386,10 +386,10 @@ Network: api.anthropic.com, registry.npmjs.org
 再往下查，过程事实会更具体：
 
 ```bash
-agentsight db audit --db run.db --audit-type process --limit 20
-agentsight db audit --db run.db --audit-type file --json --limit 20
-agentsight db token --db run.db --json
-agentsight db export --db run.db -o snapshot.json
+agentsight report audit --db run.db --audit-type process --limit 20
+agentsight report audit --db run.db --audit-type file --json --limit 20
+agentsight report token --db run.db --json
+agentsight report export --db run.db -o snapshot.json
 ```
 
 这份输出没有替你判断代码好不好。它只是把 review 真正需要的问题摆到了桌面上：

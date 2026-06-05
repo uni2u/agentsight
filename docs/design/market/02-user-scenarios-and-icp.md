@@ -295,7 +295,7 @@ AI 产品团队已有 eval/observability 预算，但现有产品主要关注输
 | AgentSight 独特证据 | token spend 与 tool/command/file/network/resource timeline 关联；loop detection；per-run/per-user/per-repo cost attribution；runner CPU/mem/wall-clock；“高 token 低产出”报告 |
 | 是否可能付费/安装 | 高。团队和企业会为防止 runaway spend、容量规划、chargeback/showback 付费；个人会安装但不一定付费 |
 | 市场信心等级 | 高：成本是官方文档、论文、论坛 issue 都反复出现的明确痛点 |
-| 最小可验证实验 | 做 `agentsight db token` + loop/cost report：对 30 次 agent run 输出 token per turn、重复文件访问、重复命令、CPU/mem、runner time。成功阈值：能解释 80% 以上异常用量；至少 3 个团队愿意把报告用于月度 showback 或 CI guardrail |
+| 最小可验证实验 | 做 `agentsight report token` + loop/cost report：对 30 次 agent run 输出 token per turn、重复文件访问、重复命令、CPU/mem、runner time。成功阈值：能解释 80% 以上异常用量；至少 3 个团队愿意把报告用于月度 showback 或 CI guardrail |
 
 ### 待验证假设
 

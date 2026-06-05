@@ -224,7 +224,7 @@ Product shape:
 
 ```bash
 agentsight report --recovery
-agentsight db export -o recovery.json
+agentsight report export -o recovery.json
 ```
 
 This makes agent side effects recoverable, not merely auditable.
@@ -316,7 +316,7 @@ Product shape:
 
 ```bash
 agentsight report --incident
-agentsight db export -o incident.json
+agentsight report export -o incident.json
 ```
 
 This scenario is not about preventing all failures. It is about making failures
