@@ -246,7 +246,7 @@ impl LiveView {
         }
         if has_ebpf {
             notes.push(
-                "ebpf evidence is live process capture; SSL/network details still require record/stat"
+                "ebpf evidence is live process capture; SSL payload details still require record/stat"
                     .to_string(),
             );
         }
@@ -273,6 +273,21 @@ impl LiveView {
         }
 
         let mut sections = top_sections(session_snapshot, rows.len().max(10), &options.view);
+        if let Some(network_section) = capture
+            .map(|capture| top_sections(&capture.snapshot, rows.len().max(10), &options.view))
+            .into_iter()
+            .flatten()
+            .find(|(title, _, items)| *title == "Network" && !items.is_empty())
+        {
+            if let Some(position) = sections
+                .iter()
+                .position(|(title, _, _)| *title == "Network")
+            {
+                sections[position] = network_section;
+            } else {
+                sections.push(network_section);
+            }
+        }
         if !sections
             .iter()
             .any(|(t, _, items)| *t == "Processes" && !items.is_empty())
@@ -652,6 +667,58 @@ mod tests {
 
         let by_pid = AuditCounters::by_pid(&capture.snapshot.audit_events);
         assert_eq!(by_pid.get(&42).unwrap().file_events, 1);
+    }
+
+    #[test]
+    fn live_view_includes_capture_network_section() {
+        let options = TopOptions {
+            pid: None,
+            comm: None,
+            sort: "cpu".to_string(),
+            view: "network".to_string(),
+        };
+        let sample = LiveSample {
+            procs: BTreeMap::from([(
+                42,
+                ProcInfo {
+                    pid: 42,
+                    comm: "codex".to_string(),
+                    starttime_ticks: 10,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let capture = LiveCaptureSnapshot::new(
+            Snapshot {
+                audit_events: vec![crate::model::AuditEventRow {
+                    id: "net-1".to_string(),
+                    timestamp_ms: 1,
+                    audit_type: "network".to_string(),
+                    pid: Some(42),
+                    comm: Some("codex".to_string()),
+                    subject: Some("codex".to_string()),
+                    action: Some("NET_CONNECT".to_string()),
+                    target: Some("api.example.test:443".to_string()),
+                    status: Some("observed".to_string()),
+                    summary: None,
+                    details: json!({}),
+                }],
+                ..Snapshot::empty("capture")
+            },
+            0,
+        );
+
+        let mut live_view = LiveView::default();
+        let top = live_view.build_top(&sample, Some(&capture), &Snapshot::empty("local"), &options);
+
+        assert_eq!(top.rows[0].network, 1);
+        let network = top
+            .sections
+            .iter()
+            .find(|(title, _, _)| *title == "Network")
+            .unwrap();
+        assert_eq!(network.2, vec![("api.example.test:443".to_string(), 1)]);
     }
 
     #[test]

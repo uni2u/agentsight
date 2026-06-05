@@ -430,7 +430,7 @@ fn session_detail_lines(
                 ),
             ];
             if let Some(items) = find_section(&top.sections, "Network") {
-                lines.push(detail_line("top hosts", format_top_items(items, 8)));
+                lines.push(detail_line("top hosts", format_top_items(items, 3)));
             } else {
                 lines.push(detail_line(
                     "network",

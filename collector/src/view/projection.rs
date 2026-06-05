@@ -574,7 +574,7 @@ impl MaterializedView {
             .get("detail")
             .or_else(|| event.attributes.get("host"))
             .and_then(Value::as_str);
-        let action = process_event_name(&event.attributes).unwrap_or("network");
+        let action = process_network_action(&event.attributes).unwrap_or("network");
         self.emit_audit_event(AuditEventRow {
             id: format!("audit-{}", event.event_id),
             timestamp_ms: event.timestamp_ms,
@@ -754,11 +754,20 @@ fn is_process_summary_write_event(event: &CanonicalEvent) -> bool {
 
 fn is_process_network_event(event: &CanonicalEvent) -> bool {
     event.source == "process"
-        && process_event_name(&event.attributes).is_some_and(|name| name.starts_with("NET_"))
+        && process_network_action(&event.attributes).is_some_and(|name| name.starts_with("NET_"))
 }
 
 fn process_event_name(attributes: &Value) -> Option<&str> {
     attributes.get("event").and_then(Value::as_str)
+}
+
+fn process_network_action(attributes: &Value) -> Option<&str> {
+    let event = process_event_name(attributes)?;
+    if event == "SUMMARY" {
+        attributes.get("type").and_then(Value::as_str)
+    } else {
+        Some(event)
+    }
 }
 
 fn parse_json_str(text: &str) -> Option<Value> {

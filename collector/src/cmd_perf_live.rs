@@ -82,6 +82,7 @@ pub(crate) async fn start_live_ebpf_capture(
         args.extend(["-m".to_string(), "1".to_string()]);
     }
     args.push("--trace-fs".to_string());
+    args.push("--trace-net".to_string());
 
     let seed_snapshot = match procfs::ProcSnapshot::collect() {
         Ok(snapshot) => snapshot,
@@ -231,7 +232,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn record_live_ebpf_event_ingests_process_file_events() {
+    fn record_live_ebpf_event_ingests_process_file_and_network_events() {
         let temp = tempfile::tempdir().unwrap();
         let claude_path = temp.path().join("claude-path.jsonl");
         let codex_path = temp.path().join("codex-path.jsonl");
@@ -276,6 +277,18 @@ mod tests {
                 "count": 1
                 }),
             ),
+            (
+                "codex",
+                json!({
+                    "timestamp": 1,
+                    "event": "SUMMARY",
+                    "comm": "codex",
+                    "pid": pid,
+                    "type": "NET_CONNECT",
+                    "detail": "127.0.0.1:7395",
+                    "count": 2
+                }),
+            ),
         ] {
             record_live_ebpf_event(
                 &state,
@@ -288,6 +301,8 @@ mod tests {
             audit_limit: 10_000,
         });
         let counters = crate::model::AuditCounters::by_pid(&view_snapshot.audit_events);
-        assert_eq!(counters.get(&pid).unwrap().file_events, 3);
+        let counters = counters.get(&pid).unwrap();
+        assert_eq!(counters.file_events, 3);
+        assert_eq!(counters.network_events, 1);
     }
 }
