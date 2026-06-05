@@ -109,10 +109,6 @@ impl MaterializedView {
         view
     }
 
-    pub(crate) fn shared() -> SharedMaterializedView {
-        Arc::new(Mutex::new(Self::new()))
-    }
-
     pub(crate) fn shared_bounded() -> SharedMaterializedView {
         Arc::new(Mutex::new(Self::bounded()))
     }

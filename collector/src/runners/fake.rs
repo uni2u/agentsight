@@ -193,7 +193,7 @@ mod tests {
     use futures::stream::StreamExt;
 
     fn materializer() -> MaterializingAnalyzer {
-        MaterializingAnalyzer::with_view(MaterializedView::shared())
+        MaterializingAnalyzer::with_view(MaterializedView::shared_bounded())
     }
 
     #[tokio::test]
@@ -299,9 +299,7 @@ mod tests {
         assert!(http_events >= 6, "Should have parsed HTTP events");
 
         for event in events.iter().filter(|e| e.source == "http_parser") {
-            assert!(
-                event.data.get("method").is_some() || event.data.get("status_code").is_some(),
-            );
+            assert!(event.data.get("method").is_some() || event.data.get("status_code").is_some(),);
             assert!(event.pid > 0);
         }
     }

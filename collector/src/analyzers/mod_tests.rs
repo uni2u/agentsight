@@ -9,7 +9,7 @@ use std::sync::{
 };
 
 fn materializer() -> MaterializingAnalyzer {
-    MaterializingAnalyzer::with_view(MaterializedView::shared())
+    MaterializingAnalyzer::with_view(MaterializedView::shared_bounded())
 }
 
 #[tokio::test]
