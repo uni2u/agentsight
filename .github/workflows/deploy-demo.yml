@@ -1,26 +1,24 @@
 name: Deploy Live Demo
 
 # Builds the Next.js frontend as a static site and publishes it to the
-# `gh-pages` branch. Cloudflare Pages is connected to this branch (via the
-# Cloudflare dashboard Git integration) and serves it at the custom domain
-# agentsight.us. The site is built for the domain ROOT (empty basePath), so
-# Cloudflare can serve it directly with no rebuild. The demo auto-loads a real
-# recorded Claude session trace on first visit.
+# `gh-pages` branch. Cloudflare Pages serves it at agentsight.us.
+# The demo auto-loads a sample snapshot on first visit when the backend
+# API is unreachable.
 
 on:
   push:
-    branches: [ "master", "feat/live-demo" ]   # drop feat/live-demo after merging
+    branches: [ "master" ]
     paths:
       - "frontend/**"
       - "docs/example_record_ claude_init.log"
+      - "docs/demo-*.png"
+      - "docs/top-mode-demo.png"
       - ".github/workflows/deploy-demo.yml"
   workflow_dispatch:
 
-# Allow the action to push to the gh-pages branch.
 permissions:
   contents: write
 
-# Only one demo deploy at a time; cancel superseded runs.
 concurrency:
   group: deploy-demo
   cancel-in-progress: true
@@ -38,11 +36,7 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Bundle sample trace into the static site
-        # The frontend auto-loads /sample-trace.log on first visit. This script
-        # normalizes the raw recorded session (monotonic ns) to epoch ms and
-        # writes it to frontend/public/, rather than committing a second 6 MB
-        # copy there (it is gitignored).
+      - name: Prepare sample snapshot and images
         run: node frontend/scripts/prepare-sample.mjs
 
       - name: Install dependencies
@@ -51,7 +45,6 @@ jobs:
 
       - name: Build static export
         working-directory: frontend
-        # Cloudflare Pages serves agentsight.us at the root, so no basePath.
         run: npm run build
 
       - name: Publish to gh-pages

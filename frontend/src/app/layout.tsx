@@ -6,8 +6,8 @@ import './globals.css'
 import { I18nProvider } from '@/i18n'
 
 export const metadata: Metadata = {
-  title: 'Agent Tracer Frontend',
-  description: 'Frontend for Agent Tracer observability framework',
+  title: 'AgentSight — AI Agent Observability with eBPF',
+  description: 'Local-first perf/top/strace for AI agents. See what agents do to your machine — zero instrumentation required.',
 }
 
 export default function RootLayout({

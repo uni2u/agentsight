@@ -97,21 +97,14 @@ async fn handle_request(
 
     log::info!("📨 {} {}", req.method(), path);
 
-    let response = if req.method() == Method::GET
-        && let Some(resource) = api_resource_for_path(path)
-    {
-        serve_view_api(view, agent_native_sessions, query.as_deref(), resource).await?
-    } else {
-        match (req.method(), path) {
-            (&Method::GET, "/api/assets") => serve_assets_list(assets).await?,
-            // Serve static assets (catch-all for GET requests)
-            (&Method::GET, _) => serve_asset(assets, path).await?,
-
-            // 404 for non-GET methods
-            _ => {
-                log::info!("❌ 404 Not Found: {} {}", req.method(), path);
-                plain_response(StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec())
-            }
+    let response = match (req.method(), path) {
+        (&Method::GET, "/api/v1/snapshot") => {
+            serve_snapshot_api(view, agent_native_sessions, query.as_deref()).await?
+        }
+        (&Method::GET, _) => serve_asset(assets, path).await?,
+        _ => {
+            log::info!("❌ 404 Not Found: {} {}", req.method(), path);
+            plain_response(StatusCode::NOT_FOUND, "text/plain", b"Not Found".to_vec())
         }
     };
 
@@ -158,36 +151,12 @@ fn is_frontend_route(path: &str) -> bool {
             .is_some_and(|name| name.contains('.'))
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ApiResource {
-    Snapshot,
-    Summary,
-    TokenSummary,
-    AuditEvents,
-    ProcessNodes,
-    Sessions,
-}
-
-fn api_resource_for_path(path: &str) -> Option<ApiResource> {
-    match path {
-        "/api/v1/snapshot" => Some(ApiResource::Snapshot),
-        "/api/v1/summary" => Some(ApiResource::Summary),
-        "/api/v1/token-summary" => Some(ApiResource::TokenSummary),
-        "/api/v1/audit-events" => Some(ApiResource::AuditEvents),
-        "/api/v1/process-nodes" => Some(ApiResource::ProcessNodes),
-        "/api/v1/sessions" => Some(ApiResource::Sessions),
-        _ => None,
-    }
-}
-
-async fn serve_view_api(
+async fn serve_snapshot_api(
     view: SharedMaterializedView,
     agent_native_sessions: Arc<Mutex<SessionCache>>,
     query: Option<&str>,
-    resource: ApiResource,
 ) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
     let audit_limit = query_param_usize(query, "audit_limit").unwrap_or(10_000);
-    let group_by = query_param(query, "group_by").unwrap_or_else(|| "model".to_string());
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
@@ -195,36 +164,14 @@ async fn serve_view_api(
                 .lock()
                 .map_err(|_| std::io::Error::other("agent-native session cache lock poisoned"))?
                 .discover_cached(25, Duration::from_secs(2));
-            let value = match resource {
-                ApiResource::TokenSummary => {
-                    let rows = {
-                        let mut view = view
-                            .lock()
-                            .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
-                        agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
-                        view.token_summary(&group_by)
-                    };
-                    serde_json::to_value(rows)?
-                }
-                _ => {
-                    let snapshot = {
-                        let mut view = view
-                            .lock()
-                            .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
-                        agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
-                        view.export_snapshot(SnapshotOptions { audit_limit })
-                    };
-                    match resource {
-                        ApiResource::Snapshot => serde_json::to_value(snapshot)?,
-                        ApiResource::Summary => serde_json::to_value(snapshot.summary)?,
-                        ApiResource::AuditEvents => serde_json::to_value(snapshot.audit_events)?,
-                        ApiResource::ProcessNodes => serde_json::to_value(snapshot.process_nodes)?,
-                        ApiResource::Sessions => serde_json::to_value(snapshot.sessions)?,
-                        ApiResource::TokenSummary => unreachable!(),
-                    }
-                }
+            let snapshot = {
+                let mut view = view
+                    .lock()
+                    .map_err(|_| std::io::Error::other("live view lock poisoned"))?;
+                agent_native_sessions::import_into_view(&mut view, &agent_native_rows);
+                view.export_snapshot(SnapshotOptions { audit_limit })
             };
-            Ok(value)
+            Ok(serde_json::to_value(snapshot)?)
         },
     )
     .await;
@@ -240,19 +187,6 @@ async fn serve_view_api(
             &format!("view query task failed: {}", e),
         )),
     }
-}
-
-async fn serve_assets_list(
-    assets: Arc<FrontendAssets>,
-) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
-    let all_assets = assets.list_all_assets();
-    let response = serde_json::json!({
-        "assets": all_assets,
-        "total_count": all_assets.len()
-    });
-
-    log::info!("📋 Serving assets list ({} assets)", all_assets.len());
-    Ok(json_response(StatusCode::OK, &response))
 }
 
 fn plain_response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Full<Bytes>> {
@@ -290,10 +224,9 @@ mod tests {
 
     #[test]
     fn parses_api_query_parameters() {
-        let query = Some("audit_limit=9&group_by=provider");
+        let query = Some("audit_limit=9&foo=bar");
 
         assert_eq!(query_param_usize(query, "audit_limit"), Some(9));
-        assert_eq!(query_param(query, "group_by").as_deref(), Some("provider"));
-        assert_eq!(query_param(query, "missing"), None);
+        assert_eq!(query_param_usize(query, "missing"), None);
     }
 }
