@@ -176,11 +176,10 @@ fn record_live_ebpf_event(state: &Arc<Mutex<LiveCaptureState>>, event: &Event) {
         log::warn!("live eBPF capture failed to ingest view event: {}", error);
     }
 
-    if event.source == "diagnostic" {
-        if event.data.get("type").and_then(|value| value.as_str()) == Some("runner_parse_error") {
-            state.parse_errors += 1;
-        }
-        return;
+    if event.source == "diagnostic"
+        && event.data.get("type").and_then(|value| value.as_str()) == Some("runner_parse_error")
+    {
+        state.parse_errors += 1;
     }
 }
 

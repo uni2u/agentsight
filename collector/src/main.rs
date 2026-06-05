@@ -694,7 +694,7 @@ async fn run_with_extractor(
                 return Err("stat --json currently requires --db for clean JSON output".into());
             }
             let recorded_db = run_exec(
-                &binary_extractor,
+                binary_extractor,
                 command,
                 binary_path.as_deref(),
                 configured_db_path(db),
@@ -726,7 +726,7 @@ async fn run_with_extractor(
                     );
                 }
                 run_exec(
-                    &binary_extractor,
+                    binary_extractor,
                     command,
                     binary_path.as_deref(),
                     configured_db_path(db),
@@ -770,7 +770,7 @@ async fn run_with_extractor(
                 server_port: *server_port,
                 ..TraceConfig::for_record()
             };
-            run_trace(&binary_extractor, cfg)
+            run_trace(binary_extractor, cfg)
                 .await
                 .map_err(convert_runner_error)?;
             if let Some(ref db) = db_path_for_summary {
@@ -797,9 +797,9 @@ async fn run_with_extractor(
                 view: view.clone(),
             };
             if !*plain && count.is_none() && interactive_terminal_available() {
-                run_live_top_tui(&binary_extractor, *interval, *limit, &options).await?;
+                run_live_top_tui(binary_extractor, *interval, *limit, &options).await?;
             } else {
-                run_live_top_query(&binary_extractor, *interval, *limit, count, &options).await?;
+                run_live_top_query(binary_extractor, *interval, *limit, count, &options).await?;
             }
         }
         Commands::Debug(cmd) => match cmd {
@@ -816,7 +816,7 @@ async fn run_with_extractor(
                 binary_path,
                 args,
             } => run_raw_ssl(
-                &binary_extractor,
+                binary_extractor,
                 *sse_merge,
                 *http_parser,
                 *http_raw_data,
@@ -838,7 +838,7 @@ async fn run_with_extractor(
                 server_port,
                 args,
             } => run_raw_process(
-                &binary_extractor,
+                binary_extractor,
                 *quiet,
                 *server,
                 &cli.listen,
@@ -857,7 +857,7 @@ async fn run_with_extractor(
                 server,
                 server_port,
             } => run_raw_stdio(
-                &binary_extractor,
+                binary_extractor,
                 *pid,
                 *uid,
                 comm.as_deref(),
@@ -933,7 +933,7 @@ async fn run_with_extractor(
                     server_port: *server_port,
                     ..Default::default()
                 };
-                run_trace(&binary_extractor, cfg)
+                run_trace(binary_extractor, cfg)
                     .await
                     .map_err(convert_runner_error)?
             }
