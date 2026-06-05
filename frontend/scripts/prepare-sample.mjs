@@ -110,12 +110,36 @@ for (const line of lines) {
       details: { method: d.method, status_code: d.status_code, model, body: truncate(d.body, 2000) },
     });
   } else if (raw.source === 'sse_processor') {
+    let model = null;
+    let inp = 0, out = 0;
+    for (const sse of d.sse_events || []) {
+      const pd = sse.parsed_data || {};
+      if (pd.type === 'message_start' && pd.message) {
+        model = model || pd.message.model || null;
+        const u = pd.message.usage;
+        if (u) {
+          inp += (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+          out += u.output_tokens || 0;
+        }
+      }
+      if (pd.type === 'message_delta' && pd.usage) {
+        out += pd.usage.output_tokens || 0;
+      }
+    }
+    if (model) {
+      const existing = tokenSummary.get(model) || { group: model, input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: 0 };
+      existing.input_tokens += inp;
+      existing.output_tokens += out;
+      existing.total_tokens += inp + out;
+      existing.calls++;
+      tokenSummary.set(model, existing);
+    }
     auditEvents.push({
       id: nextId(), timestamp_ms: ts, audit_type: 'llm',
-      pid, comm, action: 'response', subject: null,
+      pid, comm, action: 'response', subject: model,
       status: 'observed',
-      summary: `SSE stream response`,
-      details: { json_content: d.json_content, text_content: d.text_content, event_count: d.event_count, message_id: d.message_id },
+      summary: `SSE stream response${model ? ` (${model})` : ''}`,
+      details: { json_content: d.json_content, text_content: truncate(d.text_content, 2000), event_count: d.event_count, message_id: d.message_id },
     });
   } else if (raw.source === 'ssl') {
     auditEvents.push({
