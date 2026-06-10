@@ -4,7 +4,7 @@
 use crate::model::{AuditEventRow, LlmCallRow, ProcessNodeRow, ViewResult};
 use crate::sinks::sqlite::SqliteStore;
 use crate::sources::agent_native;
-use crate::text::truncate_text;
+use crate::text::{clean_prompt_text, extract_prompt_text, truncate_text};
 use crate::view::MaterializedView;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -131,7 +131,7 @@ fn llm_call_prompt_rows(rows: &[LlmCallRow]) -> Vec<AuditEventRow> {
         if row.request.is_null() || row.request.as_object().is_some_and(|obj| obj.is_empty()) {
             continue;
         }
-        let Some(text) = prompt_text_from_request(&row.request) else {
+        let Some(text) = extract_prompt_text(&row.request) else {
             continue;
         };
         prompts.push(AuditEventRow {
@@ -147,15 +147,10 @@ fn llm_call_prompt_rows(rows: &[LlmCallRow]) -> Vec<AuditEventRow> {
             summary: Some(truncate_text(&text, 160)),
             details: json!({
                 "text_content": text,
-                "prompt": text,
                 "prompt_source": "ssl",
-                "prompt_sources": ["ssl"],
-                "source": "ssl",
                 "request": row.request,
                 "provider": row.provider,
-                "host": row.host,
                 "path": row.path,
-                "model": row.model,
             }),
         });
     }
@@ -167,52 +162,36 @@ fn append_deduped_local_session_prompt_rows(
     local_rows: Vec<AuditEventRow>,
 ) {
     for local in local_rows {
-        if !ssl_rows
-            .iter()
-            .any(|ssl| local_prompt_duplicates_ssl(&local, ssl))
-        {
+        let Some(local_text) = prompt_text_from_details(&local.details) else {
+            ssl_rows.push(local);
+            continue;
+        };
+        let duplicate = ssl_rows.iter().any(|ssl| {
+            if ssl.details.get("prompt_source").and_then(Value::as_str) != Some("ssl") {
+                return false;
+            }
+            if let (Some(local_pid), Some(ssl_pid)) = (local.pid, ssl.pid)
+                && local_pid != ssl_pid
+            {
+                return false;
+            }
+            if local.timestamp_ms.abs_diff(ssl.timestamp_ms) > PROMPT_DEDUP_WINDOW_MS {
+                return false;
+            }
+            let Some((local_model, ssl_model)) =
+                local.subject.as_deref().zip(ssl.subject.as_deref())
+            else {
+                return false;
+            };
+            let Some(ssl_text) = prompt_text_from_details(&ssl.details) else {
+                return false;
+            };
+            local_model == ssl_model && local_text.eq_ignore_ascii_case(&ssl_text)
+        });
+        if !duplicate {
             ssl_rows.push(local);
         }
     }
-}
-
-fn local_prompt_duplicates_ssl(local: &AuditEventRow, ssl: &AuditEventRow) -> bool {
-    if prompt_source(ssl) != Some("ssl") {
-        return false;
-    }
-    if let (Some(local_pid), Some(ssl_pid)) = (local.pid, ssl.pid)
-        && local_pid != ssl_pid
-    {
-        return false;
-    }
-    if local.timestamp_ms.abs_diff(ssl.timestamp_ms) > PROMPT_DEDUP_WINDOW_MS {
-        return false;
-    }
-    if !models_match(local.subject.as_deref(), ssl.subject.as_deref()) {
-        return false;
-    }
-    let Some(local_text) = prompt_text_from_details(&local.details) else {
-        return false;
-    };
-    let Some(ssl_text) = prompt_text_from_details(&ssl.details) else {
-        return false;
-    };
-    normalize_prompt_text_for_match(&local_text) == normalize_prompt_text_for_match(&ssl_text)
-}
-
-fn models_match(local: Option<&str>, ssl: Option<&str>) -> bool {
-    matches!((local, ssl), (Some(local), Some(ssl)) if local == ssl)
-}
-
-fn prompt_source(row: &AuditEventRow) -> Option<&str> {
-    row.details.get("prompt_source").and_then(Value::as_str)
-}
-
-fn normalize_prompt_text_for_match(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase()
 }
 
 fn prompt_text_from_details(details: &Value) -> Option<String> {
@@ -223,128 +202,49 @@ fn prompt_text_from_details(details: &Value) -> Option<String> {
         .and_then(clean_prompt_text)
 }
 
-fn prompt_text_from_request(value: &Value) -> Option<String> {
-    if let Some(prompt) = value.get("prompt").and_then(Value::as_str) {
-        return clean_prompt_text(prompt);
-    }
-    let mut parts = Vec::new();
-    for key in ["messages", "contents"] {
-        if let Some(items) = value.get(key).and_then(Value::as_array) {
-            for item in items {
-                collect_prompt_text(item.get("content").unwrap_or(item), &mut parts);
-            }
-        }
-    }
-    clean_prompt_text(&parts.join(" "))
-}
-
-fn collect_prompt_text(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::String(text) => out.push(text.clone()),
-        Value::Array(items) => {
-            for item in items {
-                collect_prompt_text(item, out);
-            }
-        }
-        Value::Object(obj) => {
-            for key in ["text", "content", "parts"] {
-                if let Some(value) = obj.get(key) {
-                    collect_prompt_text(value, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn clean_prompt_text(text: &str) -> Option<String> {
-    let mut text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if let Some(inner) = text
-        .strip_prefix("<session>")
-        .and_then(|text| text.strip_suffix("</session>"))
-    {
-        text = inner.trim().to_string();
-    }
-    (!text.is_empty()).then_some(text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     #[test]
-    fn keeps_local_prompt_when_ssl_text_matches_but_model_differs() {
-        let ssl_rows = [ssl_call_row(
-            "claude-haiku-4-5",
-            "<session>\nRun the command.\n</session>",
-        )];
-        let mut prompt_rows = llm_call_prompt_rows(&ssl_rows);
-        let local = local_prompt_row(
-            "local-prompt",
-            1_500,
-            Some("claude-opus-4-6"),
-            "Run the command.",
-        );
+    fn dedupes_local_prompt_only_when_ssl_matches_model_and_text() {
+        for (name, local_model, local_details, expected_rows) in [
+            (
+                "same model and text",
+                Some("claude-opus-4-6"),
+                json!({"text_content": "Run the command.", "prompt_source": "local"}),
+                1,
+            ),
+            (
+                "legacy prompt field",
+                Some("claude-opus-4-6"),
+                json!({"prompt": "Run the command.", "prompt_source": "local"}),
+                1,
+            ),
+            (
+                "different model",
+                Some("claude-haiku-4-5"),
+                json!({"text_content": "Run the command.", "prompt_source": "local"}),
+                2,
+            ),
+            (
+                "missing model",
+                None,
+                json!({"text_content": "Run the command.", "prompt_source": "local"}),
+                2,
+            ),
+        ] {
+            let ssl_rows = [ssl_call_row("claude-opus-4-6", "Run the command.")];
+            let mut prompt_rows = llm_call_prompt_rows(&ssl_rows);
+            let mut local =
+                local_prompt_row("local-prompt", 1_500, local_model, "Run the command.");
+            local.details = local_details;
 
-        append_deduped_local_session_prompt_rows(&mut prompt_rows, vec![local]);
+            append_deduped_local_session_prompt_rows(&mut prompt_rows, vec![local]);
 
-        assert_eq!(prompt_rows.len(), 2);
-        assert_eq!(
-            prompt_rows[0]
-                .details
-                .get("prompt_source")
-                .and_then(Value::as_str),
-            Some("ssl")
-        );
-        assert_eq!(
-            prompt_rows[1]
-                .details
-                .get("prompt_source")
-                .and_then(Value::as_str),
-            Some("local")
-        );
-    }
-
-    #[test]
-    fn dedupes_local_prompt_when_ssl_has_same_model_and_text() {
-        let ssl_rows = [ssl_call_row("claude-opus-4-6", "Run the command.")];
-        let mut prompt_rows = llm_call_prompt_rows(&ssl_rows);
-        let local = local_prompt_row(
-            "local-prompt",
-            1_500,
-            Some("claude-opus-4-6"),
-            "Run the command.",
-        );
-
-        append_deduped_local_session_prompt_rows(&mut prompt_rows, vec![local]);
-
-        assert_eq!(prompt_rows.len(), 1);
-        assert_eq!(
-            prompt_rows[0]
-                .details
-                .get("text_content")
-                .and_then(Value::as_str),
-            Some("Run the command.")
-        );
-        assert_eq!(
-            prompt_rows[0]
-                .details
-                .get("prompt_source")
-                .and_then(Value::as_str),
-            Some("ssl")
-        );
-    }
-
-    #[test]
-    fn keeps_local_prompt_when_either_model_is_missing() {
-        let ssl_rows = [ssl_call_row("claude-opus-4-6", "Run the command.")];
-        let mut prompt_rows = llm_call_prompt_rows(&ssl_rows);
-        let local = local_prompt_row("local-prompt", 1_500, None, "Run the command.");
-
-        append_deduped_local_session_prompt_rows(&mut prompt_rows, vec![local]);
-
-        assert_eq!(prompt_rows.len(), 2);
+            assert_eq!(prompt_rows.len(), expected_rows, "{name}");
+        }
     }
 
     fn ssl_call_row(model: &str, text: &str) -> LlmCallRow {
@@ -399,9 +299,7 @@ mod tests {
             summary: Some(text.to_string()),
             details: json!({
                 "text_content": text,
-                "prompt": text,
-                "prompt_source": "local",
-                "prompt_sources": ["local"]
+                "prompt_source": "local"
             }),
         }
     }

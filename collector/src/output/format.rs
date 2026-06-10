@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::analyzers::common;
 use crate::event::Event;
 use crate::model::{AuditEventRow, LlmCallRow, TokenSummary};
-use crate::text::truncate_with_ellipsis as truncate;
+use crate::text::{extract_prompt_text, truncate_with_ellipsis as truncate};
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct ResourcePeaks {
@@ -977,38 +977,6 @@ fn prompt_preview(value: &Value, max: usize) -> String {
 
 pub(crate) fn prompt_text_chars(value: &Value) -> Option<usize> {
     extract_prompt_text(value).map(|text| text.chars().count())
-}
-
-fn extract_prompt_text(value: &Value) -> Option<String> {
-    if let Some(prompt) = value.get("prompt").and_then(|v| v.as_str()) {
-        return Some(prompt.to_string());
-    }
-    let mut parts = Vec::new();
-    for key in ["messages", "contents"] {
-        if let Some(items) = value.get(key).and_then(|v| v.as_array()) {
-            for item in items {
-                collect_content_text(item.get("content").unwrap_or(item), &mut parts);
-            }
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join(" "))
-}
-
-fn collect_content_text(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::String(s) => out.push(s.clone()),
-        Value::Array(items) => items
-            .iter()
-            .for_each(|item| collect_content_text(item, out)),
-        Value::Object(obj) => {
-            for key in ["text", "content", "parts"] {
-                if let Some(v) = obj.get(key) {
-                    collect_content_text(v, out);
-                }
-            }
-        }
-        _ => {}
-    }
 }
 
 #[cfg(test)]

@@ -175,10 +175,8 @@ function expandedEventContent(event: TreeAuditEvent, type: TreeEventType): strin
 }
 
 function formatPromptDetails(details: Record<string, any>): string {
-  const text = details.text_content.trim();
-  const meta = Object.fromEntries(
-    Object.entries(details).filter(([key]) => !['text_content', 'prompt'].includes(key)),
-  );
+  const { text_content, prompt, ...meta } = details;
+  const text = text_content.trim();
   return Object.keys(meta).length > 0
     ? `${text}\n\n${JSON.stringify(meta, null, 2)}`
     : text;

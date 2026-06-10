@@ -12,7 +12,9 @@ use crate::model::{
     AGENT_NATIVE_SOURCE, AuditEventRow, SessionRow, Snapshot, SnapshotOptions, TokenUsageRow,
     ToolCallRow,
 };
-use crate::text::{sanitize_ascii_identifier as sanitize_id, short_session_id, truncate_text};
+use crate::text::{
+    clean_prompt_text, sanitize_ascii_identifier as sanitize_id, short_session_id, truncate_text,
+};
 use crate::view::MaterializedView;
 
 pub(crate) struct SessionCache {
@@ -168,6 +170,40 @@ pub(crate) fn observed_session_prompt_rows(audit_rows: &[AuditEventRow]) -> Vec<
     let mut rows = Vec::new();
     let mut seen = HashSet::new();
     for row in audit_rows {
+        if row.audit_type == "process"
+            && row.action.as_deref() == Some("exec")
+            && is_codex_cli_entrypoint(row.target.as_deref())
+        {
+            let Some(prompt) = row
+                .details
+                .get("full_command")
+                .and_then(Value::as_str)
+                .and_then(codex_exec_prompt)
+            else {
+                continue;
+            };
+            rows.push(AuditEventRow {
+                id: format!(
+                    "audit-codex-exec-prompt-{}-{}",
+                    row.timestamp_ms,
+                    row.pid.unwrap_or(0)
+                ),
+                timestamp_ms: row.timestamp_ms,
+                audit_type: "llm".to_string(),
+                pid: row.pid,
+                comm: row.comm.clone().or_else(|| Some("codex".to_string())),
+                subject: None,
+                action: Some("request".to_string()),
+                target: row.target.clone(),
+                status: Some("observed".to_string()),
+                summary: Some(truncate_text(&prompt, 160)),
+                details: serde_json::json!({
+                    "text_content": prompt,
+                    "prompt_source": "local",
+                }),
+            });
+            continue;
+        }
         if row.audit_type != "file" {
             continue;
         }
@@ -209,17 +245,42 @@ pub(crate) fn observed_session_prompt_rows(audit_rows: &[AuditEventRow]) -> Vec<
             summary: Some(truncate_text(prompt, 160)),
             details: serde_json::json!({
                 "text_content": prompt,
-                "prompt": prompt,
                 "prompt_source": "local",
-                "prompt_sources": ["local"],
-                "path": path.to_string_lossy(),
                 "session_id": view_id(&session),
                 "agent": session.agent,
-                "source": AGENT_NATIVE_SOURCE,
             }),
         });
     }
     rows
+}
+
+fn is_codex_cli_entrypoint(target: Option<&str>) -> bool {
+    target.is_some_and(|target| {
+        Path::new(target).file_name().and_then(|name| name.to_str()) == Some("codex")
+            && !target.contains("/node_modules/")
+    })
+}
+
+fn codex_exec_prompt(command: &str) -> Option<String> {
+    let mut args = command.split_once(" exec ")?.1.trim();
+    while let Some(rest) = strip_codex_exec_option(args) {
+        args = rest.trim_start();
+    }
+    (!args.starts_with('-'))
+        .then(|| args.trim_matches(['"', '\'']))
+        .and_then(clean_prompt_text)
+}
+
+fn strip_codex_exec_option(args: &str) -> Option<&str> {
+    let (head, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+    match head {
+        "--json" | "--skip-git-repo-check" | "--ephemeral" => Some(rest),
+        "-C" | "-a" | "-s" | "-m" | "-c" | "-p" => rest
+            .trim_start()
+            .split_once(char::is_whitespace)
+            .map(|(_, rest)| rest),
+        _ => None,
+    }
 }
 
 fn audit_session_path(row: &AuditEventRow) -> Option<PathBuf> {
@@ -548,14 +609,14 @@ fn parse_content(
             ("claude", "queue-operation") if prompt_preview.is_none() => {
                 if obj.get("operation").and_then(Value::as_str) == Some("enqueue")
                     && let Some(text) = obj.get("content").and_then(Value::as_str)
-                    && let Some(text) = cleaned_prompt_text(text)
+                    && let Some(text) = clean_prompt_text(text)
                 {
                     prompt_preview = Some(text);
                 }
             }
             ("claude", "last-prompt") if prompt_preview.is_none() => {
                 if let Some(text) = obj.get("lastPrompt").and_then(Value::as_str)
-                    && let Some(text) = cleaned_prompt_text(text)
+                    && let Some(text) = clean_prompt_text(text)
                 {
                     prompt_preview = Some(text);
                 }
@@ -757,12 +818,7 @@ fn claude_usage_key(obj: &Value) -> String {
 fn local_message_preview(value: &Value) -> Option<String> {
     let mut parts = Vec::new();
     collect_local_text(value, &mut parts);
-    cleaned_prompt_text(&parts.join(" "))
-}
-
-fn cleaned_prompt_text(text: &str) -> Option<String> {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!text.is_empty()).then_some(text)
+    clean_prompt_text(&parts.join(" "))
 }
 
 fn collect_local_text(value: &Value, out: &mut Vec<String>) {
@@ -836,5 +892,20 @@ mod tests {
             session.prompt_preview.as_deref(),
             Some("Run the command and summarize it.")
         );
+    }
+
+    #[test]
+    fn codex_exec_entrypoint_projects_prompt_without_vendor_duplicate() {
+        assert_eq!(
+            codex_exec_prompt(
+                "/usr/bin/env node /usr/local/bin/codex -a never -s read-only exec --json -C /tmp --skip-git-repo-check Reply exactly: hello"
+            )
+            .as_deref(),
+            Some("Reply exactly: hello")
+        );
+        assert!(is_codex_cli_entrypoint(Some("/usr/local/bin/codex")));
+        assert!(!is_codex_cli_entrypoint(Some(
+            "/opt/codex/node_modules/@openai/codex/vendor/bin/codex"
+        )));
     }
 }
