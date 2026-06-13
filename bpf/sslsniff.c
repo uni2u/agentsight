@@ -16,7 +16,6 @@
 #include <locale.h>
 #include <wchar.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
@@ -39,9 +38,14 @@
 
 #define __CHECK_PROGRAM(skel, prog_name)               \
 	do {                                               \
+	  long __err = libbpf_get_error(skel->links.prog_name); \
+	  if (__err) {                                     \
+		skel->links.prog_name = NULL;                  \
+		return (int)__err;                             \
+	  }                                                \
 	  if (!skel->links.prog_name) {                    \
 		perror("no program attached for " #prog_name); \
-		return -errno;                                 \
+		return -(errno ? errno : ENOENT);              \
 	  }                                                \
 	} while (false)
 
@@ -171,6 +175,7 @@ static struct boringssl_offsets find_boringssl_offsets(const char *binary_path) 
 	int fd = -1;
 	struct stat st;
 	unsigned char *data = NULL;
+	size_t file_size;
 
 	/* BoringSSL SSL_do_handshake prologue (24 bytes) */
 	static const unsigned char handshake_pat[] = {
@@ -210,15 +215,40 @@ static struct boringssl_offsets find_boringssl_offsets(const char *binary_path) 
 		return result;
 	}
 
-	data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (data == MAP_FAILED) {
-		fprintf(stderr, "Failed to mmap %s: %s\n", binary_path, strerror(errno));
+	if (st.st_size <= 0) {
+		fprintf(stderr, "Invalid binary size for %s\n", binary_path);
 		close(fd);
 		return result;
 	}
+	file_size = (size_t)st.st_size;
+
+	data = malloc(file_size);
+	if (!data) {
+		fprintf(stderr, "Failed to allocate %zu bytes for %s\n", file_size, binary_path);
+		close(fd);
+		return result;
+	}
+	size_t total = 0;
+	while (total < file_size) {
+		ssize_t n = read(fd, data + total, file_size - total);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			fprintf(stderr, "Failed to read %s: %s\n", binary_path, strerror(errno));
+			goto out;
+		}
+		if (n == 0)
+			break;
+		total += (size_t)n;
+	}
+	if (total != file_size) {
+		fprintf(stderr, "Short read from %s: %zu of %zu bytes\n",
+				binary_path, total, file_size);
+		goto out;
+	}
 
 	/* Find SSL_read (most unique pattern), then validate nearby functions */
-	size_t read_off = find_pattern(data, st.st_size, read_pat, sizeof(read_pat));
+	size_t read_off = find_pattern(data, file_size, read_pat, sizeof(read_pat));
 	if (read_off == (size_t)-1) {
 		if (verbose)
 			fprintf(stderr, "BoringSSL: SSL_read pattern not found\n");
@@ -234,7 +264,7 @@ static struct boringssl_offsets find_boringssl_offsets(const char *binary_path) 
 	}
 	if (result.ssl_do_handshake == 0) {
 		/* Fallback: search independently */
-		size_t hs_off = find_pattern(data, st.st_size, handshake_pat, sizeof(handshake_pat));
+		size_t hs_off = find_pattern(data, file_size, handshake_pat, sizeof(handshake_pat));
 		if (hs_off == (size_t)-1) {
 			if (verbose)
 				fprintf(stderr, "BoringSSL: SSL_do_handshake pattern not found\n");
@@ -247,15 +277,17 @@ static struct boringssl_offsets find_boringssl_offsets(const char *binary_path) 
 
 	/* Check if SSL_write is at expected relative position */
 	size_t expected_wr = read_off + WRITE_READ_DELTA;
-	if (expected_wr + sizeof(write_pat) <= (size_t)st.st_size &&
+	if (expected_wr + sizeof(write_pat) <= file_size &&
 		memcmp(data + expected_wr, write_pat, sizeof(write_pat)) == 0) {
 		result.ssl_write = expected_wr;
 	} else {
-		/* Fallback: search near read function */
-		size_t search_start = read_off;
+		/* Fallback: search near read function. Some standalone Bun apps
+		 * place SSL_write before SSL_read even though Claude/Bun place it
+		 * after SSL_read. */
+		size_t search_start = read_off > 0x10000 ? read_off - 0x10000 : 0;
 		size_t search_end = read_off + 0x10000;
-		if (search_end > (size_t)st.st_size)
-			search_end = st.st_size;
+		if (search_end > file_size)
+			search_end = file_size;
 		size_t wr_off = find_pattern(data + search_start,
 									 search_end - search_start,
 									 write_pat, sizeof(write_pat));
@@ -276,7 +308,7 @@ static struct boringssl_offsets find_boringssl_offsets(const char *binary_path) 
 	}
 
 out:
-	munmap(data, st.st_size);
+	free(data);
 	close(fd);
 	return result;
 }
@@ -628,20 +660,33 @@ int main(int argc, char **argv) {
 
 	// Handle custom binary path for statically-linked SSL (e.g., NVM Node.js, Bun apps)
 	if (env.extra_lib) {
+		err = -ENOENT;
+
 		if (verbose) {
 			fprintf(stderr, "Attaching to binary: %s\n", env.extra_lib);
+		}
+		if (access(env.extra_lib, R_OK) != 0) {
+			err = -errno;
+			warn("Cannot access binary-path %s: %s\n",
+				 env.extra_lib, strerror(errno));
+			goto cleanup;
 		}
 		// First try symbol-based attachment (works for binaries with symbols)
 		LIBBPF_OPTS(bpf_uprobe_opts, test_opts, .func_name = "SSL_write",
 					.retprobe = false);
 		struct bpf_link *test_link = bpf_program__attach_uprobe_opts(
 			obj->progs.probe_SSL_rw_enter, env.pid, env.extra_lib, 0, &test_opts);
-		if (test_link) {
+		long test_err = test_link ? libbpf_get_error(test_link) : -(errno ? errno : EIO);
+		if (test_link && !test_err) {
 			// Symbol found - use standard symbol-based attachment
 			bpf_link__destroy(test_link);
 			if (verbose)
 				fprintf(stderr, "Using symbol-based attachment for %s\n", env.extra_lib);
-			attach_openssl(obj, env.extra_lib);
+			err = attach_openssl(obj, env.extra_lib);
+		} else if (test_err != -ENOENT) {
+			err = (int)test_err;
+			warn("Failed to probe SSL_write in %s: libbpf error %ld\n",
+				 env.extra_lib, test_err);
 		} else {
 			// Symbol not found - try BoringSSL pattern detection
 			if (verbose)
@@ -649,11 +694,17 @@ int main(int argc, char **argv) {
 			struct boringssl_offsets offsets = find_boringssl_offsets(env.extra_lib);
 			if (offsets.found) {
 				fprintf(stderr, "BoringSSL detected! Attaching by offset...\n");
-				attach_openssl_by_offset(obj, env.extra_lib, &offsets);
+				err = attach_openssl_by_offset(obj, env.extra_lib, &offsets);
 			} else {
 				warn("Failed to attach to %s: no SSL symbols or BoringSSL patterns found\n",
 					 env.extra_lib);
 			}
+		}
+
+		if (err) {
+			warn("binary-path attach failed for %s; refusing to continue with partial SSL capture\n",
+				 env.extra_lib);
+			goto cleanup;
 		}
 	}
 
