@@ -48,13 +48,13 @@
   <p>Real local Codex and Claude sessions are reduced to one-word tags, then converted to folded stacks before rendering. The important artifact is the folded stack, not the tree drawing.</p>
   <div class="stats">
     <div class="stat"><b>36</b><span>sessions</span></div>
-    <div class="stat"><b>4419</b><span>tool events</span></div>
-    <div class="stat"><b>5559</b><span>stack observations</span></div>
-    <div class="stat"><b>1813</b><span>system stacks</span></div>
-    <div class="stat"><b>3746</b><span>collapsed observations</span></div>
-    <div class="stat"><b>173</b><span>max stack reuse</span></div>
+    <div class="stat"><b>4481</b><span>tool events</span></div>
+    <div class="stat"><b>5646</b><span>stack observations</span></div>
+    <div class="stat"><b>2460</b><span>system stacks</span></div>
+    <div class="stat"><b>3186</b><span>collapsed observations</span></div>
+    <div class="stat"><b>145</b><span>max stack reuse</span></div>
   </div>
-  <p>Tagger mode: <code>llama</code>. Model successes: <code>60</code>. Fallback tags: <code>2292</code>. Generated at <code>2026-06-14T04:17:33+00:00</code>.</p>
+  <p>Tagger mode: <code>llama</code>. Model successes: <code>60</code>. Fallback tags: <code>2312</code>. Generated at <code>2026-06-14T04:27:55+00:00</code>.</p>
 
   <h2>System Footprint</h2>
   <p>Width is aggregated stack-observation count. One tool event may expand to multiple path/domain observations. Stack grammar: <code>project;agent;session-tag;prompt-tag;tool;cmd;effect;path/domain/status</code>.</p>
@@ -67,64 +67,64 @@
   <div class="grid">
     <section>
       <h2>Top Prompt Tags</h2>
-      <table><thead><tr><th>tag</th><th>count</th></tr></thead><tbody><tr><td>session</td><td>60</td></tr>
-<tr><td>paper</td><td>46</td></tr>
-<tr><td>flamegraph</td><td>31</td></tr>
-<tr><td>model</td><td>25</td></tr>
-<tr><td>claude</td><td>9</td></tr>
-<tr><td>prompt</td><td>5</td></tr>
-<tr><td>subagent</td><td>3</td></tr>
-<tr><td>debug</td><td>2</td></tr>
-<tr><td>test</td><td>2</td></tr>
-<tr><td>readreview</td><td>1</td></tr>
-<tr><td>reviewing</td><td>1</td></tr>
-<tr><td>implement</td><td>1</td></tr></tbody></table>
+      <table><thead><tr><th>tag</th><th>count</th></tr></thead><tbody><tr><td>session</td><td>32</td></tr>
+<tr><td>work</td><td>28</td></tr>
+<tr><td>paper</td><td>11</td></tr>
+<tr><td>collector</td><td>6</td></tr>
+<tr><td>implement</td><td>6</td></tr>
+<tr><td>debug</td><td>6</td></tr>
+<tr><td>model</td><td>5</td></tr>
+<tr><td>visual</td><td>5</td></tr>
+<tr><td>tagging</td><td>5</td></tr>
+<tr><td>design</td><td>5</td></tr>
+<tr><td>main</td><td>5</td></tr>
+<tr><td>commit</td><td>5</td></tr></tbody></table>
     </section>
     <section>
       <h2>Repeated System Stacks</h2>
-      <table><thead><tr><th>stack</th><th>weight</th></tr></thead><tbody><tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok</td><td>173</td></tr>
-<tr><td>project:agentsight;agent:claude;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td><td>167</td></tr>
-<tr><td>project:agentsight;agent:claude;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;status:ok</td><td>165</td></tr>
-<tr><td>project:agentsight;agent:codex;session:paper;prompt:paper;tool:shell;cmd:git;effect:read;status:ok</td><td>83</td></tr>
-<tr><td>project:agentsight;agent:claude;session:paper;prompt:paper;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td><td>77</td></tr>
-<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok</td><td>62</td></tr>
-<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:cargo;effect:test;status:ok</td><td>41</td></tr>
-<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:sed;effect:read;path:collector/src/view;status:ok</td><td>40</td></tr>
-<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:agentsight;effect:process;path:collector/target/debug;status:ok</td><td>38</td></tr>
-<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:rg;effect:read;path:collector/src;status:ok</td><td>36</td></tr></tbody></table>
+      <table><thead><tr><th>stack</th><th>weight</th></tr></thead><tbody><tr><td>project:agentsight;agent:claude;session:paper;prompt:commit;tool:shell;cmd:gh;effect:process;status:ok</td><td>145</td></tr>
+<tr><td>project:agentsight;agent:claude;session:paper;prompt:aggregate;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td><td>116</td></tr>
+<tr><td>project:agentsight;agent:claude;session:paper;prompt:db;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td><td>77</td></tr>
+<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok</td><td>75</td></tr>
+<tr><td>project:agentsight;agent:codex;session:paper;prompt:debug;tool:shell;cmd:git;effect:read;status:ok</td><td>38</td></tr>
+<tr><td>project:agentsight;agent:claude;session:paper;prompt:metrics;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td><td>36</td></tr>
+<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok</td><td>34</td></tr>
+<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:cargo;effect:test;status:ok</td><td>30</td></tr>
+<tr><td>project:agentsight;agent:codex;session:paper;prompt:debug;tool:shell;cmd:cargo;effect:test;status:ok</td><td>27</td></tr>
+<tr><td>project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:agentsight;effect:process;path:collector/target/debug;status:ok</td><td>26</td></tr></tbody></table>
     </section>
   </div>
 
   <h2>Nonsemantic Baseline</h2>
   <p>The baseline removes session and prompt tags before folding. It shows what a process/tool summary can find without semantic attribution.</p>
-  <table><thead><tr><th>stack</th><th>weight</th></tr></thead><tbody><tr><td>project:agentsight;agent:codex;tool:shell;cmd:git;effect:read;status:ok</td><td>288</td></tr>
+  <table><thead><tr><th>stack</th><th>weight</th></tr></thead><tbody><tr><td>project:agentsight;agent:codex;tool:shell;cmd:git;effect:read;status:ok</td><td>299</td></tr>
 <tr><td>project:agentsight;agent:claude;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td><td>167</td></tr>
 <tr><td>project:agentsight;agent:claude;tool:shell;cmd:gh;effect:process;status:ok</td><td>166</td></tr>
 <tr><td>project:agentsight;agent:codex;tool:shell;cmd:cargo;effect:test;status:ok</td><td>82</td></tr>
 <tr><td>project:agentsight;agent:claude;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td><td>77</td></tr>
 <tr><td>project:agentsight;agent:codex;tool:shell;cmd:gh;effect:process;status:ok</td><td>70</td></tr>
 <tr><td>project:agentsight;agent:codex;tool:shell;cmd:sed;effect:read;path:collector/src/view;status:ok</td><td>67</td></tr>
+<tr><td>project:agentsight;agent:codex;tool:shell;cmd:python3;effect:process;status:ok</td><td>66</td></tr>
 <tr><td>project:agentsight;agent:codex;tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok</td><td>65</td></tr>
-<tr><td>project:agentsight;agent:codex;tool:shell;cmd:python3;effect:process;status:ok</td><td>64</td></tr>
-<tr><td>project:agentsight;agent:codex;tool:tool;cmd:write;effect:process;status:observed</td><td>52</td></tr></tbody></table>
+<tr><td>project:agentsight;agent:codex;tool:tool;cmd:write;effect:process;status:observed</td><td>53</td></tr></tbody></table>
 
   <h2>Behavior Diff</h2>
   <p>Normalized system stacks are compared after removing the agent frame and normalizing by each cohort's total observations. This is a diagnostic, not a causal claim.</p>
-  <table><thead><tr><th>cohort</th><th>winner</th><th>delta/1k</th><th>codex/1k</th><th>claude/1k</th><th>codex</th><th>claude</th><th>normalized stack</th></tr></thead><tbody><tr><td>top</td><td>claude</td><td>-111.698</td><td>1.83</td><td>113.528</td><td>6</td><td>167</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td></tr>
-<tr><td>top</td><td>claude</td><td>-102.714</td><td>9.454</td><td>112.169</td><td>31</td><td>165</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;status:ok</td></tr>
-<tr><td>all</td><td>claude</td><td>-85.976</td><td>1.642</td><td>87.618</td><td>6</td><td>167</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td></tr>
-<tr><td>all</td><td>claude</td><td>-78.083</td><td>8.486</td><td>86.569</td><td>31</td><td>165</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;status:ok</td></tr>
-<tr><td>top</td><td>codex</td><td>52.76</td><td>52.76</td><td>0.0</td><td>173</td><td>0</td><td>project:agentsight;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok</td></tr>
-<tr><td>top</td><td>claude</td><td>-52.345</td><td>0.0</td><td>52.345</td><td>0</td><td>77</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td></tr>
-<tr><td>all</td><td>codex</td><td>47.358</td><td>47.358</td><td>0.0</td><td>173</td><td>0</td><td>project:agentsight;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok</td></tr>
+  <table><thead><tr><th>cohort</th><th>winner</th><th>delta/1k</th><th>codex/1k</th><th>claude/1k</th><th>codex</th><th>claude</th><th>normalized stack</th></tr></thead><tbody><tr><td>top</td><td>claude</td><td>-98.572</td><td>0.0</td><td>98.572</td><td>0</td><td>145</td><td>project:agentsight;session:paper;prompt:commit;tool:shell;cmd:gh;effect:process;status:ok</td></tr>
+<tr><td>top</td><td>claude</td><td>-78.858</td><td>0.0</td><td>78.858</td><td>0</td><td>116</td><td>project:agentsight;session:paper;prompt:aggregate;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td></tr>
+<tr><td>all</td><td>claude</td><td>-76.076</td><td>0.0</td><td>76.076</td><td>0</td><td>145</td><td>project:agentsight;session:paper;prompt:commit;tool:shell;cmd:gh;effect:process;status:ok</td></tr>
+<tr><td>all</td><td>claude</td><td>-60.86</td><td>0.0</td><td>60.86</td><td>0</td><td>116</td><td>project:agentsight;session:paper;prompt:aggregate;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td></tr>
+<tr><td>top</td><td>claude</td><td>-52.345</td><td>0.0</td><td>52.345</td><td>0</td><td>77</td><td>project:agentsight;session:paper;prompt:db;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td></tr>
 <tr><td>subagent</td><td>codex</td><td>42.781</td><td>42.781</td><td>0.0</td><td>16</td><td>0</td><td>project:agentsight;session:osdi;prompt:prompt;tool:shell;cmd:nl;effect:read;path:docs/visexp/semantic_tag_flamegraph.py;status:ok</td></tr>
-<tr><td>subagent</td><td>codex</td><td>42.781</td><td>42.781</td><td>0.0</td><td>16</td><td>0</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:git;effect:read;path:origin/master...head;status:ok</td></tr>
-<tr><td>all</td><td>claude</td><td>-40.399</td><td>0.0</td><td>40.399</td><td>0</td><td>77</td><td>project:agentsight;session:paper;prompt:paper;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td></tr>
-<tr><td>subagent</td><td>claude</td><td>-34.483</td><td>0.0</td><td>34.483</td><td>0</td><td>15</td><td>project:agentsight;session:subagent;prompt:subagent;tool:edit;cmd:edit;effect:write;path:collector/src/cmd_exec.rs;status:ok</td></tr>
-<tr><td>subagent</td><td>claude</td><td>-32.184</td><td>0.0</td><td>32.184</td><td>0</td><td>14</td><td>project:agentsight;session:subagent;prompt:subagent;tool:shell;cmd:cargo;effect:test;status:ok</td></tr></tbody></table>
+<tr><td>all</td><td>claude</td><td>-40.399</td><td>0.0</td><td>40.399</td><td>0</td><td>77</td><td>project:agentsight;session:paper;prompt:db;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok</td></tr>
+<tr><td>subagent</td><td>claude</td><td>-34.483</td><td>0.0</td><td>34.483</td><td>0</td><td>15</td><td>project:agentsight;session:subagent;prompt:collector;tool:edit;cmd:edit;effect:write;path:collector/src/cmd_exec.rs;status:ok</td></tr>
+<tr><td>subagent</td><td>claude</td><td>-32.184</td><td>0.0</td><td>32.184</td><td>0</td><td>14</td><td>project:agentsight;session:subagent;prompt:collector;tool:shell;cmd:cargo;effect:test;status:ok</td></tr>
+<tr><td>subagent</td><td>codex</td><td>26.738</td><td>26.738</td><td>0.0</td><td>10</td><td>0</td><td>project:agentsight;session:reviewdoc;prompt:reviewdoc;tool:shell;cmd:nl;effect:read;path:docs/visexp/out;status:ok</td></tr>
+<tr><td>top</td><td>claude</td><td>-24.473</td><td>0.0</td><td>24.473</td><td>0</td><td>36</td><td>project:agentsight;session:paper;prompt:metrics;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok</td></tr>
+<tr><td>subagent</td><td>claude</td><td>-22.989</td><td>0.0</td><td>22.989</td><td>0</td><td>10</td><td>project:agentsight;session:model;prompt:collector;tool:shell;cmd:grep;effect:read;path:collector/src;status:ok</td></tr></tbody></table>
 
   <h2>Artifacts</h2>
-  <p><code>semantic-system.folded.txt</code>, <code>nonsemantic-system.folded.txt</code>, <code>semantic-token.folded.txt</code>, <code>aggregation.json</code>, <code>agent-diff.csv</code>, <code>command-summary.csv</code>, <code>prompt-tags.csv</code>, and <code>sessions.json</code> are generated beside this page.</p>
+  <p><code>semantic-system.folded.txt</code>, <code>nonsemantic-system.folded.txt</code>, <code>semantic-token.folded.txt</code>, <code>aggregation.json</code>, <code>agent-diff.csv</code>, <code>command-summary.csv</code>, <code>prompt-tags.csv</code>, and <code>sessions.json</code> are generated by the flamegraph builder. <code>evaluate_artifacts.py</code> adds <code>evaluation.json</code>, <code>semantic-mixing.csv</code>, <code>claim-gates.csv</code>, and <code>evaluation-summary.md</code>.</p>
 </main>
 </body>
 </html>

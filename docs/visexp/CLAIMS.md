@@ -36,9 +36,12 @@ Evidence:
 - `semantic-system.folded.txt` keeps `session:` and `prompt:` frames.
 - `nonsemantic-system.folded.txt` removes those frames.
 - `command-summary.csv` is the flat process/tool baseline.
+- `evaluation.json` and `semantic-mixing.csv` measure baseline buckets where
+  nonsemantic or flat grouping merges multiple session/prompt regions that
+  semantic stacks keep separate.
 
-Status: partially supported. The artifact demonstrates the difference in
-representation, but does not yet measure user task accuracy or time.
+Status: supported as an artifact-level information-gain claim. It still does
+not prove user task accuracy or time; that remains C5.
 
 ## Diagnostic Only
 
@@ -104,4 +107,11 @@ Needed:
 - Metrics: one-word contract pass rate, exact-match stability, cluster purity,
   and human adequacy.
 
-Status: future evaluation.
+Current partial evidence:
+
+- `evaluate_artifacts.py` checks tag grammar, generic-tag share, entropy, and
+  same-prompt-hash conflicts inside the committed artifact.
+
+Status: partial. Current artifacts can detect obvious tag contract and
+same-hash consistency failures, but they do not yet prove rerun stability or
+human adequacy.

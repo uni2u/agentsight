@@ -8,6 +8,9 @@ folded stacks and static SVG flamegraphs.
 See [DESIGN.md](DESIGN.md) for the experiment contract, stack grammar, and
 OSDI-facing interpretation. See [CLAIMS.md](CLAIMS.md) for which claims are
 currently supported and which still require paired workloads or user studies.
+See [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md) and
+[EXPERIMENT_TRACKER.md](EXPERIMENT_TRACKER.md) for the OSDI-facing evaluation
+plan.
 
 The important invariant is aggregation:
 
@@ -56,6 +59,12 @@ word. Invalid model output falls back to the deterministic local tagger.
   frame from each normalized system stack, split by top/subagent cohort and
   normalized per 1000 observations.
 - `out/command-summary.csv`: flat process/tool baseline.
+- `out/evaluation.json`: artifact-level evaluation of aggregation strength,
+  semantic-vs-nonsemantic mixing, tag quality proxies, and claim gates.
+- `out/semantic-mixing.csv`: examples where nonsemantic or flat baselines merge
+  multiple session/prompt tags that semantic stacks separate.
+- `out/claim-gates.csv`: machine-readable claim verdicts for current artifacts.
+- `out/evaluation-summary.md`: human-readable artifact audit.
 - `out/prompt-tags.csv`: sanitized prompt hashes, previews, and one-word tags.
 - `out/sessions.json`: per-session counts and tag summaries.
 
@@ -76,4 +85,5 @@ the input effect stream.
 ```bash
 python3 -m unittest docs/visexp/test_semantic_tag_flamegraph.py
 python3 docs/visexp/verify_artifacts.py --out docs/visexp/out
+python3 docs/visexp/evaluate_artifacts.py --out docs/visexp/out
 ```

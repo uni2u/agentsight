@@ -1,0 +1,1483 @@
+{
+  "schema_version": 1,
+  "source_artifact": {
+    "out_dir": "docs/visexp/out",
+    "session_fingerprint": "57081bbcd79ae03d",
+    "input_manifest_sha256": "90a320d297b97b5e21a8e553d76b20fe16ed120313c61a369b3babb548779bbe"
+  },
+  "aggregation_strength": {
+    "semantic_system": {
+      "total_observations": 5646,
+      "unique_stacks": 2460,
+      "compression_ratio": 2.295,
+      "repeated_stack_count": 913,
+      "collapsed_observations": 3186,
+      "collapsed_observation_share_pct": 56.429,
+      "max_stack_reuse": 145
+    },
+    "nonsemantic_system": {
+      "total_observations": 5646,
+      "unique_stacks": 1570,
+      "compression_ratio": 3.596,
+      "repeated_stack_count": 689,
+      "collapsed_observations": 4076,
+      "collapsed_observation_share_pct": 72.193,
+      "max_stack_reuse": 299
+    },
+    "semantic_token": {
+      "total_observations": 307461797,
+      "unique_stacks": 259,
+      "compression_ratio": 1187111.185,
+      "repeated_stack_count": 256,
+      "collapsed_observations": 307461538,
+      "collapsed_observation_share_pct": 100.0,
+      "max_stack_reuse": 57503301
+    }
+  },
+  "semantic_information_gain": {
+    "interpretation": "A mixed baseline bucket means ordinary/nonsemantic grouping merges multiple session/prompt tags that semantic stacks keep separate.",
+    "nonsemantic_stack_mixing": {
+      "baseline_kind": "nonsemantic_without_session_prompt",
+      "baseline_bucket_count": 1570,
+      "mixed_bucket_count": 417,
+      "mixed_bucket_share_pct": 26.561,
+      "mixed_weight": 3773,
+      "mixed_weight_share_pct": 66.826,
+      "max_semantic_variants_per_bucket": 25,
+      "examples": [
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:git;effect:read;status:ok",
+          "weight": 299,
+          "semantic_variant_count": 25,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 75
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 38
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 23
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 22
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 20
+            },
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 16
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 15
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 13
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:claude;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok",
+          "weight": 167,
+          "semantic_variant_count": 3,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:paper/prompt:aggregate",
+              "weight": 116
+            },
+            {
+              "semantic": "session:paper/prompt:metrics",
+              "weight": 36
+            },
+            {
+              "semantic": "session:paper/prompt:db",
+              "weight": 15
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:claude;tool:shell;cmd:gh;effect:process;status:ok",
+          "weight": 166,
+          "semantic_variant_count": 5,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:paper/prompt:commit",
+              "weight": 145
+            },
+            {
+              "semantic": "session:paper/prompt:aggregate",
+              "weight": 15
+            },
+            {
+              "semantic": "session:paper/prompt:work",
+              "weight": 3
+            },
+            {
+              "semantic": "session:paper/prompt:metrics",
+              "weight": 2
+            },
+            {
+              "semantic": "session:model/prompt:pr",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:cargo;effect:test;status:ok",
+          "weight": 82,
+          "semantic_variant_count": 10,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 30
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 27
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 10
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:ssl",
+              "weight": 3
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 2
+            },
+            {
+              "semantic": "session:paper/prompt:session",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:gh;effect:process;status:ok",
+          "weight": 70,
+          "semantic_variant_count": 12,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 13
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 10
+            },
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:paper",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 6
+            },
+            {
+              "semantic": "session:session/prompt:main",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 3
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:sed;effect:read;path:collector/src/view;status:ok",
+          "weight": 67,
+          "semantic_variant_count": 7,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 25
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 20
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 12
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 3
+            },
+            {
+              "semantic": "session:paper/prompt:session",
+              "weight": 2
+            },
+            {
+              "semantic": "session:flamegraph/prompt:session",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:python3;effect:process;status:ok",
+          "weight": 66,
+          "semantic_variant_count": 13,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 14
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 11
+            },
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 10
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:session",
+              "weight": 6
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 3
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok",
+          "weight": 65,
+          "semantic_variant_count": 12,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 34
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:ssl",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:commit",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:inspect",
+              "weight": 2
+            },
+            {
+              "semantic": "session:flamegraph/prompt:session",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:tool;cmd:write;effect:process;status:observed",
+          "weight": 53,
+          "semantic_variant_count": 10,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 12
+            },
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 6
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 6
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 6
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:tool;cmd:write;effect:process;status:ok",
+          "weight": 51,
+          "semantic_variant_count": 10,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 15
+            },
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 13
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 6
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:server",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 2
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:rg;effect:read;path:collector/src;status:ok",
+          "weight": 50,
+          "semantic_variant_count": 12,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 24
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 2
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:agentsight;effect:process;path:collector/target/debug;status:ok",
+          "weight": 39,
+          "semantic_variant_count": 8,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 26
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:server",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:ssl",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:header",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:git;effect:read;path:collector/src/runners;status:ok",
+          "weight": 34,
+          "semantic_variant_count": 8,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 7
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:git;effect:read;path:collector/src/sources;status:ok",
+          "weight": 32,
+          "semantic_variant_count": 7,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 15
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 7
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:paper",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "nonsemantic_without_session_prompt",
+          "baseline_stack": "project:agentsight;agent:codex;tool:shell;cmd:ps;effect:process;status:ok",
+          "weight": 31,
+          "semantic_variant_count": 9,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 13
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 6
+            },
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:main",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:cleanup",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:header",
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    },
+    "flat_effect_mixing": {
+      "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+      "baseline_bucket_count": 1368,
+      "mixed_bucket_count": 433,
+      "mixed_bucket_share_pct": 31.652,
+      "mixed_weight": 4204,
+      "mixed_weight_share_pct": 74.46,
+      "max_semantic_variants_per_bucket": 30,
+      "examples": [
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:git;effect:read;status:ok",
+          "weight": 324,
+          "semantic_variant_count": 30,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 75
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 41
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 23
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 22
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 20
+            },
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 16
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 16
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 13
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:gh;effect:process;status:ok",
+          "weight": 236,
+          "semantic_variant_count": 16,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:paper/prompt:commit",
+              "weight": 145
+            },
+            {
+              "semantic": "session:paper/prompt:aggregate",
+              "weight": 15
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 13
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 10
+            },
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:paper",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 6
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok",
+          "weight": 173,
+          "semantic_variant_count": 6,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:paper/prompt:aggregate",
+              "weight": 116
+            },
+            {
+              "semantic": "session:paper/prompt:metrics",
+              "weight": 36
+            },
+            {
+              "semantic": "session:paper/prompt:db",
+              "weight": 15
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 2
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 2
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 2
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:cargo;effect:test;status:ok",
+          "weight": 128,
+          "semantic_variant_count": 16,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 30
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 28
+            },
+            {
+              "semantic": "session:subagent/prompt:collector",
+              "weight": 14
+            },
+            {
+              "semantic": "session:paper/prompt:db",
+              "weight": 12
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 10
+            },
+            {
+              "semantic": "session:model/prompt:work",
+              "weight": 9
+            },
+            {
+              "semantic": "session:model/prompt:session",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 5
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:python3;effect:process;status:ok",
+          "weight": 74,
+          "semantic_variant_count": 15,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 14
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 11
+            },
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 10
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:session",
+              "weight": 6
+            },
+            {
+              "semantic": "session:paper/prompt:work",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 3
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:sed;effect:read;path:collector/src/view;status:ok",
+          "weight": 67,
+          "semantic_variant_count": 7,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 25
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 20
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 12
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 3
+            },
+            {
+              "semantic": "session:paper/prompt:session",
+              "weight": 2
+            },
+            {
+              "semantic": "session:flamegraph/prompt:session",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok",
+          "weight": 65,
+          "semantic_variant_count": 12,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 34
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:ssl",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:commit",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:inspect",
+              "weight": 2
+            },
+            {
+              "semantic": "session:flamegraph/prompt:session",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:rg;effect:read;path:collector/src;status:ok",
+          "weight": 55,
+          "semantic_variant_count": 12,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 24
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 9
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 2
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:tool;cmd:write;effect:process;status:ok",
+          "weight": 53,
+          "semantic_variant_count": 11,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 15
+            },
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 13
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 7
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:server",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 2
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:tool;cmd:write;effect:process;status:observed",
+          "weight": 53,
+          "semantic_variant_count": 10,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:flamegraph/prompt:design",
+              "weight": 12
+            },
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 6
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 6
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 6
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:agentsight;effect:process;path:collector/target/debug;status:ok",
+          "weight": 39,
+          "semantic_variant_count": 8,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 26
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:debug",
+              "weight": 4
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:server",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:ssl",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:header",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:git;effect:read;path:collector/src/runners;status:ok",
+          "weight": 38,
+          "semantic_variant_count": 9,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 7
+            },
+            {
+              "semantic": "session:paper/prompt:pr",
+              "weight": 5
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 5
+            },
+            {
+              "semantic": "session:paper/prompt:inspect",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:aggregate",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:git;effect:read;path:collector/src/sources;status:ok",
+          "weight": 36,
+          "semantic_variant_count": 9,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:session",
+              "weight": 15
+            },
+            {
+              "semantic": "session:session/prompt:agent",
+              "weight": 7
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 3
+            },
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:work",
+              "weight": 2
+            },
+            {
+              "semantic": "session:session/prompt:paper",
+              "weight": 1
+            },
+            {
+              "semantic": "session:session/prompt:model",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:git;effect:read;path:origin/master...head;status:ok",
+          "weight": 36,
+          "semantic_variant_count": 4,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:session/prompt:subagent",
+              "weight": 19
+            },
+            {
+              "semantic": "session:paper/prompt:paper",
+              "weight": 8
+            },
+            {
+              "semantic": "session:paper/prompt:debug",
+              "weight": 8
+            },
+            {
+              "semantic": "session:session/prompt:trace",
+              "weight": 1
+            }
+          ]
+        },
+        {
+          "baseline_kind": "flat_effect_without_project_agent_session_prompt",
+          "baseline_stack": "tool:shell;cmd:cd;effect:process;path:repo;status:ok",
+          "weight": 35,
+          "semantic_variant_count": 10,
+          "top_semantic_variants": [
+            {
+              "semantic": "session:paper/prompt:aggregate",
+              "weight": 8
+            },
+            {
+              "semantic": "session:subagent/prompt:collector",
+              "weight": 7
+            },
+            {
+              "semantic": "session:paper/prompt:db",
+              "weight": 7
+            },
+            {
+              "semantic": "session:model/prompt:work",
+              "weight": 4
+            },
+            {
+              "semantic": "session:paper/prompt:metrics",
+              "weight": 4
+            },
+            {
+              "semantic": "session:model/prompt:paper",
+              "weight": 1
+            },
+            {
+              "semantic": "session:model/prompt:commit",
+              "weight": 1
+            },
+            {
+              "semantic": "session:paper/prompt:loc",
+              "weight": 1
+            }
+          ]
+        }
+      ]
+    },
+    "prompt_weight_concentration": {
+      "total_system_observations": 5646,
+      "unique_prompt_tags": 37,
+      "unique_session_prompt_pairs": 60,
+      "top_prompt_weight_share_pct": 21.254,
+      "top5_prompt_weight_share_pct": 53.666,
+      "top_prompt_tags": [
+        {
+          "prompt_tag": "session",
+          "weight": 1200,
+          "share_pct": 21.254
+        },
+        {
+          "prompt_tag": "debug",
+          "weight": 546,
+          "share_pct": 9.671
+        },
+        {
+          "prompt_tag": "design",
+          "weight": 496,
+          "share_pct": 8.785
+        },
+        {
+          "prompt_tag": "work",
+          "weight": 434,
+          "share_pct": 7.687
+        },
+        {
+          "prompt_tag": "collector",
+          "weight": 354,
+          "share_pct": 6.27
+        },
+        {
+          "prompt_tag": "aggregate",
+          "weight": 292,
+          "share_pct": 5.172
+        },
+        {
+          "prompt_tag": "paper",
+          "weight": 264,
+          "share_pct": 4.676
+        },
+        {
+          "prompt_tag": "trace",
+          "weight": 261,
+          "share_pct": 4.623
+        },
+        {
+          "prompt_tag": "commit",
+          "weight": 226,
+          "share_pct": 4.003
+        },
+        {
+          "prompt_tag": "db",
+          "weight": 221,
+          "share_pct": 3.914
+        },
+        {
+          "prompt_tag": "agent",
+          "weight": 180,
+          "share_pct": 3.188
+        },
+        {
+          "prompt_tag": "prompt",
+          "weight": 149,
+          "share_pct": 2.639
+        }
+      ],
+      "top_session_prompt_pairs": [
+        {
+          "session_prompt": "session/session",
+          "weight": 862,
+          "share_pct": 15.267
+        },
+        {
+          "session_prompt": "paper/debug",
+          "weight": 472,
+          "share_pct": 8.36
+        },
+        {
+          "session_prompt": "flamegraph/design",
+          "weight": 390,
+          "share_pct": 6.908
+        },
+        {
+          "session_prompt": "paper/aggregate",
+          "weight": 292,
+          "share_pct": 5.172
+        },
+        {
+          "session_prompt": "session/trace",
+          "weight": 261,
+          "share_pct": 4.623
+        },
+        {
+          "session_prompt": "paper/db",
+          "weight": 221,
+          "share_pct": 3.914
+        },
+        {
+          "session_prompt": "model/work",
+          "weight": 203,
+          "share_pct": 3.595
+        },
+        {
+          "session_prompt": "paper/paper",
+          "weight": 202,
+          "share_pct": 3.578
+        },
+        {
+          "session_prompt": "subagent/collector",
+          "weight": 198,
+          "share_pct": 3.507
+        },
+        {
+          "session_prompt": "session/agent",
+          "weight": 180,
+          "share_pct": 3.188
+        },
+        {
+          "session_prompt": "paper/commit",
+          "weight": 165,
+          "share_pct": 2.922
+        },
+        {
+          "session_prompt": "model/collector",
+          "weight": 156,
+          "share_pct": 2.763
+        }
+      ]
+    }
+  },
+  "tag_quality": {
+    "prompt_rows": 186,
+    "unique_prompt_tags": 45,
+    "top_prompt_tags": [
+      {
+        "tag": "session",
+        "count": 32
+      },
+      {
+        "tag": "work",
+        "count": 28
+      },
+      {
+        "tag": "paper",
+        "count": 11
+      },
+      {
+        "tag": "collector",
+        "count": 6
+      },
+      {
+        "tag": "implement",
+        "count": 6
+      },
+      {
+        "tag": "debug",
+        "count": 6
+      },
+      {
+        "tag": "model",
+        "count": 5
+      },
+      {
+        "tag": "visual",
+        "count": 5
+      },
+      {
+        "tag": "tagging",
+        "count": 5
+      },
+      {
+        "tag": "design",
+        "count": 5
+      },
+      {
+        "tag": "main",
+        "count": 5
+      },
+      {
+        "tag": "commit",
+        "count": 5
+      }
+    ],
+    "prompt_tag_entropy_bits": 4.654,
+    "prompt_tag_normalized_entropy": 0.847,
+    "generic_prompt_row_share_pct": 37.634,
+    "invalid_prompt_tags": [],
+    "invalid_prompt_tag_count": 0,
+    "same_hash_multi_tag_count": 0,
+    "same_hash_multi_tag_examples": [],
+    "session_count": 36,
+    "unique_session_tags": 12,
+    "top_session_tags": [
+      {
+        "tag": "claude",
+        "count": 9
+      },
+      {
+        "tag": "model",
+        "count": 5
+      },
+      {
+        "tag": "session",
+        "count": 4
+      },
+      {
+        "tag": "paper",
+        "count": 3
+      },
+      {
+        "tag": "subagent",
+        "count": 3
+      },
+      {
+        "tag": "reviewing",
+        "count": 2
+      },
+      {
+        "tag": "osdi",
+        "count": 2
+      },
+      {
+        "tag": "flamegraph",
+        "count": 2
+      },
+      {
+        "tag": "debug",
+        "count": 2
+      },
+      {
+        "tag": "test",
+        "count": 2
+      },
+      {
+        "tag": "reviewdoc",
+        "count": 1
+      },
+      {
+        "tag": "implement",
+        "count": 1
+      }
+    ],
+    "artifact_tag_contract_invalid_count": 0
+  },
+  "claim_gates": [
+    {
+      "claim": "C1 folded aggregation",
+      "verdict": "supported",
+      "oracle": "system folded total exceeds unique stacks and repeated stacks exist",
+      "evidence": "compression=2.295 repeated=913"
+    },
+    {
+      "claim": "C2 one-word tags in stack grammar",
+      "verdict": "supported",
+      "oracle": "all committed tags match the one-word grammar and vocabulary is non-trivial",
+      "evidence": "invalid=0 unique_prompt_tags=45"
+    },
+    {
+      "claim": "C3 semantic stacks add information beyond flat/nonsemantic baselines",
+      "verdict": "supported",
+      "oracle": "baseline buckets mix multiple session/prompt tags that semantic stacks separate",
+      "evidence": "nonsemantic_mixed=417 nonsemantic_weight_pct=66.826 flat_mixed=433 flat_weight_pct=74.46"
+    },
+    {
+      "claim": "C4 normalized agent differences",
+      "verdict": "diagnostic",
+      "oracle": "observational, unpaired source cohorts exist; no causal benchmark claim",
+      "evidence": "sources={'codex-subagent': 7, 'codex': 6, 'claude': 16, 'claude-subagent': 7}"
+    },
+    {
+      "claim": "C5 user utility over trace tree/process logs",
+      "verdict": "unsupported",
+      "oracle": "requires timed user tasks with accuracy and confidence metrics",
+      "evidence": "no human or task benchmark result file is present"
+    },
+    {
+      "claim": "C6 exact AgentSight effect stream preserves value",
+      "verdict": "unsupported",
+      "oracle": "requires replacement of agent-native tool records with exact process/file/network effects",
+      "evidence": "current artifact uses agent-native session records"
+    },
+    {
+      "claim": "C7 tag stability and adequacy",
+      "verdict": "partial",
+      "oracle": "current artifact checks only same-hash consistency, not rerun/model/human adequacy",
+      "evidence": "same_hash_multi_tag_count=0"
+    }
+  ]
+}

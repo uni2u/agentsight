@@ -14,6 +14,11 @@ from semantic_tag_flamegraph import (
     build_folded_stacks,
     build_nonsemantic_system,
 )
+from evaluate_artifacts import (
+    compression_summary,
+    mixing_summary,
+    tag_quality,
+)
 
 
 class AggregationTests(unittest.TestCase):
@@ -116,6 +121,46 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(git_row["winner"], "claude")
         self.assertAlmostEqual(git_row["codex_rate_per_1k"], 100.0)
         self.assertAlmostEqual(git_row["claude_rate_per_1k"], 500.0)
+
+    def test_mixing_summary_detects_prompt_information_loss(self) -> None:
+        system = Counter(
+            {
+                "project:agentsight;agent:codex;session:design;prompt:flamegraph;tool:shell;cmd:git;effect:read;status:ok": 3,
+                "project:agentsight;agent:codex;session:debug;prompt:test;tool:shell;cmd:git;effect:read;status:ok": 2,
+                "project:agentsight;agent:codex;session:debug;prompt:test;tool:shell;cmd:rg;effect:read;status:ok": 1,
+            }
+        )
+
+        summary = mixing_summary(system, ("session:", "prompt:"), "nonsemantic")
+
+        self.assertEqual(summary["mixed_bucket_count"], 1)
+        self.assertEqual(summary["mixed_weight"], 5)
+        self.assertEqual(summary["max_semantic_variants_per_bucket"], 2)
+
+    def test_tag_quality_finds_same_hash_conflicts_and_generic_share(self) -> None:
+        rows = [
+            {"prompt_hash": "abc", "prompt_tag": "flamegraph"},
+            {"prompt_hash": "abc", "prompt_tag": "visual"},
+            {"prompt_hash": "def", "prompt_tag": "prompt"},
+        ]
+        sessions = [{"session_tag": "design"}]
+        aggregation = {"tag_contract": {"invalid_count": 0}}
+
+        quality = tag_quality(rows, sessions, aggregation)
+
+        self.assertEqual(quality["same_hash_multi_tag_count"], 1)
+        self.assertEqual(quality["invalid_prompt_tag_count"], 0)
+        self.assertAlmostEqual(quality["generic_prompt_row_share_pct"], 33.333)
+
+    def test_compression_summary_reports_collapsed_observations(self) -> None:
+        stacks = Counter({"a;b": 4, "a;c": 1})
+
+        summary = compression_summary(stacks)
+
+        self.assertEqual(summary["total_observations"], 5)
+        self.assertEqual(summary["unique_stacks"], 2)
+        self.assertEqual(summary["collapsed_observations"], 3)
+        self.assertEqual(summary["compression_ratio"], 2.5)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-14T04:17:32+00:00",
+  "generated_at": "2026-06-14T04:27:55+00:00",
   "argv": [
     "docs/visexp/semantic_tag_flamegraph.py",
     "--out",
@@ -20,10 +20,10 @@
     "docs/visexp/out/llama-tag-cache.json"
   ],
   "project": "agentsight",
-  "repo_commit": "666005eb7076a375af11e3a59615db5f54589398",
+  "repo_commit": "9e9ca2b8122f9bb81f016cb90b49d463ab74b3f9",
   "repo_dirty": true,
   "script_file": "semantic_tag_flamegraph.py",
-  "script_sha256": "be465bfe490fbfdaac51e2d7c1e48aa291c84a419d7227419ab58bc0843fd96d",
+  "script_sha256": "572741750d22952ec69cc719ac666a8a18a1117992aa6cc83f625aa77ce7f7cd",
   "llama_cpp_commit": "57819b8d4b39d893408e51520dff3d47d1ebb757",
   "llama_cli": "llama-cli",
   "llama_cli_sha256": "1e355b9508e25e0059149a36c7c20a5aaa9354d6c787284d64c6108517b9f6f7",
@@ -95,10 +95,10 @@
       "source": "codex",
       "session_id": "019ec23a-9d01-7981-aaa4-1be1af89ba69",
       "session_file": "rollout-2026-06-13T11-24-41-019ec23a-9d01-7981-aaa4-1be1af89ba69.jsonl",
-      "content_sha256": "ccd5f8fd8e51e7a4f828f7427183ea8a1bcc4cf8af14999df6b241ce3314069e",
+      "content_sha256": "6c66f252a3c98c7ead5892395e06a9904d5bf3bd76d707c20ab323844ef6990c",
       "prompt_count": 29,
-      "tool_count": 357,
-      "llm_count": 214
+      "tool_count": 419,
+      "llm_count": 241
     },
     {
       "source": "codex",

@@ -114,7 +114,7 @@
     "llm_count": 11,
     "prompt_tags": [
       [
-        "readreview",
+        "reviewdoc",
         1
       ]
     ],
@@ -152,10 +152,14 @@
     "prompt_tags": [
       [
         "prompt",
-        2
+        1
       ],
       [
         "reviewing",
+        1
+      ],
+      [
+        "revise",
         1
       ]
     ],
@@ -225,48 +229,104 @@
     "cwd_group": "repo",
     "model": "gpt-5.5",
     "prompt_count": 29,
-    "tool_count": 357,
-    "llm_count": 214,
+    "tool_count": 419,
+    "llm_count": 241,
     "prompt_tags": [
       [
+        "session",
+        5
+      ],
+      [
+        "tagging",
+        5
+      ],
+      [
+        "work",
+        4
+      ],
+      [
         "flamegraph",
-        29
+        3
+      ],
+      [
+        "model",
+        2
+      ],
+      [
+        "visual",
+        2
+      ],
+      [
+        "collector",
+        1
+      ],
+      [
+        "paper",
+        1
+      ],
+      [
+        "subagent",
+        1
+      ],
+      [
+        "implement",
+        1
+      ],
+      [
+        "network",
+        1
+      ],
+      [
+        "test",
+        1
+      ],
+      [
+        "claim",
+        1
+      ],
+      [
+        "design",
+        1
       ]
     ],
     "tool_categories": [
       [
         "shell",
-        290
+        347
       ],
       [
         "tool",
-        31
+        33
       ],
       [
         "plan",
-        19
+        21
       ],
       [
         "subagent",
-        17
+        18
       ]
     ],
     "tool_effects": [
       [
         "read",
-        202
+        241
       ],
       [
         "process",
-        136
+        151
       ],
       [
         "write",
-        16
+        17
       ],
       [
         "repo",
-        3
+        9
+      ],
+      [
+        "network",
+        1
       ]
     ]
   },
@@ -282,8 +342,36 @@
     "llm_count": 363,
     "prompt_tags": [
       [
+        "work",
+        3
+      ],
+      [
+        "pr",
+        2
+      ],
+      [
         "paper",
-        13
+        2
+      ],
+      [
+        "implement",
+        2
+      ],
+      [
+        "main",
+        1
+      ],
+      [
+        "session",
+        1
+      ],
+      [
+        "debug",
+        1
+      ],
+      [
+        "inspect",
+        1
       ]
     ],
     "tool_categories": [
@@ -335,11 +423,59 @@
     "llm_count": 456,
     "prompt_tags": [
       [
+        "session",
+        4
+      ],
+      [
+        "work",
+        4
+      ],
+      [
         "model",
-        20
+        2
+      ],
+      [
+        "local",
+        1
+      ],
+      [
+        "design",
+        1
+      ],
+      [
+        "inspect",
+        1
+      ],
+      [
+        "request",
+        1
       ],
       [
         "paper",
+        1
+      ],
+      [
+        "stat",
+        1
+      ],
+      [
+        "subagent",
+        1
+      ],
+      [
+        "task",
+        1
+      ],
+      [
+        "commit",
+        1
+      ],
+      [
+        "pr",
+        1
+      ],
+      [
+        "implement",
         1
       ]
     ],
@@ -404,7 +540,7 @@
     "llm_count": 168,
     "prompt_tags": [
       [
-        "subagent",
+        "collector",
         1
       ]
     ],
@@ -453,7 +589,7 @@
     "llm_count": 92,
     "prompt_tags": [
       [
-        "subagent",
+        "collector",
         1
       ]
     ],
@@ -502,7 +638,7 @@
     "llm_count": 89,
     "prompt_tags": [
       [
-        "model",
+        "collector",
         1
       ]
     ],
@@ -535,7 +671,7 @@
     "llm_count": 63,
     "prompt_tags": [
       [
-        "model",
+        "collector",
         1
       ]
     ],
@@ -568,7 +704,7 @@
     "llm_count": 58,
     "prompt_tags": [
       [
-        "model",
+        "collector",
         1
       ]
     ],
@@ -630,7 +766,7 @@
     "llm_count": 2,
     "prompt_tags": [
       [
-        "claude",
+        "use",
         1
       ]
     ],
@@ -707,7 +843,7 @@
     "llm_count": 1,
     "prompt_tags": [
       [
-        "claude",
+        "reply",
         1
       ]
     ],
@@ -726,7 +862,7 @@
     "llm_count": 1,
     "prompt_tags": [
       [
-        "claude",
+        "reply",
         1
       ]
     ],
@@ -745,7 +881,7 @@
     "llm_count": 1,
     "prompt_tags": [
       [
-        "claude",
+        "reply",
         1
       ]
     ],
@@ -765,7 +901,11 @@
     "prompt_tags": [
       [
         "paper",
-        2
+        1
+      ],
+      [
+        "debug",
+        1
       ]
     ],
     "tool_categories": [
@@ -809,11 +949,31 @@
     "llm_count": 224,
     "prompt_tags": [
       [
+        "work",
+        2
+      ],
+      [
+        "commit",
+        1
+      ],
+      [
+        "subagent",
+        1
+      ],
+      [
         "session",
-        7
+        1
+      ],
+      [
+        "trace",
+        1
       ],
       [
         "paper",
+        1
+      ],
+      [
+        "inspect",
         1
       ]
     ],
@@ -870,12 +1030,28 @@
     "llm_count": 11,
     "prompt_tags": [
       [
-        "session",
-        6
-      ],
-      [
         "paper",
         3
+      ],
+      [
+        "work",
+        2
+      ],
+      [
+        "commit",
+        1
+      ],
+      [
+        "subagent",
+        1
+      ],
+      [
+        "session",
+        1
+      ],
+      [
+        "trace",
+        1
       ]
     ],
     "tool_categories": [
@@ -915,7 +1091,7 @@
     "llm_count": 2,
     "prompt_tags": [
       [
-        "claude",
+        "use",
         1
       ]
     ],
@@ -944,7 +1120,7 @@
     "llm_count": 2,
     "prompt_tags": [
       [
-        "claude",
+        "use",
         1
       ]
     ],
@@ -973,7 +1149,7 @@
     "llm_count": 3,
     "prompt_tags": [
       [
-        "claude",
+        "use",
         1
       ]
     ],
@@ -1002,7 +1178,7 @@
     "llm_count": 3,
     "prompt_tags": [
       [
-        "claude",
+        "use",
         1
       ]
     ],
@@ -1032,14 +1208,58 @@
     "prompt_tags": [
       [
         "session",
-        46
+        17
+      ],
+      [
+        "work",
+        11
+      ],
+      [
+        "ssl",
+        4
+      ],
+      [
+        "main",
+        4
+      ],
+      [
+        "server",
+        2
+      ],
+      [
+        "debug",
+        2
       ],
       [
         "model",
         1
       ],
       [
+        "cleanup",
+        1
+      ],
+      [
+        "header",
+        1
+      ],
+      [
+        "git",
+        1
+      ],
+      [
         "paper",
+        1
+      ],
+      [
+        "inspect",
+        1
+      ],
+      [
+        "commit",
+        1
+      ],
+      [
+        "agent",
         1
       ]
     ],
@@ -1097,7 +1317,11 @@
     "prompt_tags": [
       [
         "flamegraph",
-        2
+        1
+      ],
+      [
+        "session",
+        1
       ]
     ],
     "tool_categories": [
@@ -1133,8 +1357,72 @@
     "llm_count": 1441,
     "prompt_tags": [
       [
+        "aggregate",
+        4
+      ],
+      [
+        "visual",
+        3
+      ],
+      [
+        "design",
+        2
+      ],
+      [
+        "work",
+        2
+      ],
+      [
+        "task",
+        2
+      ],
+      [
+        "test",
+        1
+      ],
+      [
         "paper",
-        25
+        1
+      ],
+      [
+        "loc",
+        1
+      ],
+      [
+        "db",
+        1
+      ],
+      [
+        "record",
+        1
+      ],
+      [
+        "frontend",
+        1
+      ],
+      [
+        "agentsight",
+        1
+      ],
+      [
+        "request",
+        1
+      ],
+      [
+        "commit",
+        1
+      ],
+      [
+        "session",
+        1
+      ],
+      [
+        "metrics",
+        1
+      ],
+      [
+        "source",
+        1
       ]
     ],
     "tool_categories": [
@@ -1266,7 +1554,7 @@
     "llm_count": 1,
     "prompt_tags": [
       [
-        "claude",
+        "say",
         1
       ]
     ],
@@ -1285,7 +1573,7 @@
     "llm_count": 68,
     "prompt_tags": [
       [
-        "subagent",
+        "implement",
         1
       ]
     ],
@@ -1318,7 +1606,7 @@
     "llm_count": 32,
     "prompt_tags": [
       [
-        "model",
+        "design",
         1
       ]
     ],

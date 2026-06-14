@@ -88,6 +88,11 @@ columns use normalized rates.
 `input-manifest.json` records exact argv, selected session content hashes, script
 hash, model checksum, and local llama.cpp provenance where available.
 
+`evaluate_artifacts.py` is the current OSDI-facing artifact audit. It asks
+whether nonsemantic or flat baselines merge multiple prompt/session regions that
+the semantic stack separates, then writes `evaluation.json`,
+`semantic-mixing.csv`, `claim-gates.csv`, and `evaluation-summary.md`.
+
 ## What Is New Here
 
 Traditional process tools can tell that `git`, `gh`, `sed`, or `cargo` ran.
@@ -130,6 +135,8 @@ The next OSDI-level evaluation should measure:
 
 - contract validity: accepted tags satisfy the one-word grammar;
 - aggregation strength: raw events per unique stack and repeated-stack reuse;
+- semantic information gain: baseline buckets whose mixed prompt/session tags
+  are only separable with semantic frames;
 - human utility: users find repeated/different behavior faster than with raw
   trace trees, flat process summaries, token dashboards, and non-semantic folded
   baselines;

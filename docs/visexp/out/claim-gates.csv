@@ -1,0 +1,8 @@
+claim,verdict,oracle,evidence
+C1 folded aggregation,supported,system folded total exceeds unique stacks and repeated stacks exist,compression=2.295 repeated=913
+C2 one-word tags in stack grammar,supported,all committed tags match the one-word grammar and vocabulary is non-trivial,invalid=0 unique_prompt_tags=45
+C3 semantic stacks add information beyond flat/nonsemantic baselines,supported,baseline buckets mix multiple session/prompt tags that semantic stacks separate,nonsemantic_mixed=417 nonsemantic_weight_pct=66.826 flat_mixed=433 flat_weight_pct=74.46
+C4 normalized agent differences,diagnostic,"observational, unpaired source cohorts exist; no causal benchmark claim","sources={'codex-subagent': 7, 'codex': 6, 'claude': 16, 'claude-subagent': 7}"
+C5 user utility over trace tree/process logs,unsupported,requires timed user tasks with accuracy and confidence metrics,no human or task benchmark result file is present
+C6 exact AgentSight effect stream preserves value,unsupported,requires replacement of agent-native tool records with exact process/file/network effects,current artifact uses agent-native session records
+C7 tag stability and adequacy,partial,"current artifact checks only same-hash consistency, not rerun/model/human adequacy",same_hash_multi_tag_count=0
