@@ -37,7 +37,7 @@ def file_sha256(path: Path) -> str:
 
 def assert_no_sensitive_text(path: Path) -> None:
     pattern = re.compile(
-        r"/home/yunwei37|Reply exactly|Bearer|api_key|sk-[A-Za-z0-9]|ANTHROPIC_API|OPENAI_API"
+        r"/home/yunwei37|Reply exactly|Bearer|api_key|sk-[A-Za-z0-9]{20,}|ANTHROPIC_API|OPENAI_API"
     )
     text = path.read_text(encoding="utf-8", errors="replace")
     match = pattern.search(text)

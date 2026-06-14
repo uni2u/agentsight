@@ -69,6 +69,14 @@ word. Invalid model output falls back to the deterministic local tagger.
   summary over hashed session/prompt/LLM fragments.
 - `out/tag-stability-smoke.csv`: sanitized per-fragment tag outputs.
 - `out/tag-stability-summary.md`: human-readable C7 smoke summary.
+- `out/user-task-benchmark.json`: C5 user-task benchmark bundle with sanitized
+  tasks and source-view references.
+- `out/user-task-answer-key.csv`: machine-readable answer key for the C5 tasks.
+- `out/user-task-benchmark.md`: human-readable C5 task bundle summary.
+- `out/user-task-participant-packets.json`: participant-facing C5 condition
+  packets with no oracle fields.
+- `out/user-task-participant-packets.md`: human-readable participant packet
+  summary.
 - `out/prompt-tags.csv`: sanitized prompt hashes, previews, and one-word tags.
 - `out/sessions.json`: per-session counts and tag summaries.
 
@@ -90,5 +98,6 @@ the input effect stream.
 python3 -m unittest docs/visexp/test_semantic_tag_flamegraph.py
 python3 docs/visexp/verify_artifacts.py --out docs/visexp/out
 python3 docs/visexp/tag_stability_smoke.py --out docs/visexp/out
+python3 docs/visexp/user_task_benchmark.py --out docs/visexp/out
 python3 docs/visexp/evaluate_artifacts.py --out docs/visexp/out
 ```

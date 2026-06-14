@@ -86,7 +86,19 @@ Needed:
 - Metrics: task time, answer accuracy, repeated-behavior recall, false positives,
   and subjective confidence.
 
-Status: future evaluation.
+Current partial setup:
+
+- `user-task-benchmark.json` and `user-task-answer-key.csv` define six benchmark
+  tasks and deterministic answer keys from the committed artifacts.
+- `user-task-participant-packets.json` defines participant-facing condition
+  packets without oracle fields or oracle-only sources such as
+  `semantic-mixing.csv`.
+- The task bundle is a protocol artifact only; it contains no participant
+  responses, task times, or confidence scores.
+
+Status: unsupported as a user-outcome claim. The benchmark is ready to pilot,
+but C5 requires scored participant responses before it can move beyond
+unsupported.
 
 ### C6: AgentSight exact system effects preserve the same visualization value.
 

@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "packets": [
+    {
+      "packet_id": "UT1-semantic",
+      "task_id": "UT1",
+      "claim": "C5",
+      "skill": "find-hidden-semantic-mixing",
+      "condition": "semantic",
+      "title": "Nonsemantic Mixing",
+      "question": "Find the highest-weight nonsemantic folded bucket. Report the baseline stack, total weight, semantic variant count, and top semantic variant.",
+      "views": [
+        "system-flamegraph.svg",
+        "semantic-system.folded.txt"
+      ],
+      "answer_format": {
+        "baseline_kind": "str",
+        "baseline_stack": "str",
+        "weight": "int",
+        "semantic_variant_count": "int",
+        "top_semantic_variant": "str",
+        "top_semantic_variant_weight": "int"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT1-nonsemantic",
+      "task_id": "UT1",
+      "claim": "C5",
+      "skill": "find-hidden-semantic-mixing",
+      "condition": "nonsemantic",
+      "title": "Nonsemantic Mixing",
+      "question": "Find the highest-weight nonsemantic folded bucket. Report the baseline stack, total weight, semantic variant count, and top semantic variant.",
+      "views": [
+        "nonsemantic-system.folded.txt"
+      ],
+      "answer_format": {
+        "baseline_kind": "str",
+        "baseline_stack": "str",
+        "weight": "int",
+        "semantic_variant_count": "int",
+        "top_semantic_variant": "str",
+        "top_semantic_variant_weight": "int"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT1-flat",
+      "task_id": "UT1",
+      "claim": "C5",
+      "skill": "find-hidden-semantic-mixing",
+      "condition": "flat",
+      "title": "Nonsemantic Mixing",
+      "question": "Find the highest-weight nonsemantic folded bucket. Report the baseline stack, total weight, semantic variant count, and top semantic variant.",
+      "views": [
+        "command-summary.csv"
+      ],
+      "answer_format": {
+        "baseline_kind": "str",
+        "baseline_stack": "str",
+        "weight": "int",
+        "semantic_variant_count": "int",
+        "top_semantic_variant": "str",
+        "top_semantic_variant_weight": "int"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT2-semantic",
+      "task_id": "UT2",
+      "claim": "C5",
+      "skill": "compare-flat-vs-semantic",
+      "condition": "semantic",
+      "title": "Flat Effect Mixing",
+      "question": "Find the highest-weight flat effect bucket after removing project, agent, session, and prompt frames. Report its variant count and top semantic variant.",
+      "views": [
+        "system-flamegraph.svg",
+        "semantic-system.folded.txt"
+      ],
+      "answer_format": {
+        "baseline_kind": "str",
+        "baseline_stack": "str",
+        "weight": "int",
+        "semantic_variant_count": "int",
+        "top_semantic_variant": "str",
+        "top_semantic_variant_weight": "int"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT2-flat",
+      "task_id": "UT2",
+      "claim": "C5",
+      "skill": "compare-flat-vs-semantic",
+      "condition": "flat",
+      "title": "Flat Effect Mixing",
+      "question": "Find the highest-weight flat effect bucket after removing project, agent, session, and prompt frames. Report its variant count and top semantic variant.",
+      "views": [
+        "command-summary.csv"
+      ],
+      "answer_format": {
+        "baseline_kind": "str",
+        "baseline_stack": "str",
+        "weight": "int",
+        "semantic_variant_count": "int",
+        "top_semantic_variant": "str",
+        "top_semantic_variant_weight": "int"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT2-nonsemantic",
+      "task_id": "UT2",
+      "claim": "C5",
+      "skill": "compare-flat-vs-semantic",
+      "condition": "nonsemantic",
+      "title": "Flat Effect Mixing",
+      "question": "Find the highest-weight flat effect bucket after removing project, agent, session, and prompt frames. Report its variant count and top semantic variant.",
+      "views": [
+        "nonsemantic-system.folded.txt"
+      ],
+      "answer_format": {
+        "baseline_kind": "str",
+        "baseline_stack": "str",
+        "weight": "int",
+        "semantic_variant_count": "int",
+        "top_semantic_variant": "str",
+        "top_semantic_variant_weight": "int"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT3-semantic",
+      "task_id": "UT3",
+      "claim": "C5",
+      "skill": "find-repeated-heavy-behavior",
+      "condition": "semantic",
+      "title": "Heaviest Repeated Semantic Stack",
+      "question": "Identify the heaviest semantic system stack and report its session tag, prompt tag, command, effect, and weight.",
+      "views": [
+        "system-flamegraph.svg",
+        "semantic-system.folded.txt"
+      ],
+      "answer_format": {
+        "stack": "str",
+        "weight": "int",
+        "session": "str",
+        "prompt": "str",
+        "cmd": "str",
+        "effect": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT3-nonsemantic",
+      "task_id": "UT3",
+      "claim": "C5",
+      "skill": "find-repeated-heavy-behavior",
+      "condition": "nonsemantic",
+      "title": "Heaviest Repeated Semantic Stack",
+      "question": "Identify the heaviest semantic system stack and report its session tag, prompt tag, command, effect, and weight.",
+      "views": [
+        "nonsemantic-system.folded.txt"
+      ],
+      "answer_format": {
+        "stack": "str",
+        "weight": "int",
+        "session": "str",
+        "prompt": "str",
+        "cmd": "str",
+        "effect": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT3-flat",
+      "task_id": "UT3",
+      "claim": "C5",
+      "skill": "find-repeated-heavy-behavior",
+      "condition": "flat",
+      "title": "Heaviest Repeated Semantic Stack",
+      "question": "Identify the heaviest semantic system stack and report its session tag, prompt tag, command, effect, and weight.",
+      "views": [
+        "command-summary.csv"
+      ],
+      "answer_format": {
+        "stack": "str",
+        "weight": "int",
+        "session": "str",
+        "prompt": "str",
+        "cmd": "str",
+        "effect": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT4-semantic-diff",
+      "task_id": "UT4",
+      "claim": "C5",
+      "skill": "find-agent-divergence",
+      "condition": "semantic-diff",
+      "title": "Top Agent-Difference Diagnostic",
+      "question": "In the top-level cohort, identify the largest normalized Codex-vs-Claude behavioral difference and report the winner, delta per 1000 observations, and normalized stack.",
+      "views": [
+        "agent-diff.csv"
+      ],
+      "answer_format": {
+        "cohort": "str",
+        "winner": "str",
+        "rate_delta_per_1k": "float",
+        "codex_rate_per_1k": "float",
+        "claude_rate_per_1k": "float",
+        "stack": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT4-flat",
+      "task_id": "UT4",
+      "claim": "C5",
+      "skill": "find-agent-divergence",
+      "condition": "flat",
+      "title": "Top Agent-Difference Diagnostic",
+      "question": "In the top-level cohort, identify the largest normalized Codex-vs-Claude behavioral difference and report the winner, delta per 1000 observations, and normalized stack.",
+      "views": [
+        "command-summary.csv"
+      ],
+      "answer_format": {
+        "cohort": "str",
+        "winner": "str",
+        "rate_delta_per_1k": "float",
+        "codex_rate_per_1k": "float",
+        "claude_rate_per_1k": "float",
+        "stack": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT5-semantic-token",
+      "task_id": "UT5",
+      "claim": "C5",
+      "skill": "find-token-hotspot",
+      "condition": "semantic-token",
+      "title": "Largest Token Region",
+      "question": "Identify the largest token stack and report the session tag, prompt tag, model, token kind, and weight.",
+      "views": [
+        "token-flamegraph.svg",
+        "semantic-token.folded.txt"
+      ],
+      "answer_format": {
+        "stack": "str",
+        "weight": "int",
+        "session": "str",
+        "prompt": "str",
+        "model": "str",
+        "kind": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT5-folded-token",
+      "task_id": "UT5",
+      "claim": "C5",
+      "skill": "find-token-hotspot",
+      "condition": "folded-token",
+      "title": "Largest Token Region",
+      "question": "Identify the largest token stack and report the session tag, prompt tag, model, token kind, and weight.",
+      "views": [
+        "semantic-token.folded.txt"
+      ],
+      "answer_format": {
+        "stack": "str",
+        "weight": "int",
+        "session": "str",
+        "prompt": "str",
+        "model": "str",
+        "kind": "str"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT6-summary",
+      "task_id": "UT6",
+      "claim": "C5",
+      "skill": "avoid-overclaiming-tag-quality",
+      "condition": "summary",
+      "title": "Tag Stability Boundary",
+      "question": "Decide whether the current tag stability smoke proves semantic adequacy. Report the smoke verdict, llama repeated-run stability, fallback-vs-llama exact match, and the correct conclusion.",
+      "views": [
+        "tag-stability-summary.md"
+      ],
+      "answer_format": {
+        "smoke_verdict": "str",
+        "llama_stable_pct": "float",
+        "fallback_vs_llama_exact_pct": "float",
+        "semantic_adequacy_proven": "bool"
+      },
+      "contains_oracle": false
+    },
+    {
+      "packet_id": "UT6-json",
+      "task_id": "UT6",
+      "claim": "C5",
+      "skill": "avoid-overclaiming-tag-quality",
+      "condition": "json",
+      "title": "Tag Stability Boundary",
+      "question": "Decide whether the current tag stability smoke proves semantic adequacy. Report the smoke verdict, llama repeated-run stability, fallback-vs-llama exact match, and the correct conclusion.",
+      "views": [
+        "tag-stability-smoke.json"
+      ],
+      "answer_format": {
+        "smoke_verdict": "str",
+        "llama_stable_pct": "float",
+        "fallback_vs_llama_exact_pct": "float",
+        "semantic_adequacy_proven": "bool"
+      },
+      "contains_oracle": false
+    }
+  ]
+}

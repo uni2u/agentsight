@@ -272,6 +272,14 @@ def tag_stability_evidence(stability: dict[str, Any] | None) -> str:
     return " ".join(pieces)
 
 
+def user_task_evidence(bundle: dict[str, Any] | None) -> str:
+    if not bundle:
+        return "task_bundle=missing participant_results=missing"
+    tasks = bundle.get("tasks", [])
+    status = bundle.get("status", "unknown")
+    return f"task_bundle={status} task_count={len(tasks)} participant_results=missing"
+
+
 def build_claim_gates(
     aggregation: dict[str, Any],
     compression: dict[str, Any],
@@ -279,6 +287,7 @@ def build_claim_gates(
     flat_mixing: dict[str, Any],
     quality: dict[str, Any],
     stability: dict[str, Any] | None = None,
+    user_tasks: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     c1_ok = compression["compression_ratio"] > 1 and compression["repeated_stack_count"] > 0
     c2_ok = (
@@ -333,8 +342,8 @@ def build_claim_gates(
         {
             "claim": "C5 user utility over trace tree/process logs",
             "verdict": "unsupported",
-            "oracle": "requires timed user tasks with accuracy and confidence metrics",
-            "evidence": "no human or task benchmark result file is present",
+            "oracle": "requires scored participant responses with time, accuracy, false positives, and confidence",
+            "evidence": user_task_evidence(user_tasks),
         },
         {
             "claim": "C6 exact AgentSight effect stream preserves value",
@@ -432,7 +441,7 @@ def write_summary_md(path: Path, result: dict[str, Any]) -> None:
             "",
             "## Highest-Value Next Runs",
             "",
-            "1. Run the paired user-task benchmark in `EXPERIMENT_PLAN.md` B3 to test C5.",
+            "1. Collect and score the B3 user-task pilot responses to test C5.",
             "2. Expand B4 with manual adequacy labels and a larger multi-model tag stability run.",
             "3. Replace agent-native tool records with exact AgentSight effects in B6 to test C6.",
         ]
@@ -465,6 +474,8 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
     prompt_weights = prompt_weight_summary(system)
     stability_path = out_dir / "tag-stability-smoke.json"
     stability = read_json(stability_path) if stability_path.exists() else None
+    user_tasks_path = out_dir / "user-task-benchmark.json"
+    user_tasks = read_json(user_tasks_path) if user_tasks_path.exists() else None
     gates = build_claim_gates(
         aggregation,
         semantic_compression,
@@ -472,6 +483,7 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
         flat_mixing,
         quality,
         stability,
+        user_tasks,
     )
 
     result = {
@@ -497,6 +509,7 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
         },
         "tag_quality": quality,
         "tag_stability_smoke": stability,
+        "user_task_benchmark": user_tasks,
         "claim_gates": gates,
     }
 

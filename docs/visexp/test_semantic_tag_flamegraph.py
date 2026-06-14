@@ -24,6 +24,7 @@ from tag_stability_smoke import (
     cross_annotator_metrics,
     smoke_verdict,
 )
+from user_task_benchmark import parse_variants, participant_packets, stack_frame
 
 
 class AggregationTests(unittest.TestCase):
@@ -187,6 +188,35 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(metrics["fallback"]["generic_output_share_pct"], 50.0)
         self.assertEqual(cross["pairs"][0]["modal_exact_match_pct"], 50.0)
         self.assertEqual(verdict, "smoke_supported")
+
+    def test_user_task_helpers_parse_variants_and_stack_frames(self) -> None:
+        variants = parse_variants("session:a/prompt:b=7; session:c/prompt:d=2")
+        stack = "project:agentsight;session:paper;prompt:debug;cmd:git;effect:read"
+
+        self.assertEqual(variants[0]["semantic"], "session:a/prompt:b")
+        self.assertEqual(variants[0]["weight"], 7)
+        self.assertEqual(stack_frame(stack, "prompt:"), "debug")
+        self.assertEqual(stack_frame(stack, "model:", "none"), "none")
+
+    def test_participant_packets_exclude_oracles(self) -> None:
+        tasks = [
+            {
+                "task_id": "UTX",
+                "claim": "C5",
+                "skill": "demo",
+                "title": "Demo",
+                "question": "Find the answer.",
+                "participant_view_conditions": [
+                    {"condition": "semantic", "views": ["system-flamegraph.svg"]},
+                ],
+                "answer_format": {"weight": "int"},
+            }
+        ]
+
+        packets = participant_packets(tasks)
+
+        self.assertEqual(packets[0]["contains_oracle"], False)
+        self.assertNotIn("oracle", packets[0])
 
 
 if __name__ == "__main__":
