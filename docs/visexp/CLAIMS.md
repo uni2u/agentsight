@@ -93,12 +93,17 @@ Current partial setup:
 - `user-task-participant-packets.json` defines participant-facing condition
   packets without oracle fields or oracle-only sources such as
   `semantic-mixing.csv`.
+- `user-task-response-template.csv` defines the response schema for participant
+  collection.
+- `score_user_task_results.py` scores response CSV files against the hidden
+  answer key and reports time, exact accuracy, field accuracy, false positives,
+  confidence, parse errors, and per-condition summaries.
 - The task bundle is a protocol artifact only; it contains no participant
   responses, task times, or confidence scores.
 
-Status: unsupported as a user-outcome claim. The benchmark is ready to pilot,
-but C5 requires scored participant responses before it can move beyond
-unsupported.
+Status: unsupported as a user-outcome claim. The benchmark and scorer are ready
+to pilot, but C5 requires real scored participant responses before it can move
+beyond unsupported.
 
 ### C6: AgentSight exact system effects preserve the same visualization value.
 

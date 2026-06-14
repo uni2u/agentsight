@@ -14,5 +14,6 @@ This bundle defines analysis tasks and answer keys for C5. It is not a human-stu
 ## Claim Boundary
 
 - The bundle makes C5 executable by defining questions, participant view conditions, and answer keys.
+- `user-task-response-template.csv` defines the response schema consumed by `score_user_task_results.py`.
 - Participants should see only their assigned view condition; oracle sources and answer keys are for graders.
 - C5 remains unsupported until participant responses are collected and scored.

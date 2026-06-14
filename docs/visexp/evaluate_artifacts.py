@@ -272,12 +272,38 @@ def tag_stability_evidence(stability: dict[str, Any] | None) -> str:
     return " ".join(pieces)
 
 
-def user_task_evidence(bundle: dict[str, Any] | None) -> str:
+def user_task_evidence(
+    bundle: dict[str, Any] | None,
+    results: dict[str, Any] | None = None,
+    response_template_exists: bool = False,
+) -> str:
     if not bundle:
-        return "task_bundle=missing participant_results=missing"
+        return "task_bundle=missing scorer=ready participant_results=missing"
     tasks = bundle.get("tasks", [])
     status = bundle.get("status", "unknown")
-    return f"task_bundle={status} task_count={len(tasks)} participant_results=missing"
+    template = "present" if response_template_exists else "missing"
+    if not results:
+        return (
+            f"task_bundle={status} task_count={len(tasks)} "
+            "scorer=ready "
+            f"response_template={template} "
+            "participant_results=missing"
+        )
+    if results.get("status") == "participant_results_empty":
+        return (
+            f"task_bundle={status} task_count={len(tasks)} "
+            "scorer=ready "
+            f"response_template={template} "
+            f"ignored_placeholder_rows={results.get('ignored_placeholder_rows')} "
+            "participant_results=missing"
+        )
+    return (
+        f"task_bundle={status} task_count={len(tasks)} "
+        f"scorer_results={results.get('status', 'unknown')} "
+        f"participants={results.get('participant_count')} "
+        f"responses={results.get('response_count')} "
+        f"exact_accuracy_pct={results.get('summary', {}).get('overall', {}).get('exact_accuracy_pct')}"
+    )
 
 
 def effect_lineage_evidence(lineage: dict[str, Any] | None) -> str:
@@ -302,6 +328,8 @@ def build_claim_gates(
     quality: dict[str, Any],
     stability: dict[str, Any] | None = None,
     user_tasks: dict[str, Any] | None = None,
+    user_task_results: dict[str, Any] | None = None,
+    response_template_exists: bool = False,
     effect_lineage: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     c1_ok = compression["compression_ratio"] > 1 and compression["repeated_stack_count"] > 0
@@ -358,7 +386,7 @@ def build_claim_gates(
             "claim": "C5 user utility over trace tree/process logs",
             "verdict": "unsupported",
             "oracle": "requires scored participant responses with time, accuracy, false positives, and confidence",
-            "evidence": user_task_evidence(user_tasks),
+            "evidence": user_task_evidence(user_tasks, user_task_results, response_template_exists),
         },
         {
             "claim": "C6 exact AgentSight effect stream preserves value",
@@ -456,7 +484,7 @@ def write_summary_md(path: Path, result: dict[str, Any]) -> None:
             "",
             "## Highest-Value Next Runs",
             "",
-            "1. Collect and score the B3 user-task pilot responses to test C5.",
+            "1. Collect a B3 response CSV and score it with `score_user_task_results.py` to test C5.",
             "2. Expand B4 with manual adequacy labels and a larger multi-model tag stability run.",
             "3. Run the B6 lineage checker on live exact AgentSight effects from real sessions to test C6.",
         ]
@@ -491,6 +519,9 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
     stability = read_json(stability_path) if stability_path.exists() else None
     user_tasks_path = out_dir / "user-task-benchmark.json"
     user_tasks = read_json(user_tasks_path) if user_tasks_path.exists() else None
+    user_task_results_path = out_dir / "user-task-results.json"
+    user_task_results = read_json(user_task_results_path) if user_task_results_path.exists() else None
+    response_template_exists = (out_dir / "user-task-response-template.csv").exists()
     effect_lineage_path = out_dir / "effect-lineage-smoke.json"
     effect_lineage = read_json(effect_lineage_path) if effect_lineage_path.exists() else None
     gates = build_claim_gates(
@@ -501,6 +532,8 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
         quality,
         stability,
         user_tasks,
+        user_task_results,
+        response_template_exists,
         effect_lineage,
     )
 
@@ -528,6 +561,7 @@ def run(out_dir: Path, write_outputs: bool = True) -> dict[str, Any]:
         "tag_quality": quality,
         "tag_stability_smoke": stability,
         "user_task_benchmark": user_tasks,
+        "user_task_results": user_task_results,
         "effect_lineage_smoke": effect_lineage,
         "claim_gates": gates,
     }

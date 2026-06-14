@@ -97,6 +97,31 @@ def run(out_dir: Path) -> dict[str, int | str]:
     if not diff_rows or not required.issubset(diff_rows[0].keys()):
         raise AssertionError("agent-diff.csv is missing normalized diff columns")
 
+    packets_path = out_dir / "user-task-participant-packets.json"
+    response_template_path = out_dir / "user-task-response-template.csv"
+    if packets_path.exists() and response_template_path.exists():
+        packets = json.loads(packets_path.read_text(encoding="utf-8")).get("packets", [])
+        with response_template_path.open("r", encoding="utf-8", newline="") as handle:
+            template_rows = list(csv.DictReader(handle))
+        required_template_fields = {
+            "participant_id",
+            "packet_id",
+            "task_id",
+            "condition",
+            "response_json",
+            "task_time_seconds",
+            "confidence",
+            "notes",
+        }
+        if template_rows and not required_template_fields.issubset(template_rows[0].keys()):
+            raise AssertionError("user-task-response-template.csv is missing required columns")
+        if len(template_rows) != len(packets):
+            raise AssertionError("response template row count does not match participant packets")
+        if {row["packet_id"] for row in template_rows} != {packet["packet_id"] for packet in packets}:
+            raise AssertionError("response template packet IDs do not match participant packets")
+        if any(row.get("participant_id") or row.get("response_json") != "{}" for row in template_rows):
+            raise AssertionError("response template must not contain participant responses")
+
     for path in out_dir.glob("*"):
         if path.suffix in {".json", ".csv", ".txt", ".html", ".svg"}:
             assert_no_sensitive_text(path)

@@ -84,6 +84,12 @@ word. Invalid model output falls back to the deterministic local tagger.
   packets with no oracle fields.
 - `out/user-task-participant-packets.md`: human-readable participant packet
   summary.
+- `out/user-task-response-template.csv`: response CSV schema for collecting C5
+  participant answers.
+- `out/user-task-results.json`: scored C5 participant results after running
+  `score_user_task_results.py` on a real response CSV.
+- `out/user-task-results.csv`: per-response scored C5 rows.
+- `out/user-task-results.md`: human-readable C5 scoring summary.
 - `out/prompt-tags.csv`: sanitized prompt hashes, previews, and one-word tags.
 - `out/sessions.json`: per-session counts and tag summaries.
 
@@ -109,4 +115,12 @@ python3 docs/visexp/verify_artifacts.py --out docs/visexp/out
 python3 docs/visexp/tag_stability_smoke.py --out docs/visexp/out
 python3 docs/visexp/user_task_benchmark.py --out docs/visexp/out
 python3 docs/visexp/evaluate_artifacts.py --out docs/visexp/out
+```
+
+After collecting real C5 response rows:
+
+```bash
+python3 docs/visexp/score_user_task_results.py \
+  --responses path/to/responses.csv \
+  --out docs/visexp/out
 ```

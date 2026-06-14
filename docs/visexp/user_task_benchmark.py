@@ -276,13 +276,42 @@ def build_tasks(out_dir: Path) -> list[dict[str, Any]]:
 
 def write_answer_key(path: Path, tasks: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["task_id", "answer_json"])
+        writer = csv.DictWriter(handle, fieldnames=["task_id", "answer_json"], lineterminator="\n")
         writer.writeheader()
         for item in tasks:
             writer.writerow(
                 {
                     "task_id": item["task_id"],
                     "answer_json": json.dumps(item["oracle"], sort_keys=True),
+                }
+            )
+
+
+def write_response_template(path: Path, packets: list[dict[str, Any]]) -> None:
+    fields = [
+        "participant_id",
+        "packet_id",
+        "task_id",
+        "condition",
+        "response_json",
+        "task_time_seconds",
+        "confidence",
+        "notes",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        for packet in packets:
+            writer.writerow(
+                {
+                    "participant_id": "",
+                    "packet_id": packet["packet_id"],
+                    "task_id": packet["task_id"],
+                    "condition": packet["condition"],
+                    "response_json": "{}",
+                    "task_time_seconds": "",
+                    "confidence": "",
+                    "notes": "",
                 }
             )
 
@@ -350,6 +379,7 @@ def write_summary(path: Path, bundle: dict[str, Any]) -> None:
             "## Claim Boundary",
             "",
             "- The bundle makes C5 executable by defining questions, participant view conditions, and answer keys.",
+            "- `user-task-response-template.csv` defines the response schema consumed by `score_user_task_results.py`.",
             "- Participants should see only their assigned view condition; oracle sources and answer keys are for graders.",
             "- C5 remains unsupported until participant responses are collected and scored.",
         ]
@@ -385,6 +415,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "participant_packet_files": [
             "user-task-participant-packets.json",
             "user-task-participant-packets.md",
+            "user-task-response-template.csv",
         ],
         "tasks": tasks,
     }
@@ -395,6 +426,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         encoding="utf-8",
     )
     write_participant_summary(out_dir / "user-task-participant-packets.md", packets)
+    write_response_template(out_dir / "user-task-response-template.csv", packets)
     write_summary(out_dir / "user-task-benchmark.md", bundle)
     print(json.dumps({"tasks": len(tasks), "packets": len(packets), "out": str(out_dir)}, indent=2))
     return bundle

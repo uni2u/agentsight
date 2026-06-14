@@ -26,6 +26,7 @@ from tag_stability_smoke import (
 )
 from user_task_benchmark import parse_variants, participant_packets, stack_frame
 from effect_lineage_smoke import lineage_rows
+from score_user_task_results import is_placeholder_response, score_response, summarize
 
 
 class AggregationTests(unittest.TestCase):
@@ -346,6 +347,78 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(rows[0]["process_id"], "new-child")
         self.assertEqual(rows[0]["orphan_reason"], "missing_tool_ancestry")
         self.assertEqual(sum(folded.values()), 0)
+
+    def test_user_task_scoring_detects_exact_and_false_positive_fields(self) -> None:
+        answer = {"weight": 7, "stack": "cmd:git", "semantic_adequacy_proven": False}
+        required = ["weight", "stack", "semantic_adequacy_proven"]
+        exact = score_response(
+            {
+                "participant_id": "p1",
+                "packet_id": "UTX-semantic",
+                "task_id": "UTX",
+                "condition": "semantic",
+                "response_json": '{"weight": "7", "stack": "cmd:git", "semantic_adequacy_proven": false}',
+                "task_time_seconds": "11.5",
+                "confidence": "4",
+            },
+            answer,
+            required,
+        )
+        wrong = score_response(
+            {
+                "participant_id": "p2",
+                "packet_id": "UTX-flat",
+                "task_id": "UTX",
+                "condition": "flat",
+                "response_json": '{"weight": 8, "stack": "cmd:git", "semantic_adequacy_proven": false, "extra": "x"}',
+                "task_time_seconds": "20",
+                "confidence": "2",
+            },
+            answer,
+            required,
+        )
+
+        self.assertTrue(exact["exact"])
+        self.assertEqual(exact["field_accuracy_pct"], 100.0)
+        self.assertFalse(wrong["exact"])
+        self.assertEqual(wrong["mismatched_fields"], ["weight"])
+        self.assertEqual(wrong["extra_fields"], ["extra"])
+        self.assertEqual(wrong["false_positive_count"], 2)
+
+    def test_user_task_summary_groups_by_condition(self) -> None:
+        rows = [
+            {"condition": "semantic", "task_id": "UT1", "participant_id": "p1", "exact": True, "field_accuracy_pct": 100.0, "task_time_seconds": 10.0, "confidence": 5.0, "false_positive_count": 0, "parse_error": ""},
+            {"condition": "flat", "task_id": "UT1", "participant_id": "p2", "exact": False, "field_accuracy_pct": 50.0, "task_time_seconds": 20.0, "confidence": 2.0, "false_positive_count": 1, "parse_error": ""},
+        ]
+
+        summary = summarize(rows)
+
+        self.assertEqual(summary["overall"]["response_count"], 2)
+        self.assertEqual(summary["overall"]["exact_accuracy_pct"], 50.0)
+        self.assertEqual(summary["by_condition"]["semantic"]["exact_accuracy_pct"], 100.0)
+        self.assertEqual(summary["by_condition"]["flat"]["false_positive_count"], 1)
+
+    def test_user_task_scoring_ignores_empty_template_rows(self) -> None:
+        self.assertTrue(
+            is_placeholder_response(
+                {
+                    "participant_id": "",
+                    "task_id": "UT1",
+                    "condition": "semantic",
+                    "response_json": "{}",
+                }
+            )
+        )
+        self.assertFalse(
+            is_placeholder_response(
+                {
+                    "participant_id": "p1",
+                    "task_id": "UT1",
+                    "condition": "semantic",
+                    "response_json": "{}",
+                }
+            )
+        )
 
 
 if __name__ == "__main__":
