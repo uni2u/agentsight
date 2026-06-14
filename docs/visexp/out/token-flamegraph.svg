@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="296" viewBox="0 0 1400 296" role="img" aria-label="Token Footprint Semantic Flamegraph">
+<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;fill:#1d2329}.title{font-size:18px;font-weight:700}.sub{font-size:12px;fill:#59636e}.frame{stroke:#fff;stroke-width:1}.label{pointer-events:none}</style>
+<rect x="0" y="0" width="1400" height="296" fill="#f7f8f4"/>
+<text class="title" x="16" y="26">Token Footprint Semantic Flamegraph</text>
+<text class="sub" x="16" y="44">Collapsed by one-word session, prompt, and LLM-call tags; width = tokens.</text>
+<rect class="frame" x="16.00" y="56.00" width="1368.00" height="23" fill="hsl(16 54% 69%)"><title>project:agentsight | 307460773 tokens | 100.0%</title></rect>
+<clipPath id="clip0"><rect x="19.00" y="56.00" width="1362.00" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip0)" x="21.00" y="72.00">project:agentsight</text>
+<rect class="frame" x="16.00" y="80.00" width="1237.59" height="23" fill="hsl(173 48% 75%)"><title>agent:claude | 278151068 tokens | 90.5%</title></rect>
+<clipPath id="clip1"><rect x="19.00" y="80.00" width="1231.59" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip1)" x="21.00" y="96.00">agent:claude</text>
+<rect class="frame" x="16.00" y="104.00" width="641.64" height="23" fill="hsl(66 72% 64%)"><title>session:paper | 144210095 tokens | 46.9%</title></rect>
+<clipPath id="clip2"><rect x="19.00" y="104.00" width="635.64" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip2)" x="21.00" y="120.00">session:paper</text>
+<rect class="frame" x="16.00" y="128.00" width="641.64" height="23" fill="hsl(87 47% 73%)"><title>prompt:paper | 144210095 tokens | 46.9%</title></rect>
+<clipPath id="clip3"><rect x="19.00" y="128.00" width="635.64" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip3)" x="21.00" y="144.00">prompt:paper</text>
+<rect class="frame" x="16.00" y="152.00" width="641.64" height="23" fill="hsl(153 61% 72%)"><title>llm:paper | 144210095 tokens | 46.9%</title></rect>
+<clipPath id="clip4"><rect x="19.00" y="152.00" width="635.64" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip4)" x="21.00" y="168.00">llm:paper</text>
+<rect class="frame" x="16.00" y="176.00" width="641.64" height="23" fill="hsl(241 51% 68%)"><title>model:claude-opus-4-6 | 144210095 tokens | 46.9%</title></rect>
+<clipPath id="clip5"><rect x="19.00" y="176.00" width="635.64" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip5)" x="21.00" y="192.00">model:claude-opus-4-6</text>
+<rect class="frame" x="16.00" y="200.00" width="639.81" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 143798965 tokens | 46.8%</title></rect>
+<clipPath id="clip6"><rect x="19.00" y="200.00" width="633.81" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip6)" x="21.00" y="216.00">kind:cache</text>
+<rect class="frame" x="655.81" y="200.00" width="1.70" height="23" fill="hsl(128 46% 70%)"><title>kind:output | 382019 tokens | 0.1%</title></rect>
+<rect class="frame" x="657.64" y="104.00" width="592.74" height="23" fill="hsl(64 56% 63%)"><title>session:model | 133219008 tokens | 43.3%</title></rect>
+<clipPath id="clip7"><rect x="660.64" y="104.00" width="586.74" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip7)" x="662.64" y="120.00">session:model</text>
+<rect class="frame" x="657.64" y="128.00" width="563.94" height="23" fill="hsl(114 58% 68%)"><title>prompt:model | 126745760 tokens | 41.2%</title></rect>
+<clipPath id="clip8"><rect x="660.64" y="128.00" width="557.94" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip8)" x="662.64" y="144.00">prompt:model</text>
+<rect class="frame" x="657.64" y="152.00" width="555.37" height="23" fill="hsl(113 60% 71%)"><title>llm:model | 124819431 tokens | 40.6%</title></rect>
+<clipPath id="clip9"><rect x="660.64" y="152.00" width="549.37" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip9)" x="662.64" y="168.00">llm:model</text>
+<rect class="frame" x="657.64" y="176.00" width="555.37" height="23" fill="hsl(241 66% 61%)"><title>model:claude-fable-5 | 124819431 tokens | 40.6%</title></rect>
+<clipPath id="clip10"><rect x="660.64" y="176.00" width="549.37" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip10)" x="662.64" y="192.00">model:claude-fable-5</text>
+<rect class="frame" x="657.64" y="200.00" width="551.73" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 124002254 tokens | 40.3%</title></rect>
+<clipPath id="clip11"><rect x="660.64" y="200.00" width="545.73" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip11)" x="662.64" y="216.00">kind:cache</text>
+<rect class="frame" x="1209.37" y="200.00" width="3.14" height="23" fill="hsl(128 46% 70%)"><title>kind:output | 705822 tokens | 0.2%</title></rect>
+<rect class="frame" x="1213.01" y="152.00" width="6.47" height="23" fill="hsl(121 62% 75%)"><title>llm:aggregate | 1454238 tokens | 0.5%</title></rect>
+<rect class="frame" x="1213.01" y="176.00" width="6.47" height="23" fill="hsl(241 66% 61%)"><title>model:claude-fable-5 | 1454238 tokens | 0.5%</title></rect>
+<rect class="frame" x="1213.01" y="200.00" width="6.45" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 1450685 tokens | 0.5%</title></rect>
+<rect class="frame" x="1219.48" y="152.00" width="2.10" height="23" fill="hsl(183 47% 66%)"><title>llm:tagging | 472091 tokens | 0.2%</title></rect>
+<rect class="frame" x="1219.48" y="176.00" width="2.10" height="23" fill="hsl(241 66% 61%)"><title>model:claude-fable-5 | 472091 tokens | 0.2%</title></rect>
+<rect class="frame" x="1219.48" y="200.00" width="2.10" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 471029 tokens | 0.2%</title></rect>
+<rect class="frame" x="1221.58" y="128.00" width="28.80" height="23" fill="hsl(87 47% 73%)"><title>prompt:paper | 6473248 tokens | 2.1%</title></rect>
+<rect class="frame" x="1221.58" y="152.00" width="28.80" height="23" fill="hsl(113 60% 71%)"><title>llm:model | 6473248 tokens | 2.1%</title></rect>
+<rect class="frame" x="1221.58" y="176.00" width="28.80" height="23" fill="hsl(241 66% 61%)"><title>model:claude-fable-5 | 6473248 tokens | 2.1%</title></rect>
+<rect class="frame" x="1221.58" y="200.00" width="28.62" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 6433059 tokens | 2.1%</title></rect>
+<rect class="frame" x="1250.38" y="104.00" width="1.48" height="23" fill="hsl(117 56% 58%)"><title>session:claude | 331702 tokens | 0.1%</title></rect>
+<rect class="frame" x="1250.38" y="128.00" width="1.48" height="23" fill="hsl(91 69% 71%)"><title>prompt:claude | 331702 tokens | 0.1%</title></rect>
+<rect class="frame" x="1250.38" y="152.00" width="1.48" height="23" fill="hsl(122 65% 65%)"><title>llm:response | 331702 tokens | 0.1%</title></rect>
+<rect class="frame" x="1250.38" y="176.00" width="1.39" height="23" fill="hsl(241 51% 68%)"><title>model:claude-opus-4-6 | 311876 tokens | 0.1%</title></rect>
+<rect class="frame" x="1250.38" y="200.00" width="1.38" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 310919 tokens | 0.1%</title></rect>
+<rect class="frame" x="1251.85" y="104.00" width="1.19" height="23" fill="hsl(29 64% 70%)"><title>session:implement | 266379 tokens | 0.1%</title></rect>
+<rect class="frame" x="1251.85" y="128.00" width="1.19" height="23" fill="hsl(11 72% 61%)"><title>prompt:implement | 266379 tokens | 0.1%</title></rect>
+<rect class="frame" x="1251.85" y="152.00" width="0.95" height="23" fill="hsl(90 58% 62%)"><title>llm:implement | 212718 tokens | 0.1%</title></rect>
+<rect class="frame" x="1251.85" y="176.00" width="0.95" height="23" fill="hsl(126 55% 70%)"><title>model:claude-sonnet-4-5-20250929 | 212718 tokens | 0.1%</title></rect>
+<rect class="frame" x="1251.85" y="200.00" width="0.94" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 212318 tokens | 0.1%</title></rect>
+<rect class="frame" x="1253.59" y="80.00" width="130.11" height="23" fill="hsl(18 61% 64%)"><title>agent:claude-subagent | 29242338 tokens | 9.5%</title></rect>
+<clipPath id="clip12"><rect x="1256.59" y="80.00" width="124.11" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip12)" x="1258.59" y="96.00">agent:claude-subagent</text>
+<rect class="frame" x="1253.59" y="104.00" width="91.46" height="23" fill="hsl(5 71% 73%)"><title>session:subagent | 20556458 tokens | 6.7%</title></rect>
+<clipPath id="clip13"><rect x="1256.59" y="104.00" width="85.46" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip13)" x="1258.59" y="120.00">session:subagent</text>
+<rect class="frame" x="1253.59" y="128.00" width="91.46" height="23" fill="hsl(182 68% 65%)"><title>prompt:subagent | 20556458 tokens | 6.7%</title></rect>
+<clipPath id="clip14"><rect x="1256.59" y="128.00" width="85.46" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip14)" x="1258.59" y="144.00">prompt:subagent</text>
+<rect class="frame" x="1253.59" y="152.00" width="80.33" height="23" fill="hsl(51 70% 72%)"><title>llm:subagent | 18053439 tokens | 5.9%</title></rect>
+<clipPath id="clip15"><rect x="1256.59" y="152.00" width="74.33" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip15)" x="1258.59" y="168.00">llm:subagent</text>
+<rect class="frame" x="1253.59" y="176.00" width="49.48" height="23" fill="hsl(102 69% 61%)"><title>model:claude-opus-4-8 | 11121544 tokens | 3.6%</title></rect>
+<clipPath id="clip16"><rect x="1256.59" y="176.00" width="43.48" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip16)" x="1258.59" y="192.00">model:claude-opus-4-8</text>
+<rect class="frame" x="1253.59" y="200.00" width="49.33" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 11087222 tokens | 3.6%</title></rect>
+<clipPath id="clip17"><rect x="1256.59" y="200.00" width="43.33" height="23"/></clipPath>
+<text class="label" clip-path="url(#clip17)" x="1258.59" y="216.00">kind:cache</text>
+<rect class="frame" x="1303.07" y="176.00" width="15.46" height="23" fill="hsl(241 66% 61%)"><title>model:claude-fable-5 | 3474648 tokens | 1.1%</title></rect>
+<rect class="frame" x="1303.07" y="200.00" width="15.29" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 3435480 tokens | 1.1%</title></rect>
+<rect class="frame" x="1318.53" y="176.00" width="15.38" height="23" fill="hsl(241 51% 68%)"><title>model:claude-opus-4-6 | 3457247 tokens | 1.1%</title></rect>
+<rect class="frame" x="1318.53" y="200.00" width="15.33" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 3445474 tokens | 1.1%</title></rect>
+<rect class="frame" x="1333.92" y="152.00" width="9.22" height="23" fill="hsl(121 62% 75%)"><title>llm:aggregate | 2072239 tokens | 0.7%</title></rect>
+<rect class="frame" x="1333.92" y="176.00" width="8.93" height="23" fill="hsl(102 69% 61%)"><title>model:claude-opus-4-8 | 2007160 tokens | 0.7%</title></rect>
+<rect class="frame" x="1333.92" y="200.00" width="8.92" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 2005459 tokens | 0.7%</title></rect>
+<rect class="frame" x="1343.14" y="152.00" width="1.63" height="23" fill="hsl(156 51% 58%)"><title>llm:session | 365815 tokens | 0.1%</title></rect>
+<rect class="frame" x="1343.14" y="176.00" width="1.39" height="23" fill="hsl(102 69% 61%)"><title>model:claude-opus-4-8 | 311699 tokens | 0.1%</title></rect>
+<rect class="frame" x="1343.14" y="200.00" width="1.39" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 311681 tokens | 0.1%</title></rect>
+<rect class="frame" x="1345.05" y="104.00" width="38.65" height="23" fill="hsl(64 56% 63%)"><title>session:model | 8685880 tokens | 2.8%</title></rect>
+<rect class="frame" x="1345.05" y="128.00" width="38.65" height="23" fill="hsl(114 58% 68%)"><title>prompt:model | 8685880 tokens | 2.8%</title></rect>
+<rect class="frame" x="1345.05" y="152.00" width="37.48" height="23" fill="hsl(113 60% 71%)"><title>llm:model | 8424149 tokens | 2.7%</title></rect>
+<rect class="frame" x="1345.05" y="176.00" width="37.48" height="23" fill="hsl(206 59% 65%)"><title>model:claude-haiku-4-5-20251001 | 8424149 tokens | 2.7%</title></rect>
+<rect class="frame" x="1345.05" y="200.00" width="37.38" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 8401231 tokens | 2.7%</title></rect>
+<rect class="frame" x="1382.54" y="152.00" width="1.03" height="23" fill="hsl(121 62% 75%)"><title>llm:aggregate | 230869 tokens | 0.1%</title></rect>
+<rect class="frame" x="1382.54" y="176.00" width="1.03" height="23" fill="hsl(206 59% 65%)"><title>model:claude-haiku-4-5-20251001 | 230869 tokens | 0.1%</title></rect>
+<rect class="frame" x="1382.54" y="200.00" width="1.01" height="23" fill="hsl(3 59% 65%)"><title>kind:cache | 225896 tokens | 0.1%</title></rect>
+<text class="sub" x="16" y="278">total: 307460773 tokens</text>
+</svg>

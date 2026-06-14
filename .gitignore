@@ -17,6 +17,7 @@ record.log.*
 # Log files
 *.log
 docs/blog
+docs/visexp/out/*tag-cache.json
 
 node_modules/
 

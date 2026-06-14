@@ -1,0 +1,755 @@
+{
+  "generated_at": "2026-06-14T04:17:33+00:00",
+  "project": "agentsight",
+  "config": {
+    "scan_files": 180,
+    "max_sessions": 36,
+    "llama_limit": 60,
+    "include_previews": false
+  },
+  "session_fingerprint": "8d1f9fe23cadb1f8",
+  "session_count": 36,
+  "source_counts": {
+    "codex-subagent": 7,
+    "codex": 6,
+    "claude": 16,
+    "claude-subagent": 7
+  },
+  "raw_tool_events": 4419,
+  "raw_llm_events": 3950,
+  "expanded_system_observations": 5559,
+  "system_unique_stacks": 1813,
+  "nonsemantic_system_unique_stacks": 1545,
+  "token_unique_stacks": 132,
+  "system_total_weight": 5559,
+  "nonsemantic_system_total_weight": 5559,
+  "token_total_weight": 307460773,
+  "system_collapsed_observations": 3746,
+  "system_observation_expansion": 1140,
+  "nonsemantic_collapsed_observations": 4014,
+  "token_collapsed_observations": 307460641,
+  "system_max_stack_reuse": 173,
+  "nonsemantic_max_stack_reuse": 288,
+  "token_max_stack_reuse": 143798965,
+  "top_system_stacks": [
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok",
+      "weight": 173
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok",
+      "weight": 167
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;status:ok",
+      "weight": 165
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:paper;prompt:paper;tool:shell;cmd:git;effect:read;status:ok",
+      "weight": 83
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:paper;prompt:paper;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok",
+      "weight": 77
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok",
+      "weight": 62
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:cargo;effect:test;status:ok",
+      "weight": 41
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:sed;effect:read;path:collector/src/view;status:ok",
+      "weight": 40
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:agentsight;effect:process;path:collector/target/debug;status:ok",
+      "weight": 38
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:rg;effect:read;path:collector/src;status:ok",
+      "weight": 36
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:session;prompt:session;tool:shell;cmd:python3;effect:process;status:ok",
+      "weight": 32
+    },
+    {
+      "stack": "project:agentsight;agent:codex;session:paper;prompt:paper;tool:shell;cmd:cargo;effect:test;status:ok",
+      "weight": 31
+    }
+  ],
+  "top_nonsemantic_stacks": [
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:git;effect:read;status:ok",
+      "weight": 288
+    },
+    {
+      "stack": "project:agentsight;agent:claude;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok",
+      "weight": 167
+    },
+    {
+      "stack": "project:agentsight;agent:claude;tool:shell;cmd:gh;effect:process;status:ok",
+      "weight": 166
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:cargo;effect:test;status:ok",
+      "weight": 82
+    },
+    {
+      "stack": "project:agentsight;agent:claude;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok",
+      "weight": 77
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:gh;effect:process;status:ok",
+      "weight": 70
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:sed;effect:read;path:collector/src/view;status:ok",
+      "weight": 67
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:sed;effect:read;path:collector/src/sources;status:ok",
+      "weight": 65
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:python3;effect:process;status:ok",
+      "weight": 64
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:tool;cmd:write;effect:process;status:observed",
+      "weight": 52
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:shell;cmd:rg;effect:read;path:collector/src;status:ok",
+      "weight": 50
+    },
+    {
+      "stack": "project:agentsight;agent:codex;tool:tool;cmd:write;effect:process;status:ok",
+      "weight": 50
+    }
+  ],
+  "top_token_stacks": [
+    {
+      "stack": "project:agentsight;agent:claude;session:paper;prompt:paper;llm:paper;model:claude-opus-4-6;kind:cache",
+      "weight": 143798965
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:model;prompt:model;llm:model;model:claude-fable-5;kind:cache",
+      "weight": 124002254
+    },
+    {
+      "stack": "project:agentsight;agent:claude-subagent;session:subagent;prompt:subagent;llm:subagent;model:claude-opus-4-8;kind:cache",
+      "weight": 11087222
+    },
+    {
+      "stack": "project:agentsight;agent:claude-subagent;session:model;prompt:model;llm:model;model:claude-haiku-4-5-20251001;kind:cache",
+      "weight": 8401231
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:model;prompt:paper;llm:model;model:claude-fable-5;kind:cache",
+      "weight": 6433059
+    },
+    {
+      "stack": "project:agentsight;agent:claude-subagent;session:subagent;prompt:subagent;llm:subagent;model:claude-opus-4-6;kind:cache",
+      "weight": 3445474
+    },
+    {
+      "stack": "project:agentsight;agent:claude-subagent;session:subagent;prompt:subagent;llm:subagent;model:claude-fable-5;kind:cache",
+      "weight": 3435480
+    },
+    {
+      "stack": "project:agentsight;agent:claude-subagent;session:subagent;prompt:subagent;llm:aggregate;model:claude-opus-4-8;kind:cache",
+      "weight": 2005459
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:model;prompt:model;llm:aggregate;model:claude-fable-5;kind:cache",
+      "weight": 1450685
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:model;prompt:model;llm:model;model:claude-fable-5;kind:output",
+      "weight": 705822
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:model;prompt:model;llm:tagging;model:claude-fable-5;kind:cache",
+      "weight": 471029
+    },
+    {
+      "stack": "project:agentsight;agent:claude;session:paper;prompt:paper;llm:paper;model:claude-opus-4-6;kind:output",
+      "weight": 382019
+    }
+  ],
+  "token_weight_by_kind": {
+    "estimate": 67367,
+    "input": 166179,
+    "output": 1225675,
+    "cache": 306001552
+  },
+  "top_prompt_tags": [
+    [
+      "session",
+      60
+    ],
+    [
+      "paper",
+      46
+    ],
+    [
+      "flamegraph",
+      31
+    ],
+    [
+      "model",
+      25
+    ],
+    [
+      "claude",
+      9
+    ],
+    [
+      "prompt",
+      5
+    ],
+    [
+      "subagent",
+      3
+    ],
+    [
+      "debug",
+      2
+    ],
+    [
+      "test",
+      2
+    ],
+    [
+      "readreview",
+      1
+    ],
+    [
+      "reviewing",
+      1
+    ],
+    [
+      "implement",
+      1
+    ]
+  ],
+  "top_session_tags": [
+    [
+      "claude",
+      9
+    ],
+    [
+      "model",
+      5
+    ],
+    [
+      "session",
+      4
+    ],
+    [
+      "paper",
+      3
+    ],
+    [
+      "subagent",
+      3
+    ],
+    [
+      "reviewing",
+      2
+    ],
+    [
+      "osdi",
+      2
+    ],
+    [
+      "flamegraph",
+      2
+    ],
+    [
+      "debug",
+      2
+    ],
+    [
+      "test",
+      2
+    ],
+    [
+      "reviewdoc",
+      1
+    ],
+    [
+      "implement",
+      1
+    ]
+  ],
+  "tag_contract": {
+    "total_tags": 4172,
+    "unique_tags": 50,
+    "invalid_tags": [],
+    "invalid_count": 0,
+    "requests": 4172,
+    "cache_hits": 1820,
+    "llama_successes": 60,
+    "fallback_uses": 2292
+  },
+  "tagger": {
+    "mode": "llama",
+    "llama_cli": "llama-cli",
+    "model": "qwen2.5-3b-instruct-q4_k_m.gguf",
+    "llama_calls": 60,
+    "llama_successes": 60,
+    "fallback_uses": 2292,
+    "llama_failures": []
+  },
+  "warnings": [],
+  "input_manifest_sha256": "91036406f8d696b8ad4ea4b358818a86153d423a94b882575c35c1ff4454165a",
+  "top_agent_diffs": [
+    {
+      "cohort": "top",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok",
+      "codex": 6,
+      "claude": 167,
+      "codex_rate_per_1k": 1.83,
+      "claude_rate_per_1k": 113.528,
+      "rate_delta_per_1k": -111.698,
+      "abs_delta": 111.69838593409764,
+      "total": 173,
+      "winner": "claude",
+      "one_sided": false
+    },
+    {
+      "cohort": "top",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;status:ok",
+      "codex": 31,
+      "claude": 165,
+      "codex_rate_per_1k": 9.454,
+      "claude_rate_per_1k": 112.169,
+      "rate_delta_per_1k": -102.714,
+      "abs_delta": 102.7144909336944,
+      "total": 196,
+      "winner": "claude",
+      "one_sided": false
+    },
+    {
+      "cohort": "all",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;path:eunomia-bpf/agentsight;status:ok",
+      "codex": 6,
+      "claude": 167,
+      "codex_rate_per_1k": 1.642,
+      "claude_rate_per_1k": 87.618,
+      "rate_delta_per_1k": -85.976,
+      "abs_delta": 85.97556264037463,
+      "total": 173,
+      "winner": "claude",
+      "one_sided": false
+    },
+    {
+      "cohort": "all",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:gh;effect:process;status:ok",
+      "codex": 31,
+      "claude": 165,
+      "codex_rate_per_1k": 8.486,
+      "claude_rate_per_1k": 86.569,
+      "rate_delta_per_1k": -78.083,
+      "abs_delta": 78.08255457932633,
+      "total": 196,
+      "winner": "claude",
+      "one_sided": false
+    },
+    {
+      "cohort": "top",
+      "stack": "project:agentsight;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok",
+      "codex": 173,
+      "claude": 0,
+      "codex_rate_per_1k": 52.76,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 52.76,
+      "abs_delta": 52.75998780115889,
+      "total": 173,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "top",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok",
+      "codex": 0,
+      "claude": 77,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 52.345,
+      "rate_delta_per_1k": -52.345,
+      "abs_delta": 52.34534330387491,
+      "total": 77,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "all",
+      "stack": "project:agentsight;session:session;prompt:session;tool:shell;cmd:git;effect:read;status:ok",
+      "codex": 173,
+      "claude": 0,
+      "codex_rate_per_1k": 47.358,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 47.358,
+      "abs_delta": 47.35833561456337,
+      "total": 173,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:osdi;prompt:prompt;tool:shell;cmd:nl;effect:read;path:docs/visexp/semantic_tag_flamegraph.py;status:ok",
+      "codex": 16,
+      "claude": 0,
+      "codex_rate_per_1k": 42.781,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 42.781,
+      "abs_delta": 42.780748663101605,
+      "total": 16,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:git;effect:read;path:origin/master...head;status:ok",
+      "codex": 16,
+      "claude": 0,
+      "codex_rate_per_1k": 42.781,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 42.781,
+      "abs_delta": 42.780748663101605,
+      "total": 16,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "all",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:tail;effect:read;path:session/tasks;status:ok",
+      "codex": 0,
+      "claude": 77,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 40.399,
+      "rate_delta_per_1k": -40.399,
+      "abs_delta": 40.398740818468,
+      "total": 77,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:subagent;prompt:subagent;tool:edit;cmd:edit;effect:write;path:collector/src/cmd_exec.rs;status:ok",
+      "codex": 0,
+      "claude": 15,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 34.483,
+      "rate_delta_per_1k": -34.483,
+      "abs_delta": 34.48275862068966,
+      "total": 15,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:subagent;prompt:subagent;tool:shell;cmd:cargo;effect:test;status:ok",
+      "codex": 0,
+      "claude": 14,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 32.184,
+      "rate_delta_per_1k": -32.184,
+      "abs_delta": 32.18390804597701,
+      "total": 14,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:reviewdoc;prompt:readreview;tool:shell;cmd:nl;effect:read;path:docs/visexp/out;status:ok",
+      "codex": 10,
+      "claude": 0,
+      "codex_rate_per_1k": 26.738,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 26.738,
+      "abs_delta": 26.737967914438503,
+      "total": 10,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:model;prompt:model;tool:shell;cmd:grep;effect:read;path:collector/src;status:ok",
+      "codex": 0,
+      "claude": 10,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 22.989,
+      "rate_delta_per_1k": -22.989,
+      "abs_delta": 22.988505747126435,
+      "total": 10,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:subagent;prompt:subagent;tool:edit;cmd:edit;effect:write;path:collector/src/cmd_top.rs;status:ok",
+      "codex": 0,
+      "claude": 10,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 22.989,
+      "rate_delta_per_1k": -22.989,
+      "abs_delta": 22.988505747126435,
+      "total": 10,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:subagent;prompt:subagent;tool:edit;cmd:edit;effect:write;path:collector/src/output;status:ok",
+      "codex": 0,
+      "claude": 10,
+      "codex_rate_per_1k": 0.0,
+      "claude_rate_per_1k": 22.989,
+      "rate_delta_per_1k": -22.989,
+      "abs_delta": 22.988505747126435,
+      "total": 10,
+      "winner": "claude",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:osdi;prompt:prompt;tool:shell;cmd:head;effect:read;path:docs/visexp/out;status:ok",
+      "codex": 8,
+      "claude": 0,
+      "codex_rate_per_1k": 21.39,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 21.39,
+      "abs_delta": 21.390374331550802,
+      "total": 8,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:nl;effect:read;path:collector/src/cmd_trace.rs;status:ok",
+      "codex": 8,
+      "claude": 0,
+      "codex_rate_per_1k": 21.39,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 21.39,
+      "abs_delta": 21.390374331550802,
+      "total": 8,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:paper;prompt:paper;tool:shell;cmd:nl;effect:read;path:collector/src/view;status:ok",
+      "codex": 8,
+      "claude": 0,
+      "codex_rate_per_1k": 21.39,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 21.39,
+      "abs_delta": 21.390374331550802,
+      "total": 8,
+      "winner": "codex",
+      "one_sided": true
+    },
+    {
+      "cohort": "subagent",
+      "stack": "project:agentsight;session:reviewing;prompt:prompt;tool:shell;cmd:nl;effect:read;path:docs/visexp/semantic_tag_flamegraph.py;status:ok",
+      "codex": 8,
+      "claude": 0,
+      "codex_rate_per_1k": 21.39,
+      "claude_rate_per_1k": 0.0,
+      "rate_delta_per_1k": 21.39,
+      "abs_delta": 21.390374331550802,
+      "total": 8,
+      "winner": "codex",
+      "one_sided": true
+    }
+  ],
+  "top_command_summary": [
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "sed",
+      "effect": "read",
+      "status": "ok",
+      "count": 469
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "git",
+      "effect": "read",
+      "status": "ok",
+      "count": 449
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "gh",
+      "effect": "process",
+      "status": "ok",
+      "count": 336
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "rg",
+      "effect": "read",
+      "status": "ok",
+      "count": 159
+    },
+    {
+      "agent": "claude",
+      "cohort": "subagent",
+      "tool": "read",
+      "cmd": "read",
+      "effect": "read",
+      "status": "ok",
+      "count": 148
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "edit",
+      "cmd": "edit",
+      "effect": "write",
+      "status": "ok",
+      "count": 110
+    },
+    {
+      "agent": "codex",
+      "cohort": "subagent",
+      "tool": "shell",
+      "cmd": "nl",
+      "effect": "read",
+      "status": "ok",
+      "count": 109
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "cargo",
+      "effect": "test",
+      "status": "ok",
+      "count": 106
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "read",
+      "cmd": "read",
+      "effect": "read",
+      "status": "ok",
+      "count": 105
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "python3",
+      "effect": "process",
+      "status": "ok",
+      "count": 90
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "tail",
+      "effect": "read",
+      "status": "ok",
+      "count": 78
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "gh",
+      "effect": "process",
+      "status": "ok",
+      "count": 78
+    },
+    {
+      "agent": "claude",
+      "cohort": "subagent",
+      "tool": "edit",
+      "cmd": "edit",
+      "effect": "write",
+      "status": "ok",
+      "count": 67
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "cd",
+      "effect": "process",
+      "status": "ok",
+      "count": 65
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "grep",
+      "effect": "read",
+      "status": "ok",
+      "count": 59
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "agentsight",
+      "effect": "process",
+      "status": "ok",
+      "count": 59
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "tool",
+      "cmd": "write",
+      "effect": "process",
+      "status": "observed",
+      "count": 52
+    },
+    {
+      "agent": "codex",
+      "cohort": "top",
+      "tool": "tool",
+      "cmd": "write",
+      "effect": "process",
+      "status": "ok",
+      "count": 50
+    },
+    {
+      "agent": "claude",
+      "cohort": "subagent",
+      "tool": "shell",
+      "cmd": "grep",
+      "effect": "read",
+      "status": "ok",
+      "count": 49
+    },
+    {
+      "agent": "claude",
+      "cohort": "top",
+      "tool": "shell",
+      "cmd": "git",
+      "effect": "read",
+      "status": "ok",
+      "count": 47
+    }
+  ]
+}
