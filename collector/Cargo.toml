@@ -1,6 +1,6 @@
 [package]
 name = "agentsight"
-version = "0.2.26"
+version = "0.2.27"
 edition = "2024"
 rust-version = "1.87"
 description = "eBPF-based observability for AI agent sessions, prompts, process trees, files, network activity, and token usage."
