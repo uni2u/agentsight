@@ -15,6 +15,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PRODUCT_WEBSITE_BRANCH: agentsight-site
+
 concurrency:
   group: deploy-product-website
   cancel-in-progress: true
@@ -47,5 +50,5 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./docs/website/out
-          publish_branch: agentsight-site
+          publish_branch: ${{ env.PRODUCT_WEBSITE_BRANCH }}
           force_orphan: true

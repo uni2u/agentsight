@@ -157,7 +157,9 @@ pub fn discover_sessions(
                 .unwrap_or(0),
         )
     });
-    candidates.truncate(scan_files);
+    if scan_files > 0 {
+        candidates.truncate(scan_files);
+    }
     let mut out = Vec::new();
     let mut warnings = Vec::new();
     for candidate in candidates {
@@ -196,7 +198,7 @@ pub fn discover_sessions(
         {
             out.push(session);
         }
-        if out.len() >= max_sessions {
+        if max_sessions > 0 && out.len() >= max_sessions {
             break;
         }
     }
@@ -240,7 +242,9 @@ fn find_jsonl(root: &Path, max_files: usize) -> Vec<PathBuf> {
                 .unwrap_or(0),
         )
     });
-    files.truncate(max_files);
+    if max_files > 0 {
+        files.truncate(max_files);
+    }
     files
 }
 
