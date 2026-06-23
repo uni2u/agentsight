@@ -208,7 +208,7 @@ fn build_time_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
         }
         for event in &session.tools {
             if let Some(ts) = event.ts_ms {
-                let req = session.request_by_index(event.request_index);
+                let req = session.request_by_index(event.prompt_index);
                 let mut frames = vec![
                     "kind:tool".to_string(),
                     safe_frame(&event.tool_name, Some("tool")),
@@ -228,7 +228,7 @@ fn build_time_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
         }
         for call in &session.llm_calls {
             if let Some(ts) = call.ts_ms {
-                let req = session.request_by_index(call.request_index);
+                let req = session.request_by_index(call.prompt_index);
                 events.push((
                     ts,
                     req.tag.clone(),
@@ -271,7 +271,7 @@ fn build_token_profile_stacks(sessions: &[SessionRecord], project_name: &str) ->
     let mut out = Counter::new();
     for session in sessions {
         for call in &session.llm_calls {
-            let req = session.request_by_index(call.request_index);
+            let req = session.request_by_index(call.prompt_index);
             for (kind, value) in call.token_components() {
                 folded_add(
                     &mut out,
@@ -299,7 +299,7 @@ fn build_file_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
             if event.path_groups.is_empty() {
                 continue;
             }
-            let req = session.request_by_index(event.request_index);
+            let req = session.request_by_index(event.prompt_index);
             for group in &event.path_groups {
                 folded_add(
                     &mut out,
@@ -327,7 +327,7 @@ fn build_network_stacks(sessions: &[SessionRecord], project_name: &str) -> Count
             if event.effect != "network" && event.domains.is_empty() {
                 continue;
             }
-            let req = session.request_by_index(event.request_index);
+            let req = session.request_by_index(event.prompt_index);
             let domains = if event.domains.is_empty() {
                 vec!["unknown".to_string()]
             } else {
@@ -351,7 +351,6 @@ fn build_network_stacks(sessions: &[SessionRecord], project_name: &str) -> Count
     }
     out
 }
-
 
 pub fn folded_add(counter: &mut Counter, frames: Vec<String>, weight: u64) {
     let stack = frames
@@ -787,7 +786,7 @@ pub fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value
             "preview": if include_previews { req.preview.clone() } else { "redacted".to_string() },
         })).collect::<Vec<_>>(),
         "tool_events": session.tools.iter().map(|event| {
-            let request = session.request_by_index(event.request_index);
+            let request = session.request_by_index(event.prompt_index);
             json!({
                 "ts_ms": event.ts_ms,
                 "prompt_index": request.index,
@@ -808,7 +807,7 @@ pub fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value
             })
         }).collect::<Vec<_>>(),
         "llm_events": session.llm_calls.iter().map(|call| {
-            let request = session.request_by_index(call.request_index);
+            let request = session.request_by_index(call.prompt_index);
             json!({
                 "ts_ms": call.ts_ms,
                 "prompt_index": request.index,
@@ -821,7 +820,7 @@ pub fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value
                 "input_tokens": call.input_tokens,
                 "output_tokens": call.output_tokens,
                 "cache_tokens": call.cache_tokens,
-                "estimated_tokens": call.estimated_tokens,
+                "estimated_tokens": call.total_tokens,
                 "preview": if include_previews { call.preview.clone() } else { "redacted".to_string() },
             })
         }).collect::<Vec<_>>()
@@ -1022,7 +1021,7 @@ mod tests {
             }],
             tools: vec![ToolEvent {
                 ts_ms: Some(3000),
-                request_index: 0,
+                prompt_index: 0,
                 tool_name: "exec_command".to_string(),
                 category: "shell".to_string(),
                 command: "cargo test".to_string(),
@@ -1036,14 +1035,14 @@ mod tests {
             }],
             llm_calls: vec![LlmEvent {
                 ts_ms: Some(8000),
-                request_index: 0,
+                prompt_index: 0,
                 model: "gpt-5".to_string(),
                 text_hash: "l1".to_string(),
                 preview: "ran tests".to_string(),
                 input_tokens: 11,
                 output_tokens: 7,
                 cache_tokens: 0,
-                estimated_tokens: 0,
+                total_tokens: 0,
                 tag: "summarize".to_string(),
             }],
             session_tag: "rustfix".to_string(),
@@ -1095,7 +1094,7 @@ mod tests {
             ],
             tools: vec![ToolEvent {
                 ts_ms: Some(3),
-                request_index: 1,
+                prompt_index: 1,
                 tool_name: "Bash".to_string(),
                 category: "shell".to_string(),
                 command: "cargo test".to_string(),
@@ -1109,14 +1108,14 @@ mod tests {
             }],
             llm_calls: vec![LlmEvent {
                 ts_ms: Some(4),
-                request_index: 0,
+                prompt_index: 0,
                 model: "claude".to_string(),
                 text_hash: "l0".to_string(),
                 preview: "answer".to_string(),
                 input_tokens: 1,
                 output_tokens: 1,
                 cache_tokens: 0,
-                estimated_tokens: 0,
+                total_tokens: 0,
                 tag: "answer".to_string(),
             }],
             session_tag: "review".to_string(),

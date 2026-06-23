@@ -97,10 +97,10 @@ agentpprof -o network.json  --view network  # redacted JSON summary and stacks
 ```
 
 The checked-in gallery under `docs/flamegraph/` was generated from real local
-AgentSight development sessions, not toy transcripts. It includes tokens, time,
-files, and network flamegraphs. A token flamegraph looks like this:
+bpf-benchmark development sessions, not toy transcripts. It includes tokens,
+time, files, and network flamegraphs. A token flamegraph looks like this:
 
-![agentpprof token flamegraph](https://github.com/eunomia-bpf/agentsight/raw/master/docs/flamegraph/examples/tokens.svg)
+![agentpprof token flamegraph](https://github.com/eunomia-bpf/agentsight/raw/master/docs/flamegraph/examples/bpf-benchmark-tokens.svg)
 
 ## What data does it read?
 

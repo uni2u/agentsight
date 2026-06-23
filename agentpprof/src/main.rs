@@ -252,11 +252,14 @@ fn command_export(args: Cli) -> Result<()> {
         });
         if !diag.unmatched_samples.is_empty() {
             result["tagging"]["unmatched_samples"] = json!(
-                diag.unmatched_samples.iter().map(|s| json!({
-                    "kind": s.kind,
-                    "preview": s.preview,
-                    "session_id": s.session_id,
-                })).collect::<Vec<_>>()
+                diag.unmatched_samples
+                    .iter()
+                    .map(|s| json!({
+                        "kind": s.kind,
+                        "preview": s.preview,
+                        "session_id": s.session_id,
+                    }))
+                    .collect::<Vec<_>>()
             );
             result["tagging"]["hint"] = json!(
                 "Add --tag-rule arguments to match unmatched items. Example: --tag-rule session:research='(?i)research|paper' or --tag-rule prompt:debug='(?i)fix|bug|error'"
@@ -317,23 +320,26 @@ fn filter_session_by_prompt_tag(session: &mut SessionRecord, tag: &str) {
     session.tools = std::mem::take(&mut session.tools)
         .into_iter()
         .filter_map(|mut event| {
-            let new_ordinal = row_map.get(&event.request_index).copied()?;
-            event.request_index = new_ordinal;
+            let new_ordinal = row_map.get(&event.prompt_index).copied()?;
+            event.prompt_index = new_ordinal;
             Some(event)
         })
         .collect();
     session.llm_calls = std::mem::take(&mut session.llm_calls)
         .into_iter()
         .filter_map(|mut call| {
-            let new_ordinal = row_map.get(&call.request_index).copied()?;
-            call.request_index = new_ordinal;
+            let new_ordinal = row_map.get(&call.prompt_index).copied()?;
+            call.prompt_index = new_ordinal;
             Some(call)
         })
         .collect();
     session.user_requests = selected.into_iter().map(|(_, req)| req).collect();
 }
 
-fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<Option<TagDiagnostics>> {
+fn annotate_sessions_with(
+    sessions: &mut [SessionRecord],
+    args: &Cli,
+) -> Result<Option<TagDiagnostics>> {
     match args.tagger {
         TaggerKind::Regex => {
             let tagger = RegexTagger::new(&args.tag_rules, args.preset)?;
@@ -397,7 +403,7 @@ mod tests {
             tools: vec![
                 ToolEvent {
                     ts_ms: Some(3),
-                    request_index: 0,
+                    prompt_index: 0,
                     tool_name: "Read".to_string(),
                     category: "read".to_string(),
                     command: String::new(),
@@ -411,7 +417,7 @@ mod tests {
                 },
                 ToolEvent {
                     ts_ms: Some(4),
-                    request_index: 1,
+                    prompt_index: 1,
                     tool_name: "Bash".to_string(),
                     category: "shell".to_string(),
                     command: "cargo test".to_string(),
@@ -427,26 +433,26 @@ mod tests {
             llm_calls: vec![
                 LlmEvent {
                     ts_ms: Some(5),
-                    request_index: 0,
+                    prompt_index: 0,
                     model: "claude".to_string(),
                     text_hash: "l0".to_string(),
                     preview: "review answer".to_string(),
                     input_tokens: 1,
                     output_tokens: 1,
                     cache_tokens: 0,
-                    estimated_tokens: 0,
+                    total_tokens: 0,
                     tag: "answer".to_string(),
                 },
                 LlmEvent {
                     ts_ms: Some(6),
-                    request_index: 1,
+                    prompt_index: 1,
                     model: "claude".to_string(),
                     text_hash: "l1".to_string(),
                     preview: "test answer".to_string(),
                     input_tokens: 2,
                     output_tokens: 3,
                     cache_tokens: 0,
-                    estimated_tokens: 0,
+                    total_tokens: 0,
                     tag: "answer".to_string(),
                 },
             ],
@@ -459,10 +465,10 @@ mod tests {
         assert_eq!(session.user_requests[0].text_hash, "h1");
         assert_eq!(session.user_requests[0].index, 0);
         assert_eq!(session.tools.len(), 1);
-        assert_eq!(session.tools[0].request_index, 0);
+        assert_eq!(session.tools[0].prompt_index, 0);
         assert_eq!(session.tools[0].effect, "test");
         assert_eq!(session.llm_calls.len(), 1);
-        assert_eq!(session.llm_calls[0].request_index, 0);
+        assert_eq!(session.llm_calls[0].prompt_index, 0);
         assert_eq!(session.llm_calls[0].text_hash, "l1");
 
         let payload = profile::session_to_json(&session, false);

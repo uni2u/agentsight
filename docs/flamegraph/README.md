@@ -28,7 +28,7 @@ time went. Use `files` and `network` for security audits.
 ## Example Gallery
 
 These checked-in images were generated from real local Codex/Claude sessions
-for AgentSight with regex tags and redacted outputs. The committed files are
+for bpf-benchmark with regex tags and redacted outputs. The committed files are
 only SVG and folded-stack projections; they do not include raw session logs,
 prompt previews, command previews, home paths, or secrets. Repo-external local
 paths are grouped as `external/home`, `external/tmp`, `external/codex`,
@@ -37,19 +37,19 @@ username are grouped as `private.domain`.
 
 ### Tokens
 
-![Tokens flamegraph](examples/tokens.svg)
+![Tokens flamegraph](examples/bpf-benchmark-tokens.svg)
 
 ### Time
 
-![Time flamegraph](examples/time.svg)
+![Time flamegraph](examples/bpf-benchmark-time.svg)
 
 ### Files
 
-![Files flamegraph](examples/files.svg)
+![Files flamegraph](examples/bpf-benchmark-files.svg)
 
 ### Network
 
-![Network flamegraph](examples/network.svg)
+![Network flamegraph](examples/bpf-benchmark-network.svg)
 
 ## Output Formats
 

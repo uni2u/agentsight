@@ -266,7 +266,12 @@ impl RegexTagger {
         self.tag_with_fallback(kind, text, None)
     }
 
-    pub fn tag_with_fallback(&self, kind: &str, text: &str, _fallback: Option<&str>) -> Option<String> {
+    pub fn tag_with_fallback(
+        &self,
+        kind: &str,
+        text: &str,
+        _fallback: Option<&str>,
+    ) -> Option<String> {
         if let Some(tag) = self.custom_tag(kind, text) {
             return Some(tag);
         }
@@ -361,11 +366,17 @@ pub fn annotate_sessions_regex(
             ) {
                 req.tag = tag.clone();
                 diagnostics.matched_prompts += 1;
-                *diagnostics.tag_counts.entry(format!("prompt:{}", tag)).or_default() += 1;
+                *diagnostics
+                    .tag_counts
+                    .entry(format!("prompt:{}", tag))
+                    .or_default() += 1;
             } else {
                 req.tag = UNMATCHED_TAG.to_string();
                 diagnostics.unmatched_prompts += 1;
-                *diagnostics.tag_counts.entry("prompt:unmatched".to_string()).or_default() += 1;
+                *diagnostics
+                    .tag_counts
+                    .entry("prompt:unmatched".to_string())
+                    .or_default() += 1;
                 if diagnostics.unmatched_samples.len() < 30 {
                     diagnostics.unmatched_samples.push(UnmatchedSample {
                         kind: "prompt".to_string(),
@@ -382,7 +393,10 @@ pub fn annotate_sessions_regex(
             if let Some(tag) = tagger.tag("llm", &call.preview, &[]) {
                 session.llm_calls[idx].tag = tag.clone();
                 diagnostics.matched_llm_calls += 1;
-                *diagnostics.tag_counts.entry(format!("llm:{}", tag)).or_default() += 1;
+                *diagnostics
+                    .tag_counts
+                    .entry(format!("llm:{}", tag))
+                    .or_default() += 1;
             } else {
                 session.llm_calls[idx].tag = UNMATCHED_TAG.to_string();
                 diagnostics.unmatched_llm_calls += 1;
@@ -393,10 +407,7 @@ pub fn annotate_sessions_regex(
     diagnostics
 }
 
-pub fn annotate_sessions(
-    sessions: &mut [SessionRecord],
-    tagger: &mut LlamaTagger,
-) -> Result<()> {
+pub fn annotate_sessions(sessions: &mut [SessionRecord], tagger: &mut LlamaTagger) -> Result<()> {
     for session in sessions {
         let prompt_text = session
             .user_requests
@@ -510,7 +521,6 @@ fn keyword_tag(text: &str) -> Option<String> {
         .map(|(tag, _)| (*tag).to_string())
 }
 
-
 pub fn default_tag_cache_path() -> PathBuf {
     dirs::cache_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join(".cache")))
@@ -558,7 +568,9 @@ pub fn validate_tag(tag: &str) -> Result<(), String> {
         ));
     }
     // Warn for vague tags that don't convey semantic meaning
-    const VAGUE_TAGS: &[&str] = &["task", "work", "misc", "thing", "stuff", "other", "item", "data"];
+    const VAGUE_TAGS: &[&str] = &[
+        "task", "work", "misc", "thing", "stuff", "other", "item", "data",
+    ];
     if VAGUE_TAGS.contains(&tag) {
         eprintln!(
             "Warning: tag \"{}\" is vague and unlikely to aggregate meaningfully. Consider a more specific semantic tag.",
@@ -594,16 +606,22 @@ mod tests {
 
     #[test]
     fn custom_tag_rules_match() {
-        let tagger = RegexTagger::new(&[
-            "prompt:verify=(?i)cargo test|pytest".to_string(),
-            "prompt:review=(?i)review|diff|regression".to_string(),
-        ], false)
+        let tagger = RegexTagger::new(
+            &[
+                "prompt:verify=(?i)cargo test|pytest".to_string(),
+                "prompt:review=(?i)review|diff|regression".to_string(),
+            ],
+            false,
+        )
         .unwrap();
         assert_eq!(
             tagger.tag("prompt", "please review this diff", &[]),
             Some("review".to_string())
         );
-        assert_eq!(tagger.tag("prompt", "run cargo test", &[]), Some("verify".to_string()));
+        assert_eq!(
+            tagger.tag("prompt", "run cargo test", &[]),
+            Some("verify".to_string())
+        );
     }
 
     #[test]
@@ -616,8 +634,14 @@ mod tests {
     #[test]
     fn preset_enables_builtin_rules() {
         let tagger = RegexTagger::new(&[], true).unwrap();
-        assert_eq!(tagger.tag("prompt", "please debug this error", &[]), Some("debug".to_string()));
-        assert_eq!(tagger.tag("prompt", "run cargo test", &[]), Some("test".to_string()));
+        assert_eq!(
+            tagger.tag("prompt", "please debug this error", &[]),
+            Some("debug".to_string())
+        );
+        assert_eq!(
+            tagger.tag("prompt", "run cargo test", &[]),
+            Some("test".to_string())
+        );
     }
 
     #[test]

@@ -25,14 +25,19 @@ pub const TRACE_RECENT_CWD: &str = "cwd_recent";
 pub const SOURCE_SESSION_PROCESS_MATCH: &str = "agent_session.process_match";
 
 // Re-export types
-pub use types::{AgentSession, SessionCache, SessionCandidate, SessionDirStat, TokenUsage};
+pub use types::{
+    AgentSession, LlmResponse, SessionCache, SessionCandidate, SessionDirStat, SessionEvents,
+    TokenUsage, ToolEvent, UserPrompt,
+};
 
 // Re-export parser functions
 pub use parser::{
-    agent_source_for_path, codex_exec_prompt, count_session_dirs, discover_session_files,
-    discover_session_files_in_home, fixture_session_path, is_codex_cli_entrypoint,
-    normalize_session_log_path, parse_session_content, parse_session_file, parse_session_path,
-    session_log_path_from_str,
+    agent_source_for_path, codex_exec_prompt, collapse_project_path, command_process_chain,
+    contains_private_marker, count_session_dirs, discover_session_files,
+    discover_session_files_in_dir, discover_session_files_in_home, fixture_session_path,
+    is_codex_cli_entrypoint, normalize_session_log_path, parse_session_content, parse_session_file,
+    parse_session_path, path_component_strings, path_group, session_candidate_from_path,
+    session_log_path_from_str, short_hash, tool_category, truncate_clean,
 };
 
 // Re-export process matching types and functions

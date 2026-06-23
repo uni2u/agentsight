@@ -41,6 +41,85 @@ impl TokenUsage {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPrompt {
+    pub index: usize,
+    pub ts_ms: Option<i64>,
+    pub text_hash: String,
+    pub preview: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+}
+
+impl UserPrompt {
+    pub fn prompt_key(&self) -> String {
+        format!("{}:{}", self.index, self.text_hash)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolEvent {
+    pub ts_ms: Option<i64>,
+    pub prompt_index: usize,
+    pub tool_name: String,
+    pub category: String,
+    pub command: String,
+    pub command_name: String,
+    pub effect: String,
+    pub process_chain: Vec<String>,
+    pub status: String,
+    pub path_groups: Vec<String>,
+    pub domains: Vec<String>,
+    pub call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmResponse {
+    pub ts_ms: Option<i64>,
+    pub prompt_index: usize,
+    pub model: String,
+    pub text_hash: String,
+    pub preview: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_tokens: u64,
+    pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+}
+
+impl LlmResponse {
+    pub fn token_components(&self) -> Vec<(&'static str, u64)> {
+        const MAX_REPORTED_TOKEN_COMPONENT: u64 = 10_000_000;
+        const MAX_ESTIMATED_TOKEN_COMPONENT: u64 = 2_000_000;
+        let mut out = Vec::new();
+        if (1..=MAX_REPORTED_TOKEN_COMPONENT).contains(&self.input_tokens) {
+            out.push(("input", self.input_tokens));
+        }
+        if (1..=MAX_REPORTED_TOKEN_COMPONENT).contains(&self.output_tokens) {
+            out.push(("output", self.output_tokens));
+        }
+        if (1..=MAX_REPORTED_TOKEN_COMPONENT).contains(&self.cache_tokens) {
+            out.push(("cache", self.cache_tokens));
+        }
+        if out.is_empty() && (1..=MAX_ESTIMATED_TOKEN_COMPONENT).contains(&self.total_tokens) {
+            out.push(("estimate", self.total_tokens));
+        }
+        if out.is_empty() {
+            out.push(("unknown", 1));
+        }
+        out
+    }
+}
+
+/// Vendor-neutral interaction events extracted from an agent-native transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionEvents {
+    pub prompts: Vec<UserPrompt>,
+    pub tools: Vec<ToolEvent>,
+    pub llm_responses: Vec<LlmResponse>,
+}
+
 /// A parsed agent session with metadata, token usage, and tool invocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSession {
@@ -61,6 +140,9 @@ pub struct AgentSession {
     pub duration_ms: u64,
     pub cwd: Option<String>,
     pub last_message_at: Option<String>,
+    /// Vendor-neutral interaction events extracted from agent-native transcripts.
+    #[serde(default)]
+    pub events: SessionEvents,
 }
 
 /// A candidate session file discovered on disk.
