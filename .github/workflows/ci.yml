@@ -249,6 +249,7 @@ jobs:
         sed -i "s/agent-session = { version = \"[^\"]*\", path = \"..\\/agent-session\" }/agent-session = { version = \"$AGENT_SESSION_VERSION\", path = \"..\\/agent-session\" }/" collector/Cargo.toml
         sed -i "s/^version = \".*\"/version = \"$VERSION\"/" agentpprof/Cargo.toml
         sed -i "s/agent-session = { version = \"[^\"]*\", path = \"..\\/agent-session\" }/agent-session = { version = \"$AGENT_SESSION_VERSION\", path = \"..\\/agent-session\" }/" agentpprof/Cargo.toml
+        cargo generate-lockfile --manifest-path agent-session/Cargo.toml
         cd collector
         cargo generate-lockfile
         cd ..
@@ -291,7 +292,7 @@ jobs:
         # build.rs vendors generated BPF/frontend assets into collector/vendor.
         # Commit the full release snapshot before tagging or publishing so the
         # GitHub release, crates.io package, and master source agree.
-        git add agent-session/Cargo.toml collector/Cargo.toml collector/Cargo.lock collector/vendor agentpprof/Cargo.toml agentpprof/Cargo.lock
+        git add agent-session/Cargo.toml agent-session/Cargo.lock collector/Cargo.toml collector/Cargo.lock collector/vendor agentpprof/Cargo.toml agentpprof/Cargo.lock
         if git diff --cached --quiet; then
           echo "Release snapshot already matches ${VERSION}; no commit needed."
         else
