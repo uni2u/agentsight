@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
 use flate2::{Compression, write::GzEncoder};
 use prost::Message;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -36,6 +37,10 @@ struct Cli {
     view: ProfileView,
     #[arg(long, value_enum, default_value_t = TaggerKind::Regex)]
     tagger: TaggerKind,
+    /// Add a deterministic tag rule, for example prompt:review='(?i)review|diff'.
+    /// Rules are tried before built-in regex tag rules and may be repeated.
+    #[arg(long = "tag-rule", value_name = "KIND:TAG=REGEX")]
+    tag_rules: Vec<String>,
     #[arg(long)]
     codex_root: Option<PathBuf>,
     #[arg(long)]
@@ -83,6 +88,7 @@ enum OutputFormat {
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 enum ProfileView {
     Tasks,
+    System,
     Tools,
     Tokens,
     Files,
@@ -102,6 +108,12 @@ struct UserRequest {
     text_hash: String,
     preview: String,
     tag: String,
+}
+
+impl UserRequest {
+    fn prompt_key(&self) -> String {
+        format!("{}:{}", self.index, self.text_hash)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -418,6 +430,18 @@ struct WeightedStack {
 
 type Counter = BTreeMap<String, u64>;
 
+#[derive(Default)]
+struct FlameNode {
+    value: u64,
+    children: BTreeMap<String, FlameNode>,
+}
+
+#[derive(Default)]
+struct FlameRenderStats {
+    drawn: usize,
+    hidden_tiny: usize,
+}
+
 #[derive(Serialize)]
 struct ProfileProjection {
     view: String,
@@ -630,21 +654,7 @@ fn filter_sessions_after_tagging(sessions: &mut Vec<SessionRecord>, args: &Cli) 
     }
     if let Some(tag) = args.prompt_tag.as_deref() {
         for session in sessions.iter_mut() {
-            let keep = session
-                .user_requests
-                .iter()
-                .filter(|req| req.tag == tag)
-                .map(|req| req.index)
-                .collect::<BTreeSet<_>>();
-            session
-                .tools
-                .retain(|event| keep.contains(&event.request_index));
-            session
-                .llm_calls
-                .retain(|call| keep.contains(&call.request_index));
-            session
-                .user_requests
-                .retain(|req| keep.contains(&req.index));
+            filter_session_by_prompt_tag(session, tag);
         }
         sessions.retain(|session| {
             !session.user_requests.is_empty()
@@ -654,14 +664,57 @@ fn filter_sessions_after_tagging(sessions: &mut Vec<SessionRecord>, args: &Cli) 
     }
 }
 
+fn filter_session_by_prompt_tag(session: &mut SessionRecord, tag: &str) {
+    let selected = session
+        .user_requests
+        .iter()
+        .cloned()
+        .enumerate()
+        .filter(|(_, req)| req.tag == tag)
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        session.user_requests.clear();
+        session.tools.clear();
+        session.llm_calls.clear();
+        return;
+    }
+
+    let row_map = selected
+        .iter()
+        .enumerate()
+        .map(|(new_ordinal, (old_ordinal, _))| (*old_ordinal, new_ordinal))
+        .collect::<HashMap<_, _>>();
+
+    session.tools = std::mem::take(&mut session.tools)
+        .into_iter()
+        .filter_map(|mut event| {
+            let new_ordinal = row_map.get(&event.request_index).copied()?;
+            event.request_index = new_ordinal;
+            Some(event)
+        })
+        .collect();
+    session.llm_calls = std::mem::take(&mut session.llm_calls)
+        .into_iter()
+        .filter_map(|mut call| {
+            let new_ordinal = row_map.get(&call.request_index).copied()?;
+            call.request_index = new_ordinal;
+            Some(call)
+        })
+        .collect();
+    session.user_requests = selected.into_iter().map(|(_, req)| req).collect();
+}
+
 fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<()> {
     match args.tagger {
         TaggerKind::Regex => {
-            let tagger = RegexTagger;
+            let tagger = RegexTagger::new(&args.tag_rules)?;
             annotate_sessions_regex(sessions, &tagger, args.tag_llm_calls);
             Ok(())
         }
         TaggerKind::Llm => {
+            if !args.tag_rules.is_empty() {
+                bail!("--tag-rule is only supported with --tagger regex");
+            }
             let cache_path = args.cache.clone().unwrap_or_else(default_tag_cache_path);
             let mut tagger = LlamaTagger::new(
                 cache_path,
@@ -679,11 +732,30 @@ fn annotate_sessions_with(sessions: &mut [SessionRecord], args: &Cli) -> Result<
     }
 }
 
-struct RegexTagger;
+struct RegexTagger {
+    rules: Vec<TagRule>,
+}
+
+struct TagRule {
+    kind: String,
+    tag: String,
+    regex: Regex,
+}
 
 impl RegexTagger {
-    fn tag(&self, kind: &str, text: &str, hints: &[String]) -> String {
-        let haystack = format!("{} {}", hints.join(" "), text).to_ascii_lowercase();
+    fn new(rule_specs: &[String]) -> Result<Self> {
+        let mut rules = Vec::new();
+        for spec in rule_specs {
+            rules.push(parse_tag_rule(spec)?);
+        }
+        Ok(Self { rules })
+    }
+
+    fn tag(&self, kind: &str, text: &str, _hints: &[String]) -> String {
+        if let Some(tag) = self.custom_tag(kind, text) {
+            return tag;
+        }
+        let haystack = text.to_ascii_lowercase();
         let picked = keyword_tag(&haystack)
             .or_else(|| sanitize_tag(&one_word(text, "")))
             .filter(|tag| valid_tag(tag))
@@ -694,6 +766,38 @@ impl RegexTagger {
             fallback_tag(kind).to_string()
         }
     }
+
+    fn custom_tag(&self, kind: &str, source: &str) -> Option<String> {
+        self.rules
+            .iter()
+            .find(|rule| (rule.kind == kind || rule.kind == "all") && rule.regex.is_match(source))
+            .map(|rule| rule.tag.clone())
+    }
+}
+
+fn parse_tag_rule(spec: &str) -> Result<TagRule> {
+    let (left, pattern) = spec
+        .split_once('=')
+        .ok_or_else(|| anyhow!("invalid --tag-rule {spec:?}; expected KIND:TAG=REGEX"))?;
+    let (kind, tag) = left
+        .split_once(':')
+        .ok_or_else(|| anyhow!("invalid --tag-rule {spec:?}; expected KIND:TAG=REGEX"))?;
+    if !matches!(kind, "session" | "prompt" | "llm" | "all") {
+        bail!("invalid --tag-rule kind {kind:?}; expected session, prompt, llm, or all");
+    }
+    if !valid_tag(tag) {
+        bail!("invalid --tag-rule tag {tag:?}; tags must be one lowercase word, 3-12 letters");
+    }
+    if pattern.is_empty() {
+        bail!("invalid --tag-rule {spec:?}; regex pattern cannot be empty");
+    }
+    let regex = Regex::new(pattern)
+        .map_err(|error| anyhow!("invalid --tag-rule regex {pattern:?}: {error}"))?;
+    Ok(TagRule {
+        kind: kind.to_string(),
+        tag: tag.to_string(),
+        regex,
+    })
 }
 
 fn annotate_sessions_regex(
@@ -846,7 +950,7 @@ fn build_profile_projection(
 ) -> ProfileProjection {
     let stacks = match view {
         ProfileView::Tasks => build_task_stacks(sessions, project_name),
-        ProfileView::Tools => {
+        ProfileView::System | ProfileView::Tools => {
             let (system, _) = build_folded_stacks(sessions, project_name);
             system
         }
@@ -856,6 +960,7 @@ fn build_profile_projection(
     };
     let (sample_type, unit) = match view {
         ProfileView::Tasks => ("events", "count"),
+        ProfileView::System => ("system_events", "count"),
         ProfileView::Tools => ("tool_events", "count"),
         ProfileView::Tokens => ("tokens", "count"),
         ProfileView::Files => ("file_events", "count"),
@@ -881,12 +986,12 @@ fn build_task_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
                 vec![
                     safe_frame(project_name, Some("project")),
                     agent.clone(),
+                    session_tag.clone(),
+                    safe_frame(&req.tag, Some("prompt")),
                     "kind:tool".to_string(),
                     safe_frame(&format!("tool/{}", event.category), Some("call")),
                     safe_frame(&event.effect, Some("effect")),
                     safe_frame(&event.status, Some("status")),
-                    session_tag.clone(),
-                    safe_frame(&req.tag, Some("prompt")),
                 ],
                 1,
             );
@@ -898,11 +1003,11 @@ fn build_task_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
                 vec![
                     safe_frame(project_name, Some("project")),
                     agent.clone(),
-                    "kind:llm".to_string(),
-                    safe_frame(last_model_segment(&call.model), Some("model")),
-                    safe_frame(&format!("llm/{}", call.tag), Some("call")),
                     session_tag.clone(),
                     safe_frame(&req.tag, Some("prompt")),
+                    "kind:llm".to_string(),
+                    safe_frame(&format!("llm/{}", call.tag), Some("call")),
+                    safe_frame(last_model_segment(&call.model), Some("model")),
                 ],
                 1,
             );
@@ -1044,6 +1149,20 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn pprof_root_to_leaf_frames<'a>(view: &str, stack: &'a str) -> Vec<&'a str> {
+    let mut frames = stack
+        .split(';')
+        .filter(|frame| !frame.is_empty())
+        .collect::<Vec<_>>();
+    if view == "tasks"
+        && let Some(prompt_index) = frames.iter().position(|frame| frame.starts_with("prompt:"))
+    {
+        let prompt = frames.remove(prompt_index);
+        frames.push(prompt);
+    }
+    frames
+}
+
 fn write_pprof_projection(projection: &ProfileProjection, output: &Path) -> Result<()> {
     let mut strings = StringInterner::with_pprof_root();
     let sample_type = PprofValueType {
@@ -1060,7 +1179,10 @@ fn write_pprof_projection(projection: &ProfileProjection, output: &Path) -> Resu
 
     for (stack, weight) in &projection.stacks {
         let mut location_ids = Vec::new();
-        for frame in stack.split(';').rev() {
+        for frame in pprof_root_to_leaf_frames(&projection.view, stack)
+            .into_iter()
+            .rev()
+        {
             let id = if let Some(id) = frame_locations.get(frame) {
                 *id
             } else {
@@ -1822,11 +1944,20 @@ fn build_folded_stacks(sessions: &[SessionRecord], project_name: &str) -> (Count
 fn folded_add(counter: &mut Counter, frames: Vec<String>, weight: u64) {
     let stack = frames
         .into_iter()
+        .map(normalize_folded_frame)
         .filter(|frame| !frame.is_empty())
         .collect::<Vec<_>>()
         .join(";");
     if !stack.is_empty() {
         *counter.entry(stack).or_default() += weight.max(1);
+    }
+}
+
+fn normalize_folded_frame(frame: String) -> String {
+    if let Some(path) = frame.strip_prefix("path:") {
+        safe_frame(path, Some("path"))
+    } else {
+        frame
     }
 }
 
@@ -1860,7 +1991,19 @@ fn top_stacks(counter: &Counter, limit: usize) -> Vec<WeightedStack> {
     rows
 }
 
+fn prompt_index_status(count: usize) -> &'static str {
+    if count <= 1 {
+        "unique"
+    } else {
+        "duplicate_non_keyed"
+    }
+}
+
 fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value {
+    let mut prompt_index_counts = HashMap::<usize, usize>::new();
+    for req in &session.user_requests {
+        *prompt_index_counts.entry(req.index).or_insert(0) += 1;
+    }
     json!({
         "source": session.source,
         "session_id": session.session_id,
@@ -1874,8 +2017,11 @@ fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value {
         "prompt_count": session.user_requests.len(),
         "tool_count": session.tools.len(),
         "llm_count": session.llm_calls.len(),
-        "prompts": session.user_requests.iter().map(|req| json!({
+        "prompts": session.user_requests.iter().enumerate().map(|(ordinal, req)| json!({
+            "row_ordinal": ordinal,
             "index": req.index,
+            "prompt_key": req.prompt_key(),
+            "prompt_index_status": prompt_index_status(*prompt_index_counts.get(&req.index).unwrap_or(&0)),
             "ts_ms": req.ts_ms,
             "hash": req.text_hash,
             "tag": req.tag,
@@ -1886,6 +2032,8 @@ fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value {
             json!({
                 "ts_ms": event.ts_ms,
                 "prompt_index": request.index,
+                "prompt_key": request.prompt_key(),
+                "prompt_index_status": prompt_index_status(*prompt_index_counts.get(&request.index).unwrap_or(&0)),
                 "prompt_tag": request.tag,
                 "tool_name": event.tool_name,
                 "category": event.category,
@@ -1905,6 +2053,8 @@ fn session_to_json(session: &SessionRecord, include_previews: bool) -> Value {
             json!({
                 "ts_ms": call.ts_ms,
                 "prompt_index": request.index,
+                "prompt_key": request.prompt_key(),
+                "prompt_index_status": prompt_index_status(*prompt_index_counts.get(&request.index).unwrap_or(&0)),
                 "prompt_tag": request.tag,
                 "llm_tag": call.tag,
                 "model": call.model,
@@ -1932,57 +2082,200 @@ fn write_folded(path: &Path, stacks: &Counter) -> Result<()> {
 }
 
 fn flamegraph_svg(stacks: &Counter, title: &str, metric: &str) -> String {
-    let width = 1400.0;
+    let width = 1800.0;
     let total = stacks.values().sum::<u64>();
     if total == 0 {
         return format!(
-            "<svg xmlns='http://www.w3.org/2000/svg' width='1400' height='120'><text x='16' y='40'>{}</text></svg>",
+            "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='120'><text x='16' y='40'>{}</text></svg>",
             html_escape(title)
         );
     }
-    let levels = stacks
-        .keys()
-        .map(|stack| stack.split(';').count())
-        .max()
-        .unwrap_or(1);
-    let height = 80.0 + levels as f64 * 22.0 + 24.0;
+    let tree = build_flame_tree(stacks);
+    let levels = flame_depth(&tree).max(1);
+    let top = 72.0;
+    let frame_h = 18.0;
+    let gap = 2.0;
+    let left = 16.0;
+    let chart_width = width - 32.0;
+    let height = top + levels as f64 * (frame_h + gap) + 30.0;
     let mut svg = format!(
-        "<svg xmlns='http://www.w3.org/2000/svg' width='1400' height='{height}' viewBox='0 0 1400 {height}'>\
-         <style>text{{font-family:ui-monospace,Menlo,monospace;font-size:11px}}.title{{font-family:system-ui,sans-serif;font-size:18px;font-weight:700}}</style>\
-         <rect width='1400' height='{height}' fill='#fbfbf7'/><text class='title' x='16' y='28'>{}</text><text x='16' y='48'>width = {}; total = {}</text>",
+        "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='{height}' viewBox='0 0 1800 {height}'>\
+         <style>text{{font-family:ui-monospace,Menlo,monospace;font-size:11px;pointer-events:none}}.title{{font-family:system-ui,sans-serif;font-size:18px;font-weight:700}}.meta{{font-family:system-ui,sans-serif;font-size:12px;fill:#444}}rect:hover{{stroke:#111;stroke-width:1.2}}</style>\
+         <rect width='1800' height='{height}' fill='#fbfbf7'/><text class='title' x='16' y='28'>{}</text>",
         html_escape(title),
-        html_escape(metric),
-        total
     );
-    let mut x = 16.0;
-    for WeightedStack { stack, weight } in top_stacks(stacks, 2000) {
-        let w = (width - 32.0) * weight as f64 / total as f64;
-        if w < 0.5 {
-            continue;
-        }
-        for (depth, frame) in stack.split(';').enumerate() {
-            let y = 64.0 + depth as f64 * 22.0;
-            let color = color_for(frame, depth);
-            svg.push_str(&format!(
-                "<rect x='{x:.2}' y='{y:.2}' width='{w:.2}' height='21' fill='{color}' stroke='#fff' stroke-width='.7'><title>{} | {} {}</title></rect>",
-                html_escape(frame),
-                weight,
-                html_escape(metric)
-            ));
-            if w > 60.0 {
-                let label = truncate_clean(frame, 32);
-                svg.push_str(&format!(
-                    "<text x='{:.2}' y='{:.2}'>{}</text>",
-                    x + 4.0,
-                    y + 15.0,
-                    html_escape(&label)
-                ));
-            }
-        }
-        x += w;
-    }
+    let mut stats = FlameRenderStats::default();
+    let mut path = Vec::new();
+    render_flame_children(
+        &mut svg,
+        &tree,
+        FlameRenderCtx {
+            x: left,
+            width: chart_width,
+            depth: 0,
+            max_depth: levels,
+            total,
+            top,
+            frame_h,
+            gap,
+            metric,
+        },
+        &mut path,
+        &mut stats,
+    );
+    svg.insert_str(
+        svg.find("</text>").map(|pos| pos + "</text>".len()).unwrap_or(svg.len()),
+        &format!(
+            "<text class='meta' x='16' y='50'>prefix-merged flamegraph; width = {}; total = {}; drawn nodes = {}; hidden tiny nodes = {}; depth = {}</text>",
+            html_escape(metric),
+            total,
+            stats.drawn,
+            stats.hidden_tiny,
+            levels
+        ),
+    );
     svg.push_str("</svg>");
     svg
+}
+
+fn build_flame_tree(stacks: &Counter) -> FlameNode {
+    let mut root = FlameNode::default();
+    for (stack, weight) in stacks {
+        if *weight == 0 {
+            continue;
+        }
+        root.value += *weight;
+        let mut node = &mut root;
+        for frame in stack.split(';').filter(|frame| !frame.is_empty()) {
+            node = node.children.entry(frame.to_string()).or_default();
+            node.value += *weight;
+        }
+    }
+    root
+}
+
+fn flame_depth(node: &FlameNode) -> usize {
+    node.children
+        .values()
+        .map(|child| 1 + flame_depth(child))
+        .max()
+        .unwrap_or(0)
+}
+
+struct FlameRenderCtx<'a> {
+    x: f64,
+    width: f64,
+    depth: usize,
+    max_depth: usize,
+    total: u64,
+    top: f64,
+    frame_h: f64,
+    gap: f64,
+    metric: &'a str,
+}
+
+fn render_flame_children(
+    svg: &mut String,
+    node: &FlameNode,
+    ctx: FlameRenderCtx<'_>,
+    path: &mut Vec<String>,
+    stats: &mut FlameRenderStats,
+) {
+    let mut cursor = ctx.x;
+    let mut children = node.children.iter().collect::<Vec<_>>();
+    children.sort_by(|(left_name, left), (right_name, right)| {
+        right
+            .value
+            .cmp(&left.value)
+            .then_with(|| left_name.cmp(right_name))
+    });
+
+    for (name, child) in children {
+        let child_width = if node.value == 0 {
+            0.0
+        } else {
+            ctx.width * child.value as f64 / node.value as f64
+        };
+        path.push(name.clone());
+        render_flame_node(
+            svg,
+            name,
+            child,
+            FlameRenderCtx {
+                x: cursor,
+                width: child_width,
+                depth: ctx.depth + 1,
+                max_depth: ctx.max_depth,
+                total: ctx.total,
+                top: ctx.top,
+                frame_h: ctx.frame_h,
+                gap: ctx.gap,
+                metric: ctx.metric,
+            },
+            path,
+            stats,
+        );
+        path.pop();
+        cursor += child_width;
+    }
+}
+
+fn render_flame_node(
+    svg: &mut String,
+    name: &str,
+    node: &FlameNode,
+    ctx: FlameRenderCtx<'_>,
+    path: &mut Vec<String>,
+    stats: &mut FlameRenderStats,
+) {
+    const MIN_VISIBLE_WIDTH: f64 = 0.35;
+    if ctx.width >= MIN_VISIBLE_WIDTH {
+        stats.drawn += 1;
+        let y = ctx.top + (ctx.max_depth - ctx.depth) as f64 * (ctx.frame_h + ctx.gap);
+        let pct = if ctx.total == 0 {
+            0.0
+        } else {
+            node.value as f64 * 100.0 / ctx.total as f64
+        };
+        let title = format!(
+            "{} | {} {} ({pct:.2}%)",
+            path.join(" ; "),
+            node.value,
+            ctx.metric
+        );
+        let color = color_for(name, ctx.depth);
+        svg.push_str(&format!(
+            "<g><title>{}</title><rect x='{:.3}' y='{:.3}' width='{:.3}' height='{:.0}' rx='2' ry='2' fill='{color}' stroke='#fff' stroke-width='.7'/>",
+            html_escape(&title),
+            ctx.x,
+            y,
+            ctx.width,
+            ctx.frame_h
+        ));
+        if let Some(label) = label_for_width(name, ctx.width) {
+            svg.push_str(&format!(
+                "<text x='{:.3}' y='{:.3}' fill='#171717'>{}</text>",
+                ctx.x + 4.0,
+                y + ctx.frame_h - 4.0,
+                html_escape(&label)
+            ));
+        }
+        svg.push_str("</g>");
+    } else {
+        stats.hidden_tiny += 1;
+    }
+
+    if !node.children.is_empty() {
+        render_flame_children(svg, node, ctx, path, stats);
+    }
+}
+
+fn label_for_width(label: &str, width: f64) -> Option<String> {
+    if width < 32.0 {
+        return None;
+    }
+    let max_chars = ((width - 8.0) / 7.0).floor().max(3.0) as usize;
+    Some(truncate_clean(label, max_chars))
 }
 
 fn tool_event_from_input(
@@ -2175,9 +2468,8 @@ fn basename_from_command(command: &str) -> String {
     }
     parts
         .get(idx)
-        .and_then(|part| Path::new(part).file_name().and_then(|v| v.to_str()))
-        .unwrap_or("none")
-        .to_string()
+        .and_then(|part| process_name_from_part(part))
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn command_process_chain(command: &str) -> Vec<String> {
@@ -2202,14 +2494,11 @@ fn process_chain_from_parts(parts: &[String]) -> Vec<String> {
             idx += 1;
         }
     }
-    let Some(proc_name) = parts
-        .get(idx)
-        .and_then(|part| Path::new(part).file_name().and_then(|v| v.to_str()))
-    else {
+    let Some(proc_name) = parts.get(idx).and_then(|part| process_name_from_part(part)) else {
         return Vec::new();
     };
-    let mut chain = vec![proc_name.to_string()];
-    if ["bash", "sh", "zsh"].contains(&proc_name) {
+    let mut chain = vec![proc_name.clone()];
+    if ["bash", "sh", "zsh"].contains(&proc_name.as_str()) {
         for flag_idx in idx + 1..parts.len().saturating_sub(1) {
             if ["-c", "-lc", "-cl"].contains(&parts[flag_idx].as_str()) {
                 chain.extend(command_process_chain(&parts[flag_idx + 1]));
@@ -2219,6 +2508,23 @@ fn process_chain_from_parts(parts: &[String]) -> Vec<String> {
     }
     chain.truncate(6);
     chain
+}
+
+fn process_name_from_part(part: &str) -> Option<String> {
+    let raw = part.trim_matches(['"', '\'']);
+    if raw.is_empty() {
+        return None;
+    }
+    let path = Path::new(raw);
+    let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or(raw);
+    let parts = path_component_strings(path);
+    if looks_like_home_directory(&parts) && parts.len() <= 2 {
+        return Some("external".to_string());
+    }
+    if contains_private_marker(file_name) {
+        return Some("external".to_string());
+    }
+    Some(file_name.to_string())
 }
 
 fn split_shell(command: &str) -> Vec<String> {
@@ -2310,38 +2616,40 @@ fn path_group(path: &str, project_root: &Path) -> String {
     }
     let p = Path::new(path);
     let parts = if p.is_absolute() {
-        p.strip_prefix(project_root)
-            .ok()
-            .map(|rel| {
-                rel.components()
-                    .map(|c| c.as_os_str().to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| {
-                p.components()
-                    .map(|c| c.as_os_str().to_string_lossy().to_string())
-                    .rev()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect()
-            })
+        if let Ok(rel) = p.strip_prefix(project_root) {
+            path_component_strings(rel)
+        } else {
+            return external_path_group(path, &path_component_strings(p));
+        }
     } else {
-        p.components()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .collect::<Vec<_>>()
+        let parts = path_component_strings(p);
+        if let Some(group) = sensitive_relative_path_group(path, &parts) {
+            return group;
+        }
+        parts
     };
+    collapse_project_path(parts)
+}
+
+fn path_component_strings(path: &Path) -> Vec<String> {
+    path.components()
+        .filter_map(|c| {
+            let part = c.as_os_str().to_string_lossy();
+            let part = part.as_ref();
+            if part == "." || part == "/" || part.is_empty() {
+                None
+            } else {
+                Some(part.to_string())
+            }
+        })
+        .collect()
+}
+
+fn collapse_project_path(parts: Vec<String>) -> String {
     let parts = parts
         .into_iter()
         .filter(|part| part != "." && !part.is_empty())
-        .map(|part| {
-            if part.chars().count() > 48 {
-                format!("{}...", part.chars().take(45).collect::<String>())
-            } else {
-                part
-            }
-        })
+        .map(|part| truncate_path_component(&part))
         .collect::<Vec<_>>();
     if parts.is_empty() {
         "repo".to_string()
@@ -2350,6 +2658,74 @@ fn path_group(path: &str, project_root: &Path) -> String {
     } else {
         parts.into_iter().take(2).collect::<Vec<_>>().join("/")
     }
+}
+
+fn truncate_path_component(part: &str) -> String {
+    if part.chars().count() > 48 {
+        format!("{}...", part.chars().take(45).collect::<String>())
+    } else {
+        part.to_string()
+    }
+}
+
+fn external_path_group(raw: &str, parts: &[String]) -> String {
+    sensitive_relative_path_group(raw, parts).unwrap_or_else(|| "external/path".to_string())
+}
+
+fn sensitive_relative_path_group(raw: &str, parts: &[String]) -> Option<String> {
+    let lowered = raw.to_ascii_lowercase();
+    let lower_parts = parts
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if lower_parts.iter().any(|part| part == ".codex") {
+        Some("external/codex".to_string())
+    } else if lower_parts.iter().any(|part| part == ".claude") {
+        Some("external/claude".to_string())
+    } else if lower_parts.first().is_some_and(|part| part == "tmp")
+        || lowered.contains("/tmp")
+        || lowered.contains("_/tmp")
+        || lower_parts
+            .windows(2)
+            .any(|window| window[0] == "var" && window[1] == "tmp")
+    {
+        Some("external/tmp".to_string())
+    } else if lowered.starts_with("~/")
+        || lowered == "~"
+        || lowered.contains("/home")
+        || lowered.contains("_/home")
+        || lowered.contains("-home-")
+        || lowered.contains("/users")
+        || lowered.contains("_/users")
+        || looks_like_home_directory(&lower_parts)
+        || contains_private_marker(&lowered)
+    {
+        Some("external/home".to_string())
+    } else {
+        None
+    }
+}
+
+fn looks_like_home_directory(parts: &[String]) -> bool {
+    parts
+        .first()
+        .is_some_and(|part| part == "home" || part == "users")
+}
+
+fn current_username() -> Option<String> {
+    dirs::home_dir()
+        .and_then(|home| {
+            home.file_name()
+                .map(|part| part.to_string_lossy().to_string())
+        })
+        .filter(|name| !name.is_empty())
+}
+
+fn contains_private_marker(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    current_username()
+        .map(|name| lowered.contains(&name.to_ascii_lowercase()))
+        .unwrap_or(false)
 }
 
 fn content_to_text(value: &Value) -> String {
@@ -2442,6 +2818,8 @@ fn truncate_clean(text: &str, limit: usize) -> String {
 }
 
 fn safe_frame(text: &str, prefix: Option<&str>) -> String {
+    let text = redact_private_frame_text(text, prefix);
+    let text = normalize_frame_text(&text, prefix);
     let mut out = String::new();
     for ch in text.to_ascii_lowercase().chars() {
         if ch.is_ascii_alphanumeric() || "._:/+-".contains(ch) {
@@ -2459,6 +2837,40 @@ fn safe_frame(text: &str, prefix: Option<&str>) -> String {
     match prefix {
         Some(prefix) => format!("{prefix}:{value}"),
         None => value,
+    }
+}
+
+fn normalize_frame_text(text: &str, prefix: Option<&str>) -> String {
+    if prefix != Some("path") {
+        return text.to_string();
+    }
+    let text = text.trim();
+    let text = text.strip_prefix("path:").unwrap_or(text).trim();
+    if !text.starts_with('/') {
+        return text.to_string();
+    }
+    let collapsed = collapse_project_path(path_component_strings(Path::new(text)));
+    if collapsed == "repo" {
+        "external/path".to_string()
+    } else {
+        collapsed
+    }
+}
+
+fn redact_private_frame_text(text: &str, prefix: Option<&str>) -> String {
+    if !contains_private_marker(text) {
+        return text.to_string();
+    }
+    match prefix {
+        Some("domain") => "private.domain".to_string(),
+        Some("path") => "external/home".to_string(),
+        Some("process") => "external".to_string(),
+        _ => current_username()
+            .map(|name| {
+                text.to_ascii_lowercase()
+                    .replace(&name.to_ascii_lowercase(), "user")
+            })
+            .unwrap_or_else(|| text.to_string()),
     }
 }
 
@@ -2584,6 +2996,56 @@ mod tests {
     }
 
     #[test]
+    fn external_paths_are_redacted_to_stable_groups() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            path_group("/repo/docs/flamegraph/README.md", root),
+            "docs/flamegraph/README.md"
+        );
+        assert_eq!(
+            path_group("/home/someone/.codex/sessions/session.jsonl", root),
+            "external/codex"
+        );
+        assert_eq!(
+            path_group("/Users/someone/.claude/projects/run.jsonl", root),
+            "external/claude"
+        );
+        assert_eq!(
+            path_group("/tmp/agentsight-run/out.json", root),
+            "external/tmp"
+        );
+        assert_eq!(path_group("~/workspace/private.txt", root), "external/home");
+    }
+
+    #[test]
+    fn path_frames_do_not_look_absolute() {
+        assert_eq!(safe_frame("/.git", Some("path")), "path:.git");
+        assert_eq!(safe_frame("path:/.git", Some("path")), "path:.git");
+        assert_eq!(safe_frame("/target", Some("path")), "path:target");
+        assert_eq!(safe_frame("/", Some("path")), "path:external/path");
+
+        let mut stacks = Counter::new();
+        folded_add(
+            &mut stacks,
+            vec!["project:agentsight".to_string(), "path:/.git".to_string()],
+            1,
+        );
+        assert!(stacks.contains_key("project:agentsight;path:.git"));
+    }
+
+    #[test]
+    fn process_names_do_not_expose_home_directory_components() {
+        assert_eq!(
+            process_name_from_part("/home/someone/.local/bin/claude"),
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            process_name_from_part("/home/someone"),
+            Some("external".to_string())
+        );
+    }
+
+    #[test]
     fn tag_validation_has_no_label_fallback() {
         assert!(valid_tag("debug"));
         assert!(!valid_tag("two words"));
@@ -2591,6 +3053,43 @@ mod tests {
         assert_eq!(sanitize_tag("debug."), Some("debug".to_string()));
         assert_eq!(sanitize_tag("debug tests"), None);
         assert!(!valid_tag("codingupdateflamegraph"));
+    }
+
+    #[test]
+    fn custom_tag_rules_override_builtin_regex_tags() {
+        let tagger = RegexTagger::new(&[
+            "prompt:verify=(?i)cargo test|pytest".to_string(),
+            "prompt:review=(?i)review|diff|regression".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            tagger.tag("prompt", "please review this diff", &[]),
+            "review"
+        );
+        assert_eq!(tagger.tag("prompt", "run cargo test", &[]), "verify");
+    }
+
+    #[test]
+    fn custom_tag_rules_are_scoped_by_kind() {
+        let tagger = RegexTagger::new(&["prompt:review=x y".to_string()]).unwrap();
+        assert_eq!(tagger.tag("prompt", "x y", &[]), "review");
+        assert_eq!(tagger.tag("session", "x y", &[]), "analyze");
+    }
+
+    #[test]
+    fn custom_tag_rules_do_not_match_hints() {
+        let tagger = RegexTagger::new(&["prompt:review=(?i)review".to_string()]).unwrap();
+        assert_eq!(
+            tagger.tag("prompt", "x y", &["review".to_string()]),
+            "inspect"
+        );
+    }
+
+    #[test]
+    fn invalid_custom_tag_rules_are_rejected() {
+        assert!(RegexTagger::new(&["prompt:two-words=review".to_string()]).is_err());
+        assert!(RegexTagger::new(&["tool:review=review".to_string()]).is_err());
+        assert!(RegexTagger::new(&["prompt:review=(".to_string()]).is_err());
     }
 
     #[test]
@@ -2669,6 +3168,293 @@ mod tests {
     }
 
     #[test]
+    fn task_stacks_group_by_session_then_prompt_before_activity_kind() {
+        let session = SessionRecord {
+            source: "codex".to_string(),
+            path: PathBuf::from("session.jsonl"),
+            session_id: "s1".to_string(),
+            cwd: "/repo".to_string(),
+            agent_role: "agent".to_string(),
+            model: "gpt-5".to_string(),
+            title: "fix bug".to_string(),
+            start_ts_ms: Some(1),
+            user_requests: vec![UserRequest {
+                index: 0,
+                ts_ms: Some(2),
+                text_hash: "h1".to_string(),
+                preview: "debug failure".to_string(),
+                tag: "debug".to_string(),
+            }],
+            tools: vec![ToolEvent {
+                ts_ms: Some(3),
+                request_index: 0,
+                tool_name: "shell".to_string(),
+                category: "shell".to_string(),
+                command: "cargo test".to_string(),
+                command_name: "cargo".to_string(),
+                effect: "test".to_string(),
+                process_chain: vec!["cargo".to_string()],
+                status: "ok".to_string(),
+                path_groups: vec!["repo".to_string()],
+                domains: vec![],
+                call_id: Some("call-1".to_string()),
+            }],
+            llm_calls: vec![LlmEvent {
+                ts_ms: Some(4),
+                request_index: 0,
+                model: "gpt-5".to_string(),
+                text_hash: "l1".to_string(),
+                preview: "ran tests".to_string(),
+                input_tokens: 11,
+                output_tokens: 7,
+                cache_tokens: 0,
+                estimated_tokens: 0,
+                tag: "review".to_string(),
+            }],
+            session_tag: "rustfix".to_string(),
+        };
+        let stacks = build_task_stacks(&[session], "agentsight");
+        assert_eq!(
+            stacks.get(
+                "project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:tool;call:tool/shell;effect:test;status:ok"
+            ),
+            Some(&1)
+        );
+        assert_eq!(
+            stacks.get(
+                "project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:llm;call:llm/review;model:gpt-5"
+            ),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn system_view_matches_legacy_tools_projection() {
+        let session = SessionRecord {
+            source: "codex".to_string(),
+            path: PathBuf::from("session.jsonl"),
+            session_id: "s1".to_string(),
+            cwd: "/repo".to_string(),
+            agent_role: "agent".to_string(),
+            model: "gpt-5".to_string(),
+            title: "inspect repo".to_string(),
+            start_ts_ms: Some(1),
+            user_requests: vec![UserRequest {
+                index: 0,
+                ts_ms: Some(2),
+                text_hash: "h1".to_string(),
+                preview: "inspect files".to_string(),
+                tag: "inspect".to_string(),
+            }],
+            tools: vec![ToolEvent {
+                ts_ms: Some(3),
+                request_index: 0,
+                tool_name: "shell".to_string(),
+                category: "shell".to_string(),
+                command: "rg TODO".to_string(),
+                command_name: "rg".to_string(),
+                effect: "read".to_string(),
+                process_chain: vec!["rg".to_string()],
+                status: "ok".to_string(),
+                path_groups: vec!["repo".to_string()],
+                domains: vec![],
+                call_id: Some("call-1".to_string()),
+            }],
+            llm_calls: vec![],
+            session_tag: "profile".to_string(),
+        };
+        let system = build_profile_projection(
+            std::slice::from_ref(&session),
+            "agentsight",
+            ProfileView::System,
+        );
+        let tools = build_profile_projection(&[session], "agentsight", ProfileView::Tools);
+        assert_eq!(system.stacks, tools.stacks);
+        assert_eq!(system.sample_type, "system_events");
+        assert_eq!(tools.sample_type, "tool_events");
+    }
+
+    #[test]
+    fn json_report_exports_prompt_keys_when_prompt_indexes_repeat() {
+        let session = SessionRecord {
+            source: "claude".to_string(),
+            path: PathBuf::from("session.jsonl"),
+            session_id: "s1".to_string(),
+            cwd: "/repo".to_string(),
+            agent_role: "agent".to_string(),
+            model: "claude".to_string(),
+            title: "duplicate indexes".to_string(),
+            start_ts_ms: Some(1),
+            user_requests: vec![
+                UserRequest {
+                    index: 0,
+                    ts_ms: Some(1),
+                    text_hash: "h0".to_string(),
+                    preview: "first prompt".to_string(),
+                    tag: "review".to_string(),
+                },
+                UserRequest {
+                    index: 0,
+                    ts_ms: Some(2),
+                    text_hash: "h1".to_string(),
+                    preview: "second prompt".to_string(),
+                    tag: "test".to_string(),
+                },
+            ],
+            tools: vec![ToolEvent {
+                ts_ms: Some(3),
+                request_index: 1,
+                tool_name: "Bash".to_string(),
+                category: "shell".to_string(),
+                command: "cargo test".to_string(),
+                command_name: "cargo".to_string(),
+                effect: "test".to_string(),
+                process_chain: vec!["cargo".to_string()],
+                status: "ok".to_string(),
+                path_groups: Vec::new(),
+                domains: Vec::new(),
+                call_id: None,
+            }],
+            llm_calls: vec![LlmEvent {
+                ts_ms: Some(4),
+                request_index: 0,
+                model: "claude".to_string(),
+                text_hash: "l0".to_string(),
+                preview: "answer".to_string(),
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_tokens: 0,
+                estimated_tokens: 0,
+                tag: "answer".to_string(),
+            }],
+            session_tag: "review".to_string(),
+        };
+
+        let payload = session_to_json(&session, false);
+        let prompts = payload["prompts"].as_array().expect("prompts array");
+        assert_eq!(prompts[0]["prompt_key"], "0:h0");
+        assert_eq!(prompts[1]["prompt_key"], "0:h1");
+        assert_eq!(prompts[0]["prompt_index_status"], "duplicate_non_keyed");
+        assert_eq!(prompts[1]["prompt_index_status"], "duplicate_non_keyed");
+
+        let tool = &payload["tool_events"].as_array().expect("tool events")[0];
+        assert_eq!(tool["prompt_index"], 0);
+        assert_eq!(tool["prompt_key"], "0:h1");
+        assert_eq!(tool["prompt_tag"], "test");
+        assert_eq!(tool["prompt_index_status"], "duplicate_non_keyed");
+
+        let llm = &payload["llm_events"].as_array().expect("llm events")[0];
+        assert_eq!(llm["prompt_index"], 0);
+        assert_eq!(llm["prompt_key"], "0:h0");
+        assert_eq!(llm["prompt_tag"], "review");
+        assert_eq!(llm["prompt_index_status"], "duplicate_non_keyed");
+    }
+
+    #[test]
+    fn prompt_tag_filter_uses_prompt_row_ordinal_not_bare_index() {
+        let mut session = SessionRecord {
+            source: "claude".to_string(),
+            path: PathBuf::from("session.jsonl"),
+            session_id: "s1".to_string(),
+            cwd: "/repo".to_string(),
+            agent_role: "agent".to_string(),
+            model: "claude".to_string(),
+            title: "duplicate indexes".to_string(),
+            start_ts_ms: Some(1),
+            user_requests: vec![
+                UserRequest {
+                    index: 0,
+                    ts_ms: Some(1),
+                    text_hash: "h0".to_string(),
+                    preview: "review prompt".to_string(),
+                    tag: "review".to_string(),
+                },
+                UserRequest {
+                    index: 0,
+                    ts_ms: Some(2),
+                    text_hash: "h1".to_string(),
+                    preview: "test prompt".to_string(),
+                    tag: "test".to_string(),
+                },
+            ],
+            tools: vec![
+                ToolEvent {
+                    ts_ms: Some(3),
+                    request_index: 0,
+                    tool_name: "Read".to_string(),
+                    category: "read".to_string(),
+                    command: String::new(),
+                    command_name: String::new(),
+                    effect: "read".to_string(),
+                    process_chain: Vec::new(),
+                    status: "ok".to_string(),
+                    path_groups: Vec::new(),
+                    domains: Vec::new(),
+                    call_id: None,
+                },
+                ToolEvent {
+                    ts_ms: Some(4),
+                    request_index: 1,
+                    tool_name: "Bash".to_string(),
+                    category: "shell".to_string(),
+                    command: "cargo test".to_string(),
+                    command_name: "cargo".to_string(),
+                    effect: "test".to_string(),
+                    process_chain: vec!["cargo".to_string()],
+                    status: "ok".to_string(),
+                    path_groups: Vec::new(),
+                    domains: Vec::new(),
+                    call_id: None,
+                },
+            ],
+            llm_calls: vec![
+                LlmEvent {
+                    ts_ms: Some(5),
+                    request_index: 0,
+                    model: "claude".to_string(),
+                    text_hash: "l0".to_string(),
+                    preview: "review answer".to_string(),
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_tokens: 0,
+                    estimated_tokens: 0,
+                    tag: "answer".to_string(),
+                },
+                LlmEvent {
+                    ts_ms: Some(6),
+                    request_index: 1,
+                    model: "claude".to_string(),
+                    text_hash: "l1".to_string(),
+                    preview: "test answer".to_string(),
+                    input_tokens: 2,
+                    output_tokens: 3,
+                    cache_tokens: 0,
+                    estimated_tokens: 0,
+                    tag: "answer".to_string(),
+                },
+            ],
+            session_tag: "review".to_string(),
+        };
+
+        filter_session_by_prompt_tag(&mut session, "test");
+
+        assert_eq!(session.user_requests.len(), 1);
+        assert_eq!(session.user_requests[0].text_hash, "h1");
+        assert_eq!(session.user_requests[0].index, 0);
+        assert_eq!(session.tools.len(), 1);
+        assert_eq!(session.tools[0].request_index, 0);
+        assert_eq!(session.tools[0].effect, "test");
+        assert_eq!(session.llm_calls.len(), 1);
+        assert_eq!(session.llm_calls[0].request_index, 0);
+        assert_eq!(session.llm_calls[0].text_hash, "l1");
+
+        let payload = session_to_json(&session, false);
+        let tool = &payload["tool_events"].as_array().expect("tool events")[0];
+        assert_eq!(tool["prompt_key"], "0:h1");
+        assert_eq!(tool["prompt_tag"], "test");
+    }
+
+    #[test]
     fn token_components_do_not_stack_estimates_on_reported_tokens() {
         let mut call = LlmEvent {
             ts_ms: None,
@@ -2703,5 +3489,62 @@ mod tests {
         write_pprof_projection(&projection, &path).unwrap();
         let bytes = fs::read(path).unwrap();
         assert_eq!(&bytes[..2], &[0x1f, 0x8b]);
+    }
+
+    #[test]
+    fn pprof_tasks_make_prompt_tag_the_leaf_frame() {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profile.pb.gz");
+        let projection = ProfileProjection {
+            view: "tasks".to_string(),
+            sample_type: "events",
+            unit: "count",
+            stacks: BTreeMap::from([(
+                concat!(
+                    "project:test;agent:codex;session:rustfix;prompt:review;",
+                    "kind:tool;call:tool/shell;effect:test;status:ok"
+                )
+                .to_string(),
+                7,
+            )]),
+        };
+        write_pprof_projection(&projection, &path).unwrap();
+
+        let bytes = fs::read(path).unwrap();
+        let mut decoder = GzDecoder::new(&bytes[..]);
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        let profile = PprofProfile::decode(&decoded[..]).unwrap();
+        let leaf_location_id = profile.sample[0].location_id[0];
+        let leaf_location = profile
+            .location
+            .iter()
+            .find(|location| location.id == leaf_location_id)
+            .expect("leaf location");
+        let leaf_function_id = leaf_location.line[0].function_id;
+        let leaf_function = profile
+            .function
+            .iter()
+            .find(|function| function.id == leaf_function_id)
+            .expect("leaf function");
+        let leaf_name = &profile.string_table[usize::try_from(leaf_function.name).unwrap()];
+        assert_eq!(leaf_name, "prompt:review");
+    }
+
+    #[test]
+    fn svg_flamegraph_merges_common_prefixes() {
+        let stacks = BTreeMap::from([
+            ("project:test;agent:codex;prompt:debug".to_string(), 7_u64),
+            ("project:test;agent:codex;prompt:review".to_string(), 3_u64),
+        ]);
+        let svg = flamegraph_svg(&stacks, "test", "count");
+        assert!(svg.contains("prefix-merged flamegraph"));
+        assert!(svg.contains("project:test | 10 count"));
+        assert!(svg.contains("project:test ; agent:codex | 10 count"));
+        assert!(!svg.contains("project:test | 7 count"));
+        assert!(!svg.contains("project:test | 3 count"));
     }
 }
