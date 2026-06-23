@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::session::{SessionRecord, one_word, short_hash, truncate_clean};
+use crate::session::{SessionRecord, short_hash, truncate_clean};
 
 const TAG_CACHE_VERSION: &str = "v3";
 const TAG_GRAMMAR: &str =
@@ -222,6 +222,7 @@ fn extract_llm_text(payload: &Value) -> Option<String> {
 
 pub struct RegexTagger {
     rules: Vec<TagRule>,
+    use_preset: bool,
 }
 
 struct TagRule {
@@ -230,41 +231,52 @@ struct TagRule {
     regex: Regex,
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct TagDiagnostics {
+    pub total_sessions: usize,
+    pub matched_sessions: usize,
+    pub unmatched_sessions: usize,
+    pub total_prompts: usize,
+    pub matched_prompts: usize,
+    pub unmatched_prompts: usize,
+    pub total_llm_calls: usize,
+    pub matched_llm_calls: usize,
+    pub unmatched_llm_calls: usize,
+    pub unmatched_samples: Vec<UnmatchedSample>,
+    pub tag_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnmatchedSample {
+    pub kind: String,
+    pub preview: String,
+    pub session_id: String,
+}
+
 impl RegexTagger {
-    pub fn new(rule_specs: &[String]) -> Result<Self> {
+    pub fn new(rule_specs: &[String], use_preset: bool) -> Result<Self> {
         let mut rules = Vec::new();
         for spec in rule_specs {
             rules.push(parse_tag_rule(spec)?);
         }
-        Ok(Self { rules })
+        Ok(Self { rules, use_preset })
     }
 
-    pub fn tag(&self, kind: &str, text: &str, _hints: &[String]) -> String {
+    pub fn tag(&self, kind: &str, text: &str, _hints: &[String]) -> Option<String> {
         self.tag_with_fallback(kind, text, None)
     }
 
-    pub fn tag_with_fallback(&self, kind: &str, text: &str, fallback: Option<&str>) -> String {
+    pub fn tag_with_fallback(&self, kind: &str, text: &str, _fallback: Option<&str>) -> Option<String> {
         if let Some(tag) = self.custom_tag(kind, text) {
-            return tag;
+            return Some(tag);
         }
-        let haystack = text.to_ascii_lowercase();
-        if let Some(tag) = keyword_tag(&haystack) {
-            return tag;
-        }
-        // For LLM calls, use provided fallback (prompt tag) instead of extracting from text
-        if let Some(fb) = fallback {
-            if valid_tag(fb) {
-                return fb.to_string();
+        if self.use_preset {
+            let haystack = text.to_ascii_lowercase();
+            if let Some(tag) = keyword_tag(&haystack) {
+                return Some(tag);
             }
         }
-        let picked = sanitize_tag(&one_word(text, ""))
-            .filter(|tag| valid_tag(tag))
-            .unwrap_or_else(|| fallback_tag(kind).to_string());
-        if valid_tag(&picked) {
-            picked
-        } else {
-            fallback_tag(kind).to_string()
-        }
+        None
     }
 
     fn custom_tag(&self, kind: &str, source: &str) -> Option<String> {
@@ -300,12 +312,17 @@ fn parse_tag_rule(spec: &str) -> Result<TagRule> {
     })
 }
 
+pub const UNMATCHED_TAG: &str = "unmatched";
+
 pub fn annotate_sessions_regex(
     sessions: &mut [SessionRecord],
     tagger: &RegexTagger,
     tag_llm_calls: bool,
-) {
+) -> TagDiagnostics {
+    let mut diagnostics = TagDiagnostics::default();
+
     for session in sessions {
+        diagnostics.total_sessions += 1;
         let prompt_text = session
             .user_requests
             .iter()
@@ -313,40 +330,68 @@ pub fn annotate_sessions_regex(
             .map(|req| req.preview.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        session.session_tag = tagger.tag(
-            "session",
-            &truncate_clean(
-                &format!("{} {} {}", session.title, session.cwd, prompt_text),
-                1500,
-            ),
-            &[session.source.clone(), session.model.clone()],
+        let session_input = truncate_clean(
+            &format!("{} {} {}", session.title, session.cwd, prompt_text),
+            1500,
         );
+        if let Some(tag) = tagger.tag(
+            "session",
+            &session_input,
+            &[session.source.clone(), session.model.clone()],
+        ) {
+            session.session_tag = tag;
+            diagnostics.matched_sessions += 1;
+        } else {
+            session.session_tag = UNMATCHED_TAG.to_string();
+            diagnostics.unmatched_sessions += 1;
+            if diagnostics.unmatched_samples.len() < 30 {
+                diagnostics.unmatched_samples.push(UnmatchedSample {
+                    kind: "session".to_string(),
+                    preview: truncate_clean(&session_input, 120),
+                    session_id: session.session_id.clone(),
+                });
+            }
+        }
+
         for req in &mut session.user_requests {
-            req.tag = tagger.tag(
+            diagnostics.total_prompts += 1;
+            if let Some(tag) = tagger.tag(
                 "prompt",
                 &req.preview,
                 &[session.session_tag.clone(), session.source.clone()],
-            );
-        }
-        for idx in 0..session.llm_calls.len() {
-            let prompt_tag = session
-                .user_requests
-                .get(session.llm_calls[idx].request_index)
-                .or_else(|| session.user_requests.last())
-                .map(|req| req.tag.as_str())
-                .unwrap_or(&session.session_tag);
-            if tag_llm_calls {
-                let call = &session.llm_calls[idx];
-                session.llm_calls[idx].tag = tagger.tag_with_fallback(
-                    "llm",
-                    &call.preview,
-                    Some(prompt_tag),
-                );
+            ) {
+                req.tag = tag.clone();
+                diagnostics.matched_prompts += 1;
+                *diagnostics.tag_counts.entry(format!("prompt:{}", tag)).or_default() += 1;
             } else {
-                session.llm_calls[idx].tag = prompt_tag.to_string();
+                req.tag = UNMATCHED_TAG.to_string();
+                diagnostics.unmatched_prompts += 1;
+                *diagnostics.tag_counts.entry("prompt:unmatched".to_string()).or_default() += 1;
+                if diagnostics.unmatched_samples.len() < 30 {
+                    diagnostics.unmatched_samples.push(UnmatchedSample {
+                        kind: "prompt".to_string(),
+                        preview: truncate_clean(&req.preview, 120),
+                        session_id: session.session_id.clone(),
+                    });
+                }
+            }
+        }
+
+        for idx in 0..session.llm_calls.len() {
+            diagnostics.total_llm_calls += 1;
+            let call = &session.llm_calls[idx];
+            if let Some(tag) = tagger.tag("llm", &call.preview, &[]) {
+                session.llm_calls[idx].tag = tag.clone();
+                diagnostics.matched_llm_calls += 1;
+                *diagnostics.tag_counts.entry(format!("llm:{}", tag)).or_default() += 1;
+            } else {
+                session.llm_calls[idx].tag = UNMATCHED_TAG.to_string();
+                diagnostics.unmatched_llm_calls += 1;
             }
         }
     }
+
+    diagnostics
 }
 
 pub fn annotate_sessions(
@@ -477,14 +522,6 @@ fn keyword_tag(text: &str) -> Option<String> {
         .map(|(tag, _)| (*tag).to_string())
 }
 
-fn fallback_tag(kind: &str) -> &'static str {
-    match kind {
-        "session" => "analyze",
-        "prompt" => "inspect",
-        "llm" => "answer",
-        _ => "analyze",
-    }
-}
 
 pub fn default_tag_cache_path() -> PathBuf {
     dirs::cache_dir()
@@ -541,39 +578,50 @@ mod tests {
     }
 
     #[test]
-    fn custom_tag_rules_override_builtin_regex_tags() {
+    fn custom_tag_rules_match() {
         let tagger = RegexTagger::new(&[
             "prompt:verify=(?i)cargo test|pytest".to_string(),
             "prompt:review=(?i)review|diff|regression".to_string(),
-        ])
+        ], false)
         .unwrap();
         assert_eq!(
             tagger.tag("prompt", "please review this diff", &[]),
-            "review"
+            Some("review".to_string())
         );
-        assert_eq!(tagger.tag("prompt", "run cargo test", &[]), "verify");
+        assert_eq!(tagger.tag("prompt", "run cargo test", &[]), Some("verify".to_string()));
     }
 
     #[test]
-    fn custom_tag_rules_are_scoped_by_kind() {
-        let tagger = RegexTagger::new(&["prompt:review=x y".to_string()]).unwrap();
-        assert_eq!(tagger.tag("prompt", "x y", &[]), "review");
-        assert_eq!(tagger.tag("session", "x y", &[]), "analyze");
+    fn no_rules_returns_none() {
+        let tagger = RegexTagger::new(&[], false).unwrap();
+        assert_eq!(tagger.tag("prompt", "random text", &[]), None);
+        assert_eq!(tagger.tag("session", "random text", &[]), None);
     }
 
     #[test]
-    fn custom_tag_rules_do_not_match_hints() {
-        let tagger = RegexTagger::new(&["prompt:review=(?i)review".to_string()]).unwrap();
-        assert_eq!(
-            tagger.tag("prompt", "x y", &["review".to_string()]),
-            "inspect"
-        );
+    fn preset_enables_builtin_rules() {
+        let tagger = RegexTagger::new(&[], true).unwrap();
+        assert_eq!(tagger.tag("prompt", "please debug this error", &[]), Some("debug".to_string()));
+        assert_eq!(tagger.tag("prompt", "run cargo test", &[]), Some("test".to_string()));
+    }
+
+    #[test]
+    fn custom_rules_are_scoped_by_kind() {
+        let tagger = RegexTagger::new(&["prompt:review=x y".to_string()], false).unwrap();
+        assert_eq!(tagger.tag("prompt", "x y", &[]), Some("review".to_string()));
+        assert_eq!(tagger.tag("session", "x y", &[]), None);
+    }
+
+    #[test]
+    fn custom_rules_do_not_match_hints() {
+        let tagger = RegexTagger::new(&["prompt:review=(?i)review".to_string()], false).unwrap();
+        assert_eq!(tagger.tag("prompt", "x y", &["review".to_string()]), None);
     }
 
     #[test]
     fn invalid_custom_tag_rules_are_rejected() {
-        assert!(RegexTagger::new(&["prompt:two-words=review".to_string()]).is_err());
-        assert!(RegexTagger::new(&["tool:review=review".to_string()]).is_err());
-        assert!(RegexTagger::new(&["prompt:review=(".to_string()]).is_err());
+        assert!(RegexTagger::new(&["prompt:two-words=review".to_string()], false).is_err());
+        assert!(RegexTagger::new(&["tool:review=review".to_string()], false).is_err());
+        assert!(RegexTagger::new(&["prompt:review=(".to_string()], false).is_err());
     }
 }

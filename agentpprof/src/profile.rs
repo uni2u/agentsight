@@ -209,16 +209,21 @@ fn build_time_stacks(sessions: &[SessionRecord], project_name: &str) -> Counter 
         for event in &session.tools {
             if let Some(ts) = event.ts_ms {
                 let req = session.request_by_index(event.request_index);
-                events.push((
-                    ts,
-                    req.tag.clone(),
-                    vec![
-                        "kind:tool".to_string(),
-                        safe_frame(&format!("tool/{}", event.category), Some("call")),
-                        safe_frame(&event.effect, Some("effect")),
-                        safe_frame(&event.status, Some("status")),
-                    ],
-                ));
+                let mut frames = vec![
+                    "kind:tool".to_string(),
+                    safe_frame(&event.tool_name, Some("tool")),
+                ];
+                // For shell commands, add command name and process chain
+                if event.category == "shell" {
+                    if !event.command_name.is_empty() {
+                        frames.push(safe_frame(&event.command_name, Some("cmd")));
+                    }
+                    // Add process chain if available (from agentsight)
+                    for process in &event.process_chain {
+                        frames.push(safe_frame(process, Some("proc")));
+                    }
+                }
+                events.push((ts, req.tag.clone(), frames));
             }
         }
         for call in &session.llm_calls {
@@ -1049,9 +1054,9 @@ mod tests {
             stacks.get("project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:prompt"),
             Some(&2)
         );
-        // tool at 3000ms, llm at 8000ms -> 5 seconds (with tool details)
+        // tool at 3000ms, llm at 8000ms -> 5 seconds (with tool name, cmd, and process chain)
         assert_eq!(
-            stacks.get("project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:tool;call:tool/shell;effect:test;status:ok"),
+            stacks.get("project:agentsight;agent:codex;session:rustfix;prompt:debug;kind:tool;tool:exec_command;cmd:cargo;proc:cargo"),
             Some(&5)
         );
         // last event gets 1 second (with llm details)

@@ -168,7 +168,6 @@ pub fn discover_sessions(
                 .as_ref()
                 .map(|session| session_matches_project(session, project_root))
                 .unwrap_or(false)
-            && !raw_mentions_project(&path, project_root)
         {
             continue;
         }
@@ -286,12 +285,6 @@ fn path_text_matches_project(raw: &str, project_root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn raw_mentions_project(path: &Path, project_root: &Path) -> bool {
-    fs::read_to_string(path)
-        .map(|text| text.contains(&project_root.to_string_lossy().to_string()))
-        .unwrap_or(false)
-}
-
 fn record_from_agent_session(session: &AgentSession) -> SessionRecord {
     SessionRecord {
         source: session.agent_type.clone(),
@@ -372,13 +365,9 @@ fn nonnegative_u64(value: i64) -> u64 {
 fn raw_session_minimal(
     path: &Path,
     source: &str,
-    project_root: &Path,
-    enforce_project_filter: bool,
+    _project_root: &Path,
+    _enforce_project_filter: bool,
 ) -> Result<Option<SessionRecord>> {
-    if enforce_project_filter && source == AGENT_CODEX && !raw_mentions_project(path, project_root)
-    {
-        return Ok(None);
-    }
     Ok(Some(SessionRecord {
         source: source.to_string(),
         path: path.to_path_buf(),

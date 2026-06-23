@@ -1,0 +1,14 @@
+project:bpf-benchmark;agent:claude;session:unmatched;prompt:confirm;domain:unknown;process:git;status:ok 1
+project:bpf-benchmark;agent:claude;session:unmatched;prompt:git;domain:anthropic.com;process:cd;status:ok 1
+project:bpf-benchmark;agent:claude;session:unmatched;prompt:git;domain:anthropic.com;process:git;status:ok 13
+project:bpf-benchmark;agent:claude;session:unmatched;prompt:git;domain:claude.ai;process:cd;status:ok 1
+project:bpf-benchmark;agent:claude;session:unmatched;prompt:git;domain:claude.ai;process:git;status:ok 8
+project:bpf-benchmark;agent:claude;session:unmatched;prompt:git;domain:github.com;process:git;status:ok 2
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:edit;domain:unknown;process:ssh;status:fail 1
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:edit;domain:unknown;process:ssh;status:observed 4
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:edit;domain:unknown;process:ssh;status:ok 1
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:git;domain:github.com;process:git;status:ok 1
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:paper;domain:unknown;process:git;status:ok 1
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:unmatched;domain:unknown;process:ssh;status:fail 1
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:unmatched;domain:unknown;process:ssh;status:observed 144
+project:bpf-benchmark;agent:codex;session:unmatched;prompt:unmatched;domain:unknown;process:ssh;status:ok 100

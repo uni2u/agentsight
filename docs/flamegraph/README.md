@@ -77,43 +77,59 @@ project:agentsight;agent:claude;session:profile;prompt:debug;call:llm/debug;mode
 
 ## Tagging
 
-The default tagger is deterministic and does not call a model:
+Flamegraphs require semantic tags to aggregate meaningfully. Without rules,
+prompts are marked `unmatched` and diagnostics guide you to add rules.
 
-```bash
-agentpprof -o tokens.svg --tagger regex
-```
+### Iterative Workflow
 
-Add project-specific rules with repeated `--tag-rule` arguments:
+1. Run without rules to see diagnostics:
+   ```bash
+   agentpprof --project-root . -o out.json --format json --include-previews
+   ```
 
-```bash
-agentpprof -o tokens.svg \
-  --tagger regex \
-  --tag-rule prompt:review='(?i)review|diff|regression' \
-  --tag-rule prompt:test='(?i)cargo test|pytest|unit test'
-```
+2. Check `tagging.unmatched_samples` in the JSON output for patterns
 
-Rule syntax is:
+3. Add `--tag-rule` arguments based on the patterns:
+   ```bash
+   agentpprof --project-root . -o out.svg \
+     --tag-rule prompt:review='(?i)review|diff|pr' \
+     --tag-rule prompt:debug='(?i)fix|bug|error'
+   ```
+
+4. Iterate until `tagging.coverage_pct` is acceptable
+
+### Rule Syntax
 
 ```text
 KIND:TAG=REGEX
 ```
 
-`KIND` may be `session`, `prompt`, `llm`, or `all`. Rules are evaluated in
-command-line order before the built-in keyword rules. The custom rule regex
-matches the current object text only: a `prompt:*` rule matches prompt text, not
-the session tag or model hint. `TAG` must be one lowercase English word between
-3 and 12 letters, which keeps the flamegraph readable.
+- `KIND`: `session`, `prompt`, `llm`, or `all`
+- `TAG`: lowercase word, 3-12 letters
+- `REGEX`: pattern (use `(?i)` for case-insensitive)
 
-For model-produced one-word tags, run a llama.cpp-compatible server and switch
-to the LLM tagger:
+Rules are evaluated in command-line order; first match wins.
+
+### Built-in Preset
+
+`--preset` enables generic keyword rules (profile, debug, test, review, etc.)
+for quick testing. These are unlikely to match your project well and should
+not be used for production flamegraphs.
+
+### LLM Tagger
+
+For model-produced tags, run a llama.cpp-compatible server:
 
 ```bash
 llama-server -m /path/to/model.gguf --port 8080
 agentpprof -o tokens.svg --tagger llm --llama-url http://127.0.0.1:8080
 ```
 
-`--tag-rule` is intentionally limited to `--tagger regex`; combining it with
-`--tagger llm` returns an error instead of silently mixing policies.
+`--tag-rule` is only supported with `--tagger regex`.
+
+### Example
+
+See `examples/bpf-benchmark.sh` for a complete script with 100% coverage.
 
 ## Local History
 
