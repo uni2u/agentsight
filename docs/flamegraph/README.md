@@ -105,10 +105,11 @@ KIND:TAG=REGEX
 ```
 
 - `KIND`: `session`, `prompt`, `llm`, or `all`
-- `TAG`: lowercase word, 3-12 letters
+- `TAG`: lowercase word, 3-12 letters, semantic (avoid vague tags like `task`, `misc`, `work`)
 - `REGEX`: pattern (use `(?i)` for case-insensitive)
 
 Rules are evaluated in command-line order; first match wins.
+Vague tags (task, work, misc, thing, stuff, other) produce a warning — use specific semantic tags.
 
 ### Built-in Preset
 

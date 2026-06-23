@@ -29,7 +29,7 @@ const jsonLd = {
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'Linux',
   description:
-    'System-level profiling and tracing for AI agents, powered by eBPF. Profiles time, tokens, commands, files, network calls, and system resources without SDKs.',
+    'System-level profiling and tracing tools and skills for AI agents, powered by eBPF. Helps agents understand time, tokens, commands, files, network calls, and system resources without SDKs.',
   url: 'https://agentsight.us/',
   codeRepository: 'https://github.com/eunomia-bpf/agentsight',
   offers: {
@@ -56,13 +56,12 @@ export default function Home() {
           <div>
             <Eyebrow>System-level AI agent profiling</Eyebrow>
             <h1 className="max-w-4xl text-5xl font-semibold leading-[1.02] tracking-normal text-ink sm:text-6xl">
-              Profile AI agents like programs.
+              Let your agents profile AI agents like programs.
             </h1>
             <p className="mt-6 max-w-3xl text-lg leading-8 text-slate-600">
-              AgentSight by Eunomia is an eBPF-powered profiling and tracing tool for Claude Code,
-              Codex, Gemini CLI, OpenCode, OpenClaw, and local agents. Understand where time,
-              tokens, commands, files, network calls, and system resources go, without SDKs,
-              proxies, or vendor hooks.
+              System-level profiling and tracing tools and skills for Claude Code, Codex, and other
+              local agents. Understand where time, tokens, commands, files, network calls, and
+              system resources go — without SDKs.
             </p>
             <div className="mt-8">
               <PrimaryCta />
@@ -144,6 +143,43 @@ export default function Home() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      </section>
+
+      <section className="border-y border-slate-200 bg-slatepaper py-16">
+        <div className="container-page grid gap-10 lg:grid-cols-[0.92fr_1.08fr] lg:items-start">
+          <div>
+            <Eyebrow>Semantic gap</Eyebrow>
+            <h2 className="text-3xl font-semibold text-ink sm:text-4xl">
+              Traditional observability cannot parse what an agent was trying to do.
+            </h2>
+            <p className="mt-4 text-base leading-7 text-slate-600">
+              AI agents execute unpredictable actions that break the assumptions of static
+              dashboards. The hard problem is not collecting more telemetry. The hard problem is
+              connecting natural language intent to low-level OS side effects.
+            </p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-6">
+            <h3 className="text-xl font-semibold text-ink">Observer-agent workflow</h3>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              AgentSight gives an independent observer agent the system-level tools and skills it
+              needs to correlate prompts, model calls, commands, files, network, and resources. The
+              output is not just a raw trace; it is a causally linked run profile, report, or Agent
+              Flamegraph that explains where the run went.
+            </p>
+            <div className="mt-5 grid gap-3 text-sm text-slate-700">
+              {[
+                'Prompt intent and agent decisions',
+                'LLM traffic, tokens, and model calls',
+                'Processes, commands, files, network, CPU, and memory',
+                'Skill-guided analysis artifacts for humans and agents',
+              ].map((item) => (
+                <div key={item} className="rounded-md border border-slate-200 bg-slatepaper px-4 py-3">
+                  {item}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -261,13 +297,13 @@ export default function Home() {
           <div>
             <Eyebrow>Skills and artifacts</Eyebrow>
             <h2 className="text-3xl font-semibold text-ink sm:text-4xl">
-              The trace is the data. The skill writes the analysis.
+              Skills are the control surface, not the afterthought.
             </h2>
             <p className="mt-4 text-base leading-7 text-slate-600">
-              Many AgentSight workflows should start from a skill, not a dashboard. Record the run,
-              hand the saved evidence to an agent, and let it generate a concise HTML artifact with
-              findings, charts, tables, and next actions. AgentSight provides the ground data; the
-              agent turns it into a report people will actually read.
+              AgentSight is designed so agents can drive profiling work themselves. Skills tell the
+              agent which profiling tools to run, which evidence to collect, which metrics to rank,
+              what to redact, and how to turn the trace into a useful artifact. The eBPF tools and
+              the skills are co-equal parts of the product.
             </p>
           </div>
           <div className="grid gap-4">

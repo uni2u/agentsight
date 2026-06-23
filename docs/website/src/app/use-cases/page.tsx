@@ -55,8 +55,8 @@ const cases = [
     title: 'Generate shareable insight pages',
     pain: 'Raw traces are too detailed for reviewers, managers, or tool authors. They need findings, evidence, and next actions in one page.',
     outcome:
-      'Use an AgentSight skill to turn a saved DB or snapshot into a self-contained HTML artifact with ranked findings and evidence tables.',
-    signals: ['Severity-ranked findings', 'Top token and resource consumers', 'Evidence tables', 'Public redaction mode'],
+      'Use an AgentSight skill to drive the profiling workflow and guide the agent from raw evidence to a self-contained HTML artifact.',
+    signals: ['Profiling playbook', 'Tool selection', 'Severity-ranked findings', 'Public redaction mode'],
     icon: Workflow,
   },
   {
@@ -99,7 +99,7 @@ export default function UseCasesPage() {
           </h1>
           <p className="mt-5 max-w-3xl text-base leading-7 text-slate-600">
             Start from a real run, not a synthetic dashboard. AgentSight gives you a system-level profile
-            you can use for debugging, review, tool evaluation, and incident investigation.
+            and skillset you can use for debugging, review, tool evaluation, and incident investigation.
           </p>
         </div>
       </section>

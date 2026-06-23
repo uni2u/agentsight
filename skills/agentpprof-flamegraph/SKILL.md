@@ -54,8 +54,10 @@ agentpprof \
 
 Rule syntax: `KIND:TAG=REGEX`
 - KIND: `prompt`, `session`, `llm`, or `all`
-- TAG: lowercase word, 3-12 letters
+- TAG: lowercase word, 3-12 letters (semantic, not vague)
 - REGEX: case-insensitive patterns with `(?i)`
+
+**Avoid vague tags** like `task`, `work`, `misc`, `thing`, `stuff`, `other` — they don't convey semantic meaning and won't aggregate well. Use specific tags like `debug`, `review`, `paper`, `naming` that describe the activity.
 
 ### 4. Check Coverage
 

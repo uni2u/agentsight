@@ -297,8 +297,8 @@ fn parse_tag_rule(spec: &str) -> Result<TagRule> {
     if !matches!(kind, "session" | "prompt" | "llm" | "all") {
         bail!("invalid --tag-rule kind {kind:?}; expected session, prompt, llm, or all");
     }
-    if !valid_tag(tag) {
-        bail!("invalid --tag-rule tag {tag:?}; tags must be one lowercase word, 3-12 letters");
+    if let Err(reason) = validate_tag(tag) {
+        bail!("invalid --tag-rule tag {tag:?}; {reason}");
     }
     if pattern.is_empty() {
         bail!("invalid --tag-rule {spec:?}; regex pattern cannot be empty");
@@ -536,15 +536,40 @@ pub fn sanitize_tag(text: &str) -> Option<String> {
     }
 }
 
+/// Validate tag format. Returns Ok(()) if valid, Err with reason if invalid.
+/// Warns (to stderr) for vague tags but still accepts them.
+pub fn validate_tag(tag: &str) -> Result<(), String> {
+    if tag.is_empty() {
+        return Err("tag cannot be empty".to_string());
+    }
+    if tag.len() < 3 {
+        return Err(format!("tag \"{}\" too short (minimum 3 letters)", tag));
+    }
+    if tag.len() > 12 {
+        return Err(format!("tag \"{}\" too long (maximum 12 letters)", tag));
+    }
+    if !tag.chars().next().unwrap().is_ascii_lowercase() {
+        return Err(format!("tag \"{}\" must start with lowercase letter", tag));
+    }
+    if !tag.chars().all(|c| c.is_ascii_lowercase()) {
+        return Err(format!(
+            "tag \"{}\" must contain only lowercase letters",
+            tag
+        ));
+    }
+    // Warn for vague tags that don't convey semantic meaning
+    const VAGUE_TAGS: &[&str] = &["task", "work", "misc", "thing", "stuff", "other", "item", "data"];
+    if VAGUE_TAGS.contains(&tag) {
+        eprintln!(
+            "Warning: tag \"{}\" is vague and unlikely to aggregate meaningfully. Consider a more specific semantic tag.",
+            tag
+        );
+    }
+    Ok(())
+}
+
 pub fn valid_tag(tag: &str) -> bool {
-    let mut chars = tag.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    first.is_ascii_lowercase()
-        && (3..=12).contains(&tag.len())
-        && tag.chars().all(|c| c.is_ascii_lowercase())
-        && !["task", "work", "misc", "thing", "stuff", "other"].contains(&tag)
+    validate_tag(tag).is_ok()
 }
 
 fn now_iso() -> String {
@@ -559,7 +584,9 @@ mod tests {
     fn tag_validation_has_no_label_fallback() {
         assert!(valid_tag("debug"));
         assert!(!valid_tag("two words"));
-        assert!(!valid_tag("task"));
+        // Vague tags are now allowed (with warning) - no blocklist
+        assert!(valid_tag("task"));
+        assert!(valid_tag("misc"));
         assert_eq!(sanitize_tag("debug."), Some("debug".to_string()));
         assert_eq!(sanitize_tag("debug tests"), None);
         assert!(!valid_tag("codingupdateflamegraph"));

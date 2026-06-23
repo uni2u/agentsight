@@ -83,9 +83,11 @@ struct Cli {
     prompt_tag: Option<String>,
     #[arg(long)]
     agent: Option<String>,
-    #[arg(long, default_value_t = 160)]
+    /// Maximum session files to scan per source (Claude, Codex). Increase for projects with long history.
+    #[arg(long, default_value_t = 2000)]
     scan_files: usize,
-    #[arg(long, default_value_t = 36)]
+    /// Maximum sessions to include after filtering by project. Use --scan-files to find more candidates.
+    #[arg(long, default_value_t = 200)]
     max_sessions: usize,
     #[arg(long, default_value = DEFAULT_LLAMA_URL)]
     llama_url: String,

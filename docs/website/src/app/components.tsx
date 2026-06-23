@@ -61,7 +61,7 @@ export function SiteFooter() {
         <div>
           <div className="text-sm font-semibold uppercase tracking-wide text-ink">AgentSight by Eunomia</div>
           <p className="mt-3 max-w-xl text-sm leading-6 text-slate-600">
-            System-level profiling and tracing for AI agents, powered by eBPF. Profile AI agents like programs.
+            System-level profiling and tracing tools and skills for AI agents, powered by eBPF.
           </p>
         </div>
         <div>

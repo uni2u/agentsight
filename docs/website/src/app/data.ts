@@ -59,7 +59,7 @@ export const useCases = [
   {
     title: 'Generate shareable insight pages',
     description:
-      'Use AgentSight skills to turn local traces into executive summaries, findings, tables, and single-file HTML reports.',
+      'Use AgentSight skills to drive profiling workflows and turn traces into findings, tables, and single-file HTML reports.',
     icon: Workflow,
     href: '/use-cases/#insight-artifacts',
   },
@@ -106,7 +106,7 @@ export const comparisonRows = [
     sdk: 'Your own LLM app',
     gateway: 'Provider routing and cost controls',
     transcript: 'Cheap historical usage reports',
-    agentsight: 'System-level run profiling and incident analysis',
+    agentsight: 'Observer-agent profiling across semantic intent and OS effects',
   },
 ];
 
@@ -151,16 +151,16 @@ export const quickstart = [
 
 export const artifactFlow = [
   {
-    title: 'Capture the run',
-    description: 'Record the agent session, including model calls, process tree, files, network, and resource samples.',
+    title: 'Choose the profiling skill',
+    description: 'The skill tells the agent what to measure, which tools to call, and what evidence matters for the task.',
   },
   {
-    title: 'Let a skill analyze it',
-    description: 'An AgentSight skill reads the saved DB or snapshot and turns raw events into ranked findings and evidence tables.',
+    title: 'Run system-level tools',
+    description: 'The eBPF profiler captures model calls, process tree, files, network, and resource samples from the agent run.',
   },
   {
-    title: 'Share the artifact',
-    description: 'Export a self-contained HTML report for PR review, tool evaluation, incident notes, or team retrospectives.',
+    title: 'Create the artifact',
+    description: 'The skill guides the agent from raw trace data to a self-contained report for review, audit, or debugging.',
   },
 ];
 
