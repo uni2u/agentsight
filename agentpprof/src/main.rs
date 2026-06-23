@@ -22,6 +22,7 @@ const TAG_GRAMMAR: &str =
 
 #[derive(Parser)]
 #[command(name = "agentpprof")]
+#[command(version)]
 #[command(about = "pprof-compatible semantic profiler for local AI coding-agent sessions")]
 struct Cli {
     /// Output file. Use .pb.gz for Go pprof, .folded for folded stacks, .svg for an SVG flamegraph, or .json.
@@ -1794,11 +1795,9 @@ fn enrich_claude(
                 });
             }
         }
-        "last-prompt" => {
-            if record.user_requests.is_empty() {
-                if let Some(text) = value.get("lastPrompt").and_then(Value::as_str) {
-                    *current_request = upsert_prompt(record, ts_ms, text);
-                }
+        "last-prompt" if record.user_requests.is_empty() => {
+            if let Some(text) = value.get("lastPrompt").and_then(Value::as_str) {
+                *current_request = upsert_prompt(record, ts_ms, text);
             }
         }
         _ => {}
