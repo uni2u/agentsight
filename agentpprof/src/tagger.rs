@@ -527,7 +527,7 @@ fn print_distribution_analysis(kind: &str, tag_counts: &BTreeMap<String, usize>)
 
     // Sort by count descending
     let mut sorted: Vec<_> = tags.iter().map(|(k, v)| (k.as_str(), **v)).collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|item| std::cmp::Reverse(item.1));
 
     // Calculate distribution metrics
     let top1_pct = sorted.first().map(|(_, v)| *v as f64 / total as f64 * 100.0).unwrap_or(0.0);
