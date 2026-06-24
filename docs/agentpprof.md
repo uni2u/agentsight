@@ -1,4 +1,4 @@
-# agentpprof: pprof-style profiles for AI coding-agent sessions
+# agentpprof: profiling AI coding-agent with semantic flamegraphs
 
 An AI coding agent can finish a task and leave behind hundreds of events: user
 prompts, model calls, shell commands, file edits, package downloads, test runs,
@@ -14,28 +14,50 @@ tools already understand: Go pprof protobuf, folded stacks, SVG flamegraphs, and
 redacted JSON.
 
 The profiles are not CPU profiles. A wide frame does not mean the agent used
-more CPU. Width means the chosen view's weight: activity count, system-effect
-count, file-effect count, network-effect count, or model token count. The goal
-is to make an agent session browsable like a performance profile, without
-pretending that every question has the same metric.
+more CPU. Width means the chosen view's weight: token count, wall-clock seconds,
+file-effect count, or network-effect count. The goal is to make an agent session
+browsable like a performance profile, without pretending that every question has
+the same metric.
 
-## Why a profiler instead of another trace view?
+## Why traditional profiling doesn't work
 
 Trace views are good when you already know where to look. If a single command
-failed at 14:03, a timeline can show the surrounding tool calls and model
-messages. Long agent sessions have a different failure mode: there is too much
-trace. The user wants to know whether the agent kept re-reading the same files,
-spent most of its model budget on review, retried tests in a loop, or contacted
-external services during one prompt.
+failed at 14:03, a timeline can show the surrounding events. But long agent
+sessions have a different failure mode: there is too much trace. The user wants
+to know whether the agent kept re-reading the same files, spent most of its model
+budget on review, retried tests in a loop, or contacted external services. These
+are aggregation questions, not point-in-time questions.
 
-A flamegraph is useful here because it compresses repeated work. The stack says
-which context the event belongs to, and the width says how much weight that
-context accumulated. When many prompts share the same pattern, they merge. When
-one prompt creates a distinct system effect, it remains visible as a branch.
+Traditional flamegraphs solve aggregation for CPU profiles. The stack says which
+context the event belongs to, and the width says how much weight that context
+accumulated. Repeated calls to the same function merge into wider bars. This
+works because function names are **deterministic**: the same code path produces
+the same stack.
 
-`agentpprof` keeps this model explicit. It does not try to produce one universal
-"agent flamegraph". Instead, it exposes several projections over the same
-session:
+Agent sessions break this assumption. Prompts are natural language—non-
+deterministic, variable-length, multilingual, and often conversational. "Fix the
+bug" and "修一下这个 error" mean the same thing but share no common string. Using
+raw prompt text as frame labels produces flamegraphs too wide to read and too
+sensitive to share.
+
+## Semantic flamegraphs
+
+`agentpprof` restores aggregation by introducing **semantic tagging**: mapping
+free-form prompts to short, stable labels like `debug`, `review`, `paper`, or
+`misc`. Once tagged, prompts behave like function names—repeated activities
+merge, and the flamegraph becomes readable. When many prompts share the same
+semantic pattern, they collapse. When one prompt creates a distinct system
+effect, it remains visible as a branch.
+
+The tagging challenge is real. Prompts mix languages ("fix the 编译 error"), vary
+from single characters ("嗯", "ok") to paragraphs, and include fragments that
+carry no standalone meaning. `agentpprof` uses a regex-based tagger with
+project-specific rules layered on top. Unmatched prompts fall through to `misc`
+rather than cluttering the profile. For complex projects, an optional LLM tagger
+can generate tags from a local model.
+
+`agentpprof` does not try to produce one universal "agent flamegraph". Instead,
+it exposes several projections over the same session:
 
 | View | Width means | Primary question |
 | --- | ---: | --- |
@@ -131,9 +153,9 @@ File access patterns show that nearly all activity remained within project bound
 
 ![Network flamegraph](https://github.com/eunomia-bpf/agentsight/raw/master/docs/flamegraph-example/bpf-benchmark-network.svg)
 
-Network activity is sparse relative to file operations, confirming that most development work occurred locally without external dependencies. The contacted domains—`github.com` for version control and `api.anthropic.com` for model inference—are expected and benign. No unexpected third-party services appear, which is reassuring from a supply-chain security perspective. Process chains visible in the upper frames show which tools initiated network requests (e.g., `git push`, `curl`), enabling attribution of network activity to specific agent actions
+Network activity is sparse relative to file operations, confirming that most development work occurred locally without external dependencies. The contacted domains—`github.com` for version control and `api.anthropic.com` for model inference—are expected and benign. No unexpected third-party services appear, which is reassuring from a supply-chain security perspective. Process chains visible in the upper frames show which tools initiated network requests (e.g., `git push`, `curl`), enabling attribution of network activity to specific agent actions.
 
-See `docs/flamegraph-example/bpf-benchmark.sh` for the generation script with tag rules
+See `docs/flamegraph-example/bpf-benchmark.sh` for the generation script with tag rules.
 
 ## What data does it read?
 

@@ -310,6 +310,14 @@ fn parse_tag_rule(spec: &str) -> Result<TagRule> {
     if pattern.is_empty() {
         bail!("invalid --tag-rule {spec:?}; regex pattern cannot be empty");
     }
+    // Warn about catch-all patterns that defeat semantic tagging
+    if pattern == "." || pattern == ".*" || pattern == ".+" {
+        eprintln!(
+            "Warning: catch-all rule '{}:{}={}' will match everything. \
+             This defeats semantic tagging. Use specific patterns instead.",
+            kind, tag, pattern
+        );
+    }
     let regex = Regex::new(pattern)
         .map_err(|error| anyhow!("invalid --tag-rule regex {pattern:?}: {error}"))?;
     Ok(TagRule {
@@ -451,24 +459,67 @@ pub fn annotate_sessions_regex(
         }
     }
 
-    // Print warnings for unmatched items
+    // Print warnings for unmatched items (target: <5% unmatched)
+    let prompt_pct = if diagnostics.total_prompts > 0 {
+        diagnostics.unmatched_prompts as f64 / diagnostics.total_prompts as f64 * 100.0
+    } else {
+        0.0
+    };
+    let session_pct = if diagnostics.total_sessions > 0 {
+        diagnostics.unmatched_sessions as f64 / diagnostics.total_sessions as f64 * 100.0
+    } else {
+        0.0
+    };
+    let llm_pct = if diagnostics.total_llm_calls > 0 {
+        diagnostics.unmatched_llm_calls as f64 / diagnostics.total_llm_calls as f64 * 100.0
+    } else {
+        0.0
+    };
+
     if diagnostics.unmatched_sessions > 0 {
         eprintln!(
-            "Warning: {}/{} sessions unmatched. Add session tag rules.",
-            diagnostics.unmatched_sessions, diagnostics.total_sessions
+            "Warning: {}/{} sessions unmatched ({:.1}%). Add session tag rules. Target: <5%.",
+            diagnostics.unmatched_sessions, diagnostics.total_sessions, session_pct
         );
     }
     if diagnostics.unmatched_prompts > 0 {
         eprintln!(
-            "Warning: {}/{} prompts unmatched. Add prompt tag rules.",
-            diagnostics.unmatched_prompts, diagnostics.total_prompts
+            "Warning: {}/{} prompts unmatched ({:.1}%). Add prompt tag rules. Target: <5%.",
+            diagnostics.unmatched_prompts, diagnostics.total_prompts, prompt_pct
         );
     }
     if diagnostics.unmatched_llm_calls > 0 {
         eprintln!(
-            "Warning: {}/{} LLM calls unmatched. Add llm tag rules.",
-            diagnostics.unmatched_llm_calls, diagnostics.total_llm_calls
+            "Warning: {}/{} LLM calls unmatched ({:.1}%). Add llm tag rules. Target: <5%.",
+            diagnostics.unmatched_llm_calls, diagnostics.total_llm_calls, llm_pct
         );
+    }
+
+    // Distribution analysis: check if tags are well-distributed
+    let prompt_tags: Vec<_> = diagnostics
+        .tag_counts
+        .iter()
+        .filter(|(k, _)| k.starts_with("prompt:") && !k.ends_with(":unmatched"))
+        .collect();
+    if !prompt_tags.is_empty() {
+        let total_tagged: usize = prompt_tags.iter().map(|(_, v)| *v).sum();
+        let max_tag = prompt_tags.iter().max_by_key(|(_, v)| *v);
+        if let Some((tag, count)) = max_tag {
+            let max_pct = **count as f64 / total_tagged as f64 * 100.0;
+            if max_pct > 50.0 {
+                eprintln!(
+                    "Distribution warning: {} dominates ({:.1}% of tagged prompts). Consider splitting into sub-categories.",
+                    tag, max_pct
+                );
+            }
+        }
+        let num_tags = prompt_tags.len();
+        if num_tags > 25 {
+            eprintln!(
+                "Distribution warning: {} prompt tags may be too fragmented. Consider merging similar categories.",
+                num_tags
+            );
+        }
     }
 
     diagnostics

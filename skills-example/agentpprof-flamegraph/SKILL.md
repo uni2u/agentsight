@@ -59,6 +59,8 @@ Rule syntax: `KIND:TAG=REGEX`
 
 **Avoid vague tags** like `task`, `work`, `misc`, `thing`, `stuff`, `other` — they don't convey semantic meaning and won't aggregate well. Use specific tags like `debug`, `review`, `paper`, `naming` that describe the activity.
 
+**Never use catch-all rules** like `prompt:misc=.` or `llm:other=.` — they defeat the purpose of semantic tagging by lumping everything together. If you can't classify an item, leave it unmatched and add more specific rules.
+
 ### 4. Check Coverage
 
 Each run shows diagnostics and warnings:
@@ -72,17 +74,27 @@ agentpprof --project-root . -o out.json --format json 2>&1 | jq '.tagging'
 ```
 
 **Definition of "well-tagged":**
-- **Visual check**: `prompt:unmatched` bar width < 5% of total in SVG
-- **Numeric check**: `prompts.matched / prompts.total > 90%`
-- **Sessions**: >80% matched (context grouping)
-- **LLM calls**: Optional — many are placeholder text ("claude response", "token report")
+- **Target**: All three categories must have `< 5%` unmatched
+  - `prompts.unmatched / prompts.total < 5%`
+  - `sessions.unmatched / sessions.total < 5%`
+  - `llm_calls.unmatched / llm_calls.total < 5%`
+
+**Distribution quality:**
+- Ideal: 10-20 distinct tag categories
+- No single tag should dominate (>50% of tagged items)
+- Tags too fragmented (>25 categories) may need merging
+
+The tool will warn if distribution is poor:
+```
+Distribution warning: prompt:review dominates (55.2% of tagged prompts). Consider splitting into sub-categories.
+```
 
 **Spot-check unmatched samples:**
 ```bash
-jq '.tagging.unmatched_samples | map(select(.kind == "prompt")) | .[0:5]' out.json
+jq '.tagging.unmatched_samples | map(select(.kind == "prompt")) | .[0:10]' out.json
 ```
 
-If unmatched prompts share patterns, add rules. If they're truly miscellaneous, a small unmatched bar is acceptable.
+If unmatched prompts share patterns, add rules. **Continue iterating until ALL categories have < 5% unmatched.** Avoid vague catch-all tags like `misc` — use specific semantic tags that describe the activity.
 
 ### 5. Generate Final Flamegraphs
 
@@ -92,9 +104,12 @@ for view in tokens files network; do
     --project-root /path/to/project \
     "${TAG_RULES[@]}" \
     --view "$view" \
+    --svg-width 1200 \
     -o "project-${view}.svg"
 done
 ```
+
+**SVG width**: Use `--svg-width` to adjust flamegraph width (default: 1200px). Narrower widths (800-1000) improve readability for deep flamegraphs; wider (1600-2000) for shallow ones with many tags.
 
 ## Views
 

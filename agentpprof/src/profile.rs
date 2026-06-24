@@ -408,6 +408,7 @@ pub fn write_projection(
     output: &Path,
     include_previews: bool,
     sessions: &[SessionRecord],
+    svg_width: u32,
 ) -> Result<()> {
     ensure_parent_dir(output)?;
     match format {
@@ -419,6 +420,7 @@ pub fn write_projection(
                 &projection.stacks,
                 &format!("agentpprof {} profile", projection.view),
                 projection.unit,
+                svg_width,
             ),
         )
         .map_err(Into::into),
@@ -552,12 +554,12 @@ fn write_folded(path: &Path, stacks: &Counter) -> Result<()> {
     Ok(())
 }
 
-pub fn flamegraph_svg(stacks: &Counter, title: &str, metric: &str) -> String {
-    let width = 1800.0;
+pub fn flamegraph_svg(stacks: &Counter, title: &str, metric: &str, svg_width: u32) -> String {
+    let width = svg_width as f64;
     let total = stacks.values().sum::<u64>();
     if total == 0 {
         return format!(
-            "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='120'><text x='16' y='40'>{}</text></svg>",
+            "<svg xmlns='http://www.w3.org/2000/svg' width='{svg_width}' height='120'><text x='16' y='40'>{}</text></svg>",
             html_escape(title)
         );
     }
@@ -570,9 +572,9 @@ pub fn flamegraph_svg(stacks: &Counter, title: &str, metric: &str) -> String {
     let chart_width = width - 32.0;
     let height = top + levels as f64 * (frame_h + gap) + 30.0;
     let mut svg = format!(
-        "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='{height}' viewBox='0 0 1800 {height}'>\
+        "<svg xmlns='http://www.w3.org/2000/svg' width='{svg_width}' height='{height}' viewBox='0 0 {svg_width} {height}'>\
          <style>text{{font-family:ui-monospace,Menlo,monospace;font-size:11px;pointer-events:none}}.title{{font-family:system-ui,sans-serif;font-size:18px;font-weight:700}}.meta{{font-family:system-ui,sans-serif;font-size:12px;fill:#444}}rect:hover{{stroke:#111;stroke-width:1.2}}</style>\
-         <rect width='1800' height='{height}' fill='#fbfbf7'/><text class='title' x='16' y='28'>{}</text>",
+         <rect width='{svg_width}' height='{height}' fill='#fbfbf7'/><text class='title' x='16' y='28'>{}</text>",
         html_escape(title),
     );
     let mut stats = FlameRenderStats::default();
@@ -1205,7 +1207,7 @@ mod tests {
             ("project:test;agent:codex;prompt:debug".to_string(), 7_u64),
             ("project:test;agent:codex;prompt:review".to_string(), 3_u64),
         ]);
-        let svg = flamegraph_svg(&stacks, "test", "count");
+        let svg = flamegraph_svg(&stacks, "test", "count", 1800);
         assert!(svg.contains("prefix-merged flamegraph"));
         assert!(svg.contains("project:test | 10 count"));
         assert!(svg.contains("project:test ; agent:codex | 10 count"));

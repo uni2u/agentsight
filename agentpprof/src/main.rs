@@ -103,6 +103,9 @@ struct Cli {
     no_cache: bool,
     #[arg(long)]
     include_previews: bool,
+    /// SVG width in pixels (default: 1200, narrower for better readability)
+    #[arg(long, default_value_t = 1200)]
+    svg_width: u32,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -209,6 +212,7 @@ fn command_export(args: Cli) -> Result<()> {
         &output,
         args.include_previews,
         &sessions,
+        args.svg_width,
     )?;
 
     let mut result = json!({
