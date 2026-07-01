@@ -5,14 +5,14 @@
 
 import React, { createContext, useState, useEffect, useCallback } from 'react';
 import { en } from './locales/en';
-import { zh } from './locales/zh';
+import { ko } from './locales/ko';
 
-export type Locale = 'en' | 'zh';
+export type Locale = 'en' | 'ko';
 export type TranslationKey = keyof typeof en;
 
 type Translations = Record<TranslationKey, string>;
 
-const locales: Record<Locale, Translations> = { en, zh };
+const locales: Record<Locale, Translations> = { en, ko };
 
 export interface I18nContextType {
   locale: Locale;
@@ -30,10 +30,10 @@ function detectLocale(): Locale {
   if (typeof window === 'undefined') return 'en';
 
   const saved = localStorage.getItem('agentsight-locale');
-  if (saved === 'en' || saved === 'zh') return saved;
+  if (saved === 'en' || saved === 'ko') return saved;
 
   const browserLang = navigator.language;
-  if (browserLang.startsWith('zh')) return 'zh';
+  if (browserLang.startsWith('ko')) return 'ko';
 
   return 'en';
 }

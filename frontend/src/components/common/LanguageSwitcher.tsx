@@ -21,14 +21,14 @@ export function LanguageSwitcher() {
         EN
       </button>
       <button
-        onClick={() => setLocale('zh')}
+        onClick={() => setLocale('ko')}
         className={`px-2 py-1 text-xs rounded-md transition-colors ${
-          locale === 'zh'
+          locale === 'ko'
             ? 'bg-blue-600 text-white'
             : 'text-gray-600 hover:bg-gray-100'
         }`}
       >
-        中文
+        한글
       </button>
     </div>
   );
